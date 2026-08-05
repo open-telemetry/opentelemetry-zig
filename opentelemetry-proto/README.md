@@ -33,26 +33,23 @@ const trace = proto.trace_v1;
 
 ### Regenerating the bindings
 
-The `.proto` definitions live in the `proto-src` git submodule, which tracks the
-`main` branch of the official
+The upstream `.proto` definitions are a lazy dependency (`opentelemetry_proto`
+in `build.zig.zon`), pinned to a release of the official
 [open-telemetry/opentelemetry-proto](https://github.com/open-telemetry/opentelemetry-proto)
-repository. After cloning, initialize it:
-
-```bash
-git submodule update --init opentelemetry-proto/proto-src
-```
+repository. Being lazy, it is only fetched when regenerating, never during a
+plain build or by consumers of the package.
 
 To regenerate the bindings against a newer OpenTelemetry proto release (run from
 the repo root; requires `protoc`):
 
 ```bash
-# Move the submodule to a specific tag (or omit -Dtag for the latest main).
+# Re-pin build.zig.zon to a tag (or omit -Dtag for the tracked branch, main).
 zig build proto-update-tag -Dtag=vX.Y.Z
-# Regenerate src/*.pb.zig from the submodule.
+# Fetch the pinned sources (on demand) and regenerate src/*.pb.zig.
 zig build proto-generate
 ```
 
-Commit both the submodule bump and the regenerated `src/`.
+Commit both the `build.zig.zon` bump and the regenerated `src/`.
 
 ### Dependencies
 

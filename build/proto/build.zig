@@ -6,11 +6,11 @@ const BuildError = helpers.BuildError;
 const BuildModules = helpers.BuildModules;
 const CompilationInfo = helpers.CompilationInfo;
 
-// Path of the vendored OpenTelemetry proto source root relative to build.zig.
+// Path of the vendored opentelemetry-proto module (generated bindings) relative to build.zig.
 const proto_root = "opentelemetry-proto";
 
 // OpenTelemetry proto definitions to generate Zig bindings from, relative to
-// the proto-src submodule root. Add entries here as the API grows.
+// the opentelemetry_proto dependency root. Add entries here as the API grows.
 const proto_files = [_][]const u8{
     // Signals
     "opentelemetry/proto/common/v1/common.proto",
@@ -52,58 +52,53 @@ pub fn Setup(
 }
 
 // Registers the "proto-generate" step, regenerating the Zig bindings under
-// src/ from the proto-src submodule using protoc. Run it after updating
-// the submodule (see the "update-tag" step).
+// src/ with protoc from the pinned opentelemetry_proto sources. Those sources
+// are a lazy dependency (see build.zig.zon): Zig fetches them on demand the
+// first time this step is configured. Bump the pin with "proto-update-tag".
 fn addGenerateStep(b: *std.Build, info: CompilationInfo) !void {
+    const step = b.step("proto-generate", "Regenerate proto bindings from the opentelemetry_proto sources (requires protoc)");
+
+    // Null on the first pass: Zig fetches the lazy dep and re-runs the build.
+    const proto_dep = b.lazyDependency("opentelemetry_proto", .{}) orelse return;
+
+    var source_files: [proto_files.len]std.Build.LazyPath = undefined;
+    for (&source_files, proto_files) |*src, rel| {
+        src.* = proto_dep.path(rel);
+    }
+
     // protoc code generation is driven by the protobuf dependency's builder.
     const protobuf_dep = b.dependency("protobuf", .{
         .target = info.target,
         .optimize = info.optimize,
     });
-
-    var source_files: [proto_files.len]std.Build.LazyPath = undefined;
-    for (&source_files, proto_files) |*src, rel| {
-        src.* = b.path(b.pathJoin(&.{ proto_root, "proto-src", rel }));
-    }
-
     const protoc_step = protobuf.RunProtocStep.create(protobuf_dep.builder, info.target, .{
         .destination_directory = b.path(proto_root ++ "/src"),
         .source_files = &source_files,
         .include_directories = &.{
-            // Imports in proto files resolve against the submodule root.
-            b.path(proto_root ++ "/proto-src"),
+            // Imports in proto files resolve against the dependency root.
+            proto_dep.path("."),
         },
     });
     protoc_step.verbose = info.optimize == .Debug;
 
-    const step = b.step("proto-generate", "Regenerate proto bindings from the proto-src submodule (requires protoc)");
     step.dependOn(&protoc_step.step);
 }
 
-// Registers the "update-tag" step, moving the proto-src submodule (the official
-// OpenTelemetry proto definitions) to a given tag, or the latest commit on its
-// tracked branch. Regenerate the bindings from the updated submodule afterwards.
+// Registers the "proto-update-tag" step, re-pinning the opentelemetry_proto
+// dependency in build.zig.zon to a given tag (or the tracked branch, main).
+// It shells out to `zig fetch --save`, which rewrites the url and hash.
+// Regenerate the bindings from the updated pin afterwards (proto-generate).
 fn addUpdateTagStep(b: *std.Build) *std.Build.Step {
     const tag = b.option([]const u8, "tag",
-        \\Tag of the OpenTelemetry proto submodule to check out.
-        \\If not set, the latest commit on the tracked branch (main) is used.
-    );
+        \\Tag or ref of the OpenTelemetry proto repo to pin in build.zig.zon.
+        \\If not set, the tracked branch (main) is used.
+    ) orelse "main";
 
-    // Pull the latest commit on the submodule's tracked branch.
-    const update_remote = b.addSystemCommand(&.{ "git", "submodule", "update", "--remote" });
+    const url = b.fmt("git+https://github.com/open-telemetry/opentelemetry-proto#{s}", .{tag});
+    const fetch = b.addSystemCommand(&.{ b.graph.zig_exe, "fetch", "--save=opentelemetry_proto", url });
 
-    const update_step = b.step("proto-update-tag", "Update the OpenTelemetry proto submodule to -Dtag (or latest)");
-
-    if (tag) |t| {
-        const update_to_tag = b.addSystemCommand(&.{
-            "git",                           "submodule", "foreach",
-            b.fmt("git checkout {s}", .{t}),
-        });
-        update_to_tag.step.dependOn(&update_remote.step);
-        update_step.dependOn(&update_to_tag.step);
-    } else {
-        update_step.dependOn(&update_remote.step);
-    }
+    const update_step = b.step("proto-update-tag", "Re-pin the opentelemetry_proto dependency in build.zig.zon to -Dtag (or main)");
+    update_step.dependOn(&fetch.step);
 
     return update_step;
 }

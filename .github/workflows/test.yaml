@@ -21,7 +21,28 @@ jobs:
           mirror: 'https://zigmirror.com'
       - run: zig fmt --check .
 
+  # Validate the opentelemetry-proto module: the SDK depends on it, so this runs
+  # before the SDK jobs (see `needs: proto`).
+  proto:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+      - run: zig build --fetch
+      # Regenerate the vendored bindings from the pinned proto sources (protoc is
+      # provided by the protobuf dependency) and fail if they drift from git.
+      - name: Regenerate proto bindings
+        run: |
+          zig build proto-generate
+          git diff --exit-code opentelemetry-proto/src
+      - name: Run proto module tests
+        run: zig build proto-test
+
   run_test:
+    needs: proto
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -37,6 +58,7 @@ jobs:
         timeout-minutes: 3
 
   build_examples:
+    needs: proto
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -49,6 +71,7 @@ jobs:
 
   # Execute bencharmks only if the PR has a specific label 'run::benchmarks'
   benchmarks:
+    needs: proto
     if: contains(github.event.pull_request.labels.*.name, 'run::benchmarks')
     runs-on: ubuntu-latest
     steps:

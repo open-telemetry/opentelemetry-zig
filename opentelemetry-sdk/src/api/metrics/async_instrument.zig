@@ -128,6 +128,31 @@ pub fn ObservableInstrument(K: Kind) type {
                     }
                 }
 
+                /// Detaches a previously registered callback from the instrument, so it is
+                /// no longer invoked when the instrument is observed.
+                /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#unregister-callback
+                /// Unregistering a callback that was not registered (or already removed) is a no-op.
+                /// If the same callback was registered more than once, only the first match is removed.
+                pub fn unregisterCallback(self: *Self, callback: ObserveMeasures) !void {
+                    self.lock.lockUncancelable(self.io);
+                    defer self.lock.unlock(self.io);
+
+                    const c = self.callbacks orelse return;
+                    const idx = std.mem.indexOfScalar(ObserveMeasures, c, callback) orelse return;
+
+                    if (c.len == 1) {
+                        self.allocator.free(c);
+                        self.callbacks = null;
+                        return;
+                    }
+
+                    const new_callbacks = try self.allocator.alloc(ObserveMeasures, c.len - 1);
+                    std.mem.copyForwards(ObserveMeasures, new_callbacks[0..idx], c[0..idx]);
+                    std.mem.copyForwards(ObserveMeasures, new_callbacks[idx..], c[idx + 1 ..]);
+                    self.allocator.free(c);
+                    self.callbacks = new_callbacks;
+                }
+
                 fn observe(self: *Self, allocator: std.mem.Allocator) MetricObserveError!?MeasurementsData {
                     self.lock.lockUncancelable(self.io);
                     defer self.lock.unlock(self.io);
@@ -225,6 +250,81 @@ test "observable instrument with multiple callbacks" {
 
     try std.testing.expect(instrument.callbacks.?[0] == testCallback);
     try std.testing.expect(instrument.callbacks.?[1] == anotherCallback);
+}
+
+fn testCallback2(_: ObservedContext, allocator: std.mem.Allocator) MetricObserveError!MeasurementsData {
+    const data = try allocator.alloc(DataPoint(i64), 1);
+    data[0] = try DataPoint(i64).new(allocator, 7, .{});
+    return .{ .int = data };
+}
+
+test "unregister callback removes the only registered callback" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const instrument = try allocator.create(ObservableInstrument(.ObservableUpDownCounter));
+    defer allocator.destroy(instrument);
+
+    instrument.* = ObservableInstrument(.ObservableUpDownCounter).init(allocator, io, null);
+    defer instrument.deinit();
+
+    try instrument.registerCallback(testCallback);
+    try instrument.unregisterCallback(testCallback);
+
+    try std.testing.expectEqual(@as(?[]ObserveMeasures, null), instrument.callbacks);
+}
+
+test "unregister callback leaves other callbacks registered" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const instrument = try allocator.create(ObservableInstrument(.ObservableGauge));
+    defer allocator.destroy(instrument);
+
+    instrument.* = ObservableInstrument(.ObservableGauge).init(allocator, io, null);
+    defer instrument.deinit();
+
+    try instrument.registerCallback(testCallback);
+    try instrument.registerCallback(testCallback2);
+    try instrument.unregisterCallback(testCallback);
+
+    try std.testing.expectEqual(1, instrument.callbacks.?.len);
+    try std.testing.expect(instrument.callbacks.?[0] == testCallback2);
+}
+
+test "unregister callback that was never registered is a no-op" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const instrument = try allocator.create(ObservableInstrument(.ObservableCounter));
+    defer allocator.destroy(instrument);
+
+    instrument.* = ObservableInstrument(.ObservableCounter).init(allocator, io, null);
+    defer instrument.deinit();
+
+    try instrument.registerCallback(testCallback);
+    try instrument.unregisterCallback(testCallback2);
+
+    try std.testing.expectEqual(1, instrument.callbacks.?.len);
+    try std.testing.expect(instrument.callbacks.?[0] == testCallback);
+}
+
+test "unregistered callback no longer contributes measurements" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const instrument = try allocator.create(ObservableInstrument(.ObservableCounter));
+    defer allocator.destroy(instrument);
+
+    instrument.* = ObservableInstrument(.ObservableCounter).init(allocator, io, null);
+    defer instrument.deinit();
+
+    try instrument.registerCallback(testCallback);
+    try instrument.registerCallback(testCallback2);
+    try instrument.unregisterCallback(testCallback);
+
+    const data = try instrument.measurementsData(allocator);
+    defer allocator.free(data.int);
+    defer for (data.int) |*dp| dp.deinit(allocator);
+
+    try std.testing.expectEqual(1, data.int.len);
+    try std.testing.expectEqual(7, data.int[0].value);
 }
 
 fn testCallbackWithAttrs(_: ObservedContext, allocator: std.mem.Allocator) MetricObserveError!MeasurementsData {

@@ -180,6 +180,7 @@ pub const OTLPExporter = struct {
                 for (scope_span.spans.items) |*span| {
                     self.allocator.free(span.trace_id);
                     self.allocator.free(span.span_id);
+                    if (span.parent_span_id.len > 0) self.allocator.free(span.parent_span_id);
                     span.attributes.deinit(self.allocator);
 
                     for (span.events.items) |*event| {
@@ -261,11 +262,16 @@ pub const OTLPExporter = struct {
 
         const trace_id = span_context.trace_id.toBinary();
         const span_id = span_context.span_id.toBinary();
+        const parent_span_id: []const u8 = if (span.parent_span_id) |id| parent: {
+            const binary = id.toBinary();
+            break :parent try allocator.dupe(u8, &binary);
+        } else "";
+        errdefer if (parent_span_id.len > 0) allocator.free(parent_span_id);
         return pbtrace.Span{
             .trace_id = try allocator.dupe(u8, &trace_id),
             .span_id = try allocator.dupe(u8, &span_id),
             .trace_state = (""), // Convert trace state if needed
-            .parent_span_id = (""), // TODO: get from parent context
+            .parent_span_id = parent_span_id,
             .flags = @intCast(span_context.trace_flags.value),
             .name = (span.name),
             .kind = switch (span.kind) {
@@ -424,6 +430,40 @@ test "span trace_id and span_id survive stack reuse" {
     const otlp_span = request.resource_spans.items[0].scope_spans.items[0].spans.items[0];
     try std.testing.expectEqualSlices(u8, &expected_trace_id, otlp_span.trace_id);
     try std.testing.expectEqualSlices(u8, &expected_span_id, otlp_span.span_id);
+}
+
+test "span parent_span_id is exported" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const expected_parent_span_id = [8]u8{ 21, 22, 23, 24, 25, 26, 27, 28 };
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    var config = try otlp.ConfigOptions.init(allocator, &env_map);
+    defer config.deinit();
+
+    var exporter = try OTLPExporter.init(allocator, io, config);
+    defer exporter.deinit();
+
+    var trace_state = trace.TraceState.init(allocator);
+    defer trace_state.deinit();
+    const span_context = trace.SpanContext.init(
+        trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 11, 12, 13, 14, 15, 16, 17, 18 }),
+        trace.TraceFlags.default(),
+        trace_state,
+        false,
+    );
+    var test_span = trace.Span.init(allocator, span_context, "child", .Internal, .{ .name = "test" });
+    defer test_span.deinit();
+    test_span.parent_span_id = trace.SpanID.init(expected_parent_span_id);
+
+    var spans = [_]trace.Span{test_span};
+    var request = try exporter.spansToOTLPRequest(spans[0..]);
+    defer exporter.cleanupRequest(&request);
+
+    const otlp_span = request.resource_spans.items[0].scope_spans.items[0].spans.items[0];
+    try std.testing.expectEqualSlices(u8, &expected_parent_span_id, otlp_span.parent_span_id);
 }
 
 test "OTLPExporter basic functionality" {

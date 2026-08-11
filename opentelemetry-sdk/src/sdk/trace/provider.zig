@@ -309,11 +309,16 @@ pub const Tracer = struct {
             trace_state = trace_api.TraceState.init(allocator);
         }
 
+        const trace_flags = if (parent_span_context) |parent_sc|
+            if (parent_sc.isValid()) parent_sc.trace_flags else trace_api.TraceFlags.default().setSampled()
+        else
+            trace_api.TraceFlags.default().setSampled();
+
         // Create span context
         const span_context = trace_api.SpanContext.init(
             trace_id,
             span_id,
-            trace_api.TraceFlags.default(),
+            trace_flags,
             trace_state,
             false,
         );
@@ -390,6 +395,40 @@ test "TracerProvider basic functionality" {
 
     try std.testing.expectEqualStrings("test-span", span.name);
     try std.testing.expect(span.is_recording);
+    try std.testing.expect(span.span_context.trace_flags.isSampled());
+}
+
+test "Tracer inherits valid parent trace flags" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const seed = 0;
+    var default_prng = std.Random.DefaultPrng.init(seed);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.shutdown();
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var parent_trace_state = trace_api.TraceState.init(allocator);
+    defer parent_trace_state.deinit();
+    const parent_span_context = trace_api.SpanContext.init(
+        trace_api.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace_api.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+        trace_api.TraceFlags.default().setRandom(),
+        parent_trace_state,
+        true,
+    );
+    var parent_context = try trace_api.insertSpanContext(allocator, parent_span_context);
+    defer {
+        trace_api.freeSerializedSpanContext(allocator, parent_context);
+        parent_context.deinit();
+    }
+
+    var span = try tracer.startSpan(allocator, "child-span", .{ .parent_context = parent_context });
+    defer span.deinit();
+
+    try std.testing.expectEqual(parent_span_context.trace_flags.value, span.span_context.trace_flags.value);
 }
 
 // Mock processor

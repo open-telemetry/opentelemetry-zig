@@ -389,6 +389,8 @@ pub const Span = struct {
     }
 
     /// End the Span
+    /// NOTE: This does not notify span processors. Use Tracer.endSpan to end a
+    /// span through the SDK; calling this first makes that call a no-op.
     pub fn end(self: *Self, timestamp: ?u64) void {
         if (!self.is_recording) return;
 

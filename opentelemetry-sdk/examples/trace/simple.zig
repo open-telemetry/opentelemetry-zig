@@ -94,12 +94,12 @@ pub fn main(init: std.process.Init) !void {
     clock.sleep(50 * std.time.ns_per_ms); // DB query time
 
     // End the DB span first (child spans should end before parent)
-    db_span.end(null);
+    db_tracer.endSpan(&db_span);
 
     clock.sleep(50 * std.time.ns_per_ms); // HTTP processing time
 
     // End the HTTP span
-    http_span.end(null);
+    http_tracer.endSpan(&http_span);
 
     // Verify spans were created successfully with valid IDs (not all zeros)
     const zero_trace_id = [_]u8{0} ** 16;

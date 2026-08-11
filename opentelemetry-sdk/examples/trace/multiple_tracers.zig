@@ -100,8 +100,8 @@ pub fn main(init: std.process.Init) !void {
     try payment_span.addEvent("Payment authorized", null, null);
     try db_span.addEvent("Query executed successfully", null, null);
 
-    // End spans - use span.end() for basic functionality
-    user_span.end(null);
-    payment_span.end(null);
-    db_span.end(null);
+    // End spans - use tracer.endSpan() for basic functionality
+    user_tracer.endSpan(&user_span);
+    payment_tracer.endSpan(&payment_span);
+    database_tracer.endSpan(&db_span);
 }

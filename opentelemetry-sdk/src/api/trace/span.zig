@@ -388,7 +388,8 @@ pub const Span = struct {
         try self.events.append(self.allocator, event);
     }
 
-    /// End the Span
+    /// Record the end timestamp and mark the Span inactive.
+    /// SDK callers complete export through Tracer.endSpan, which also notifies span processors.
     pub fn end(self: *Self, timestamp: ?u64) void {
         if (!self.is_recording) return;
 

@@ -35,7 +35,7 @@ const Config = zbench.Config{
 // Benchmark context that holds all necessary state
 const BenchmarkContext = struct {
     provider: *LoggerProvider,
-    buffer: std.ArrayList(u8),
+    writer: std.Io.Writer.Allocating,
     exporter: InMemoryExporter,
     processor: SimpleLogRecordProcessor,
 
@@ -43,8 +43,8 @@ const BenchmarkContext = struct {
         const ctx = try allocator.create(BenchmarkContext);
         errdefer allocator.destroy(ctx);
 
-        ctx.buffer = std.ArrayList(u8).empty;
-        ctx.exporter = InMemoryExporter.init(.fromArrayList(allocator, &ctx.buffer));
+        ctx.writer = .init(allocator);
+        ctx.exporter = InMemoryExporter.init(&ctx.writer.writer);
         ctx.processor = SimpleLogRecordProcessor.init(io, ctx.exporter.asLogRecordExporter());
 
         ctx.provider = try LoggerProvider.init(allocator, io, null);
@@ -57,7 +57,7 @@ const BenchmarkContext = struct {
 
     fn deinit(self: *BenchmarkContext, allocator: std.mem.Allocator) void {
         self.provider.deinit();
-        self.exporter.writer.deinit();
+        self.writer.deinit();
         allocator.destroy(self);
     }
 };

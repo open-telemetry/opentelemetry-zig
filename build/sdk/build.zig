@@ -8,6 +8,8 @@ const CompilationInfo = helpers.CompilationInfo;
 // Path of the OpenTelemetry SDK source root directory relative to the build.zig file.
 const sdk_root = "opentelemetry-sdk";
 
+const GrpcProvider = enum { none };
+
 // Sets up the dependencies, modules and static library for the OpenTelemetry
 // SDK, and installs its artifacts and headers.
 pub fn Setup(
@@ -51,10 +53,25 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !v
     });
     try dependencies.put("clock", clock_mod);
 
+    const grpc_provider = b.option(GrpcProvider, "grpc-provider", "Which gRPC implementation to use, if any") orelse .none;
+
+    // The selected gRPC backend is exposed to the SDK as the `grpc_transport`
+    // module. Every backend's entry file lives under `opentelemetry-sdk/src/grpc/`
+    // and exports the same `send` and `Configuration` surface.
+    const grpc_transport_mod = switch (grpc_provider) {
+        .none => b.createModule(.{
+            .root_source_file = b.path(sdk_root ++ "/src/grpc/noop.zig"),
+            .target = info.target,
+            .optimize = info.optimize,
+        }),
+    };
+    try dependencies.put("grpc_transport", grpc_transport_mod);
+
     var sdk_dep_names = [_][]const u8{
         "protobuf",
         "opentelemetry-proto",
         "clock",
+        "grpc_transport",
     };
     const sdk_mod = b.addModule("sdk", .{
         .root_source_file = b.path(sdk_root ++ "/src/sdk.zig"),
@@ -126,6 +143,24 @@ fn addTestStep(b: *std.Build, mods: *const BuildModules) !*std.Build.Step {
 
     const run_sdk_unit_tests = b.addRunArtifact(sdk_unit_tests);
     step.dependOn(&run_sdk_unit_tests.step);
+
+    // The selected gRPC transport is a separate module, so its tests are not
+    // reached by sdk_unit_tests. Run them as their own test step that the
+    // top-level "sdk-test" step depends on.
+    const grpc_transport_unit_tests = b.addTest(.{
+        .root_module = mods.get("grpc_transport") orelse return BuildError.ModuleNotFound,
+        .test_runner = .{ .path = b.path(sdk_root ++ "/src/test_runner.zig"), .mode = .simple },
+        .filters = b.args orelse &[0][]const u8{},
+    });
+    {
+        const grpc_test_options = b.addOptions();
+        grpc_test_options.addOption(bool, "verbose", test_verbose);
+        grpc_test_options.addOption(bool, "fail_first", test_fail_first);
+        grpc_test_options.addOption(bool, "show_logs", test_show_logs);
+        grpc_transport_unit_tests.root_module.addOptions("test_options", grpc_test_options);
+    }
+    const run_grpc_transport_unit_tests = b.addRunArtifact(grpc_transport_unit_tests);
+    step.dependOn(&run_grpc_transport_unit_tests.step);
 
     return step;
 }

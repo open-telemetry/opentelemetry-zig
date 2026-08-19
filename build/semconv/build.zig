@@ -20,7 +20,7 @@ pub fn Setup(
     try dependencies.put("opentelemetry-semconv", semconv_mod);
 
     _ = try addTestStep(b, semconv_mod);
-    _ = try addExamplesStep(b, semconv_mod, info);
+    try addExamplesStep(b, semconv_mod, info);
     _ = try addDocsStep(b, info);
     addGenerateStep(b);
 }
@@ -38,8 +38,12 @@ fn addTestStep(b: *std.Build, semconv_mod: *std.Build.Module) !*std.Build.Step {
     return step;
 }
 
-fn addExamplesStep(b: *std.Build, semconv_mod: *std.Build.Module, info: CompilationInfo) !*std.Build.Step {
-    const step = b.step("semconv-examples", "Build and run all opentelemetry-semconv examples");
+// Registers the "semconv-examples" step (build and install every example to
+// zig-out/bin/semconv/, without running them) and the "semconv-run-examples"
+// step (run the installed binaries).
+fn addExamplesStep(b: *std.Build, semconv_mod: *std.Build.Module, info: CompilationInfo) !void {
+    const step = b.step("semconv-examples", "Build and install all opentelemetry-semconv examples to zig-out/bin/semconv/");
+    const run_step = b.step("semconv-run-examples", "Run installed opentelemetry-semconv examples from zig-out");
 
     const examples_dir = b.path(semconv_root ++ "/examples");
     var dir = try examples_dir.getPath3(b, null).openDir(std.Options.debug_io, "", .{ .iterate = true });
@@ -62,11 +66,8 @@ fn addExamplesStep(b: *std.Build, semconv_mod: *std.Build.Module, info: Compilat
             }),
         });
 
-        const run_example = b.addRunArtifact(example_exe);
-        step.dependOn(&run_example.step);
+        helpers.wireExample(b, example_exe, "bin/semconv", step, run_step, null);
     }
-
-    return step;
 }
 
 fn addDocsStep(b: *std.Build, info: CompilationInfo) !*std.Build.Step {

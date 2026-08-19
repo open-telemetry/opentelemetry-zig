@@ -157,7 +157,7 @@ fn addExamplesStep(
         };
         defer b.allocator.free(example);
         for (example) |exe| {
-            wireExample(b, exe, b.fmt("bin/{s}", .{example_dir}), step, run_step, null);
+            helpers.wireExample(b, exe, b.fmt("bin/{s}", .{example_dir}), step, run_step, null);
         }
     }
 
@@ -193,31 +193,8 @@ fn addExamplesStep(
         c_example_exe.root_module.addIncludePath(b.path(sdk_root ++ "/include"));
         c_example_exe.root_module.linkLibrary(sdk_lib_c);
 
-        wireExample(b, c_example_exe, "bin/c", step, run_step, null);
+        helpers.wireExample(b, c_example_exe, "bin/c", step, run_step, null);
     }
-}
-
-/// Installs `exe` to zig-out/<install_subdir>/ and hooks that install into
-/// `build_step`, so building never implies running. `run_step` additionally
-/// runs the installed binary, depending on `cwd` for executables (integration
-/// tests) that must run from a specific working directory.
-fn wireExample(
-    b: *std.Build,
-    exe: *std.Build.Step.Compile,
-    install_subdir: []const u8,
-    build_step: *std.Build.Step,
-    run_step: *std.Build.Step,
-    cwd: ?std.Build.LazyPath,
-) void {
-    const install = b.addInstallArtifact(exe, .{
-        .dest_dir = .{ .override = .{ .custom = install_subdir } },
-    });
-    build_step.dependOn(&install.step);
-
-    const run = b.addRunArtifact(exe);
-    if (cwd) |c| run.setCwd(c);
-    run.step.dependOn(&install.step);
-    run_step.dependOn(&run.step);
 }
 
 // Registers the "sdk-benchmarks" step, building and running all benchmarks.
@@ -284,7 +261,7 @@ fn addIntegrationStep(b: *std.Build, mods: *const BuildModules, info: Compilatio
     };
     defer b.allocator.free(integration_tests);
     for (integration_tests) |exe| {
-        wireExample(b, exe, "bin/integration_tests", step, run_step, b.path(sdk_root));
+        helpers.wireExample(b, exe, "bin/integration_tests", step, run_step, b.path(sdk_root));
     }
 }
 

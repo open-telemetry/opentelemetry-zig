@@ -84,7 +84,10 @@ jobs:
         run: zig build sdk-examples
       - name: Run SDK examples
         run: zig build sdk-run-examples
-      - run: zig build semconv-examples
+      - name: Build and install semconv examples
+        run: zig build semconv-examples
+      - name: Run semconv examples
+        run: zig build semconv-run-examples
 
   # Execute bencharmks only if the PR has a specific label 'run::benchmarks'
   benchmarks:

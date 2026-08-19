@@ -171,9 +171,12 @@ by hand. See
 is generated and how to regenerate it.
 
 ```
-# Run the semantic conventions tests and examples
+# Run the semantic conventions tests
 zig build semconv-test
+
+# Build and install the examples to zig-out/bin/semconv/, then run them
 zig build semconv-examples
+zig build semconv-run-examples
 
 # Generate docs into zig-out/docs/semconv/
 zig build semconv-docs

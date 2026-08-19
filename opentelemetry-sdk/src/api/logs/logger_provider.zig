@@ -40,6 +40,7 @@ pub const ReadWriteLogRecord = struct {
     body: ?[]const u8 = null,
     attributes: std.ArrayListUnmanaged(Attribute) = .empty,
     resource: ?[]const Attribute = null,
+    location: ?std.builtin.SourceLocation = null,
 
     const Self = @This();
 
@@ -67,6 +68,7 @@ pub const ReadWriteLogRecord = struct {
             .attributes = self.attributes.items,
             .resource = self.resource,
             .scope = self.scope,
+            .location = self.location,
         };
     }
 
@@ -96,6 +98,7 @@ pub const ReadWriteLogRecord = struct {
             .attributes = attrs,
             .resource = self.resource,
             .scope = self.scope,
+            .location = self.location,
         };
     }
 };
@@ -121,6 +124,7 @@ pub const ReadableLogRecord = struct {
     resource: ?[]const Attribute,
     /// points into the Logger's scope
     scope: InstrumentationScope,
+    location: ?std.builtin.SourceLocation,
 };
 
 /// SDK LoggerProvider implementation
@@ -347,6 +351,10 @@ pub const Logger = struct {
         /// Pass `span.span_context` to enable log-trace correlation in the backend.
         span_context: ?trace.SpanContext = null,
 
+        /// Source location of the log call site. Pass `@src()` to capture
+        /// file, function name, line, and column at compile time.
+        location: ?std.builtin.SourceLocation = null,
+
         /// Propagation context forwarded to log processors on emit.
         /// If null, the active thread-local context is used.
         context: ?Context = null,
@@ -381,6 +389,7 @@ pub const Logger = struct {
             .attributes = .empty,
             .resource = self.provider.resource,
             .scope = self.scope,
+            .location = options.location,
         };
         defer log_record.deinit(self.allocator);
 

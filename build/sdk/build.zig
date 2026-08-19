@@ -33,10 +33,9 @@ pub fn Setup(
     });
 
     _ = try addTestStep(b, dependencies);
-    _ = try addExamplesStep(b, dependencies, info);
-    _ = try addExamplesCStep(b, sdk_lib, info);
+    try addExamplesStep(b, dependencies, sdk_lib, info);
     _ = try addBenchmarksStep(b, dependencies, info);
-    _ = try addIntegrationStep(b, dependencies, info);
+    try addIntegrationStep(b, dependencies, info);
 
     const docs_step = try addDocsStep(b, dependencies, info);
     docs_step.dependOn(&sdk_lib.step);
@@ -130,9 +129,18 @@ fn addTestStep(b: *std.Build, mods: *const BuildModules) !*std.Build.Step {
     return step;
 }
 
-// Registers the "sdk-examples" step, building and running all Zig examples.
-fn addExamplesStep(b: *std.Build, mods: *const BuildModules, info: CompilationInfo) !*std.Build.Step {
-    const step = b.step("sdk-examples", "Build and run all SDK examples");
+// Registers the "sdk-examples" step (build and install every Zig and C example
+// to zig-out/bin/<category>/, without running them) and the "sdk-run-examples"
+// step (run the installed binaries). Splitting build from run means an example
+// can be built once and then re-run by hand straight from zig-out/bin.
+fn addExamplesStep(
+    b: *std.Build,
+    mods: *const BuildModules,
+    sdk_lib_c: *std.Build.Step.Compile,
+    info: CompilationInfo,
+) !void {
+    const step = b.step("sdk-examples", "Build and install all SDK examples to zig-out/bin/<category>/");
+    const run_step = b.step("sdk-run-examples", "Run installed SDK examples from zig-out");
     const examples_filter = b.option([]const u8, "examples-filter", "Filter examples to build");
 
     const examples_dirs: []const []const u8 = &.{ "metrics", "trace", "logs", "baggage", "propagation" };
@@ -149,17 +157,9 @@ fn addExamplesStep(b: *std.Build, mods: *const BuildModules, info: CompilationIn
         };
         defer b.allocator.free(example);
         for (example) |exe| {
-            const run_example = b.addRunArtifact(exe);
-            step.dependOn(&run_example.step);
+            wireExample(b, exe, b.fmt("bin/{s}", .{example_dir}), step, run_step, null);
         }
     }
-
-    return step;
-}
-
-// Registers the "sdk-examples-c" step, building and running all C examples.
-fn addExamplesCStep(b: *std.Build, sdk_lib_c: *std.Build.Step.Compile, info: CompilationInfo) !*std.Build.Step {
-    const step = b.step("sdk-examples-c", "Build and run SDK C examples");
 
     const c_examples = [_][]const u8{
         "logs",
@@ -193,14 +193,31 @@ fn addExamplesCStep(b: *std.Build, sdk_lib_c: *std.Build.Step.Compile, info: Com
         c_example_exe.root_module.addIncludePath(b.path(sdk_root ++ "/include"));
         c_example_exe.root_module.linkLibrary(sdk_lib_c);
 
-        const run_c_example = b.addRunArtifact(c_example_exe);
-        step.dependOn(&run_c_example.step);
-
-        // Also install each C example executable
-        b.installArtifact(c_example_exe);
+        wireExample(b, c_example_exe, "bin/c", step, run_step, null);
     }
+}
 
-    return step;
+/// Installs `exe` to zig-out/<install_subdir>/ and hooks that install into
+/// `build_step`, so building never implies running. `run_step` additionally
+/// runs the installed binary, depending on `cwd` for executables (integration
+/// tests) that must run from a specific working directory.
+fn wireExample(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    install_subdir: []const u8,
+    build_step: *std.Build.Step,
+    run_step: *std.Build.Step,
+    cwd: ?std.Build.LazyPath,
+) void {
+    const install = b.addInstallArtifact(exe, .{
+        .dest_dir = .{ .override = .{ .custom = install_subdir } },
+    });
+    build_step.dependOn(&install.step);
+
+    const run = b.addRunArtifact(exe);
+    if (cwd) |c| run.setCwd(c);
+    run.step.dependOn(&install.step);
+    run_step.dependOn(&run.step);
 }
 
 // Registers the "sdk-benchmarks" step, building and running all benchmarks.
@@ -249,9 +266,12 @@ pub fn addBenchmarksStep(b: *std.Build, mods: *const BuildModules, info: Compila
     return step;
 }
 
-// Registers the "sdk-integration" step, building and running integration tests.
-fn addIntegrationStep(b: *std.Build, mods: *const BuildModules, info: CompilationInfo) !*std.Build.Step {
-    const step = b.step("sdk-integration", "Run SDK integration tests (requires Docker)");
+// Registers the "sdk-integration" step (build and install integration tests to
+// zig-out/bin/integration_tests/, without running them) and the
+// "sdk-run-integration" step (run the installed binaries; requires Docker).
+fn addIntegrationStep(b: *std.Build, mods: *const BuildModules, info: CompilationInfo) !void {
+    const step = b.step("sdk-integration", "Build and install SDK integration tests to zig-out/bin/integration_tests/");
+    const run_step = b.step("sdk-run-integration", "Run installed SDK integration tests (requires Docker)");
 
     const integration_tests = buildIntegrationTests(
         b,
@@ -264,12 +284,8 @@ fn addIntegrationStep(b: *std.Build, mods: *const BuildModules, info: Compilatio
     };
     defer b.allocator.free(integration_tests);
     for (integration_tests) |exe| {
-        const run_integration_test = b.addRunArtifact(exe);
-        run_integration_test.setCwd(b.path(sdk_root));
-        step.dependOn(&run_integration_test.step);
+        wireExample(b, exe, "bin/integration_tests", step, run_step, b.path(sdk_root));
     }
-
-    return step;
 }
 
 // Registers the "sdk-docs" step, emitting autodoc for the SDK module.

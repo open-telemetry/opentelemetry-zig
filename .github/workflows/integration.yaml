@@ -25,5 +25,7 @@ jobs:
           mirror: 'https://zigmirror.com'
       - name: Fetch dependencies
         run: zig build --fetch
-      - name: Run integration tests
+      - name: Build integration tests
         run: zig build sdk-integration
+      - name: Run integration tests
+        run: zig build sdk-run-integration

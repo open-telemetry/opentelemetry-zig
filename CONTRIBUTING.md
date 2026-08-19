@@ -65,41 +65,57 @@ zig build sdk-test -Dtest-show-logs=true
 
 ### Running integration tests
 
-Integration tests verify the SDK behavior against real OpenTelemetry backends. These tests require Docker to be installed and running.
+Integration tests verify the SDK behavior against real OpenTelemetry backends.
 
-```
+```shell
+# Build and install the integration test binaries to zig-out/bin/integration_tests/
 zig build sdk-integration
+
+# Run them against a real OTLP collector (Docker required)
+zig build sdk-run-integration
+
+# Filter to a specific test by name
+zig build sdk-run-integration -- metrics
 ```
 
 Integration tests are executed as part of CI on pull requests.
 
 > [!IMPORTANT]
-> Integration tests require Docker to be installed and the Docker daemon to be running.
+> `sdk-run-integration` requires Docker to be installed and the Docker daemon to be running.
+> `sdk-integration` alone does not need Docker, since it only builds and installs the binaries.
 
 ### Running examples
 
-Build and run all examples:
+The example workflow follows the same two-step layout as integration tests:
 
-```
+```shell
+# Build every example (Zig + C) and install to zig-out/bin/<category>/<name>
 zig build sdk-examples
+
+# Run the installed binaries
+zig build sdk-run-examples
 ```
+
+Since building always installs to `zig-out/bin/`, any example can also be run directly by hand, e.g. `./zig-out/bin/metrics/histogram`.
 
 #### Examples options
 
-Filter examples to build and run specific ones:
+Filter to specific examples (applies to both `sdk-examples` and `sdk-run-examples`):
 
+```shell
+# Only examples whose name contains "otlp"
+zig build sdk-run-examples -Dexamples-filter=otlp
+
+# Only histogram examples
+zig build sdk-run-examples -Dexamples-filter=histogram
 ```
-# Run only examples matching "otlp"
-zig build sdk-examples -Dexamples-filter=otlp
 
-# Run only histogram examples
-zig build sdk-examples -Dexamples-filter=histogram
-```
-
-Examples are organized by signal type:
+Examples are organized by signal type and language:
 - `opentelemetry-sdk/examples/metrics/` - Metrics API examples
 - `opentelemetry-sdk/examples/trace/` - Tracing API examples
 - `opentelemetry-sdk/examples/logs/` - Logging API examples
+- `opentelemetry-sdk/examples/baggage/`, `opentelemetry-sdk/examples/propagation/` - Context-propagation examples
+- `opentelemetry-sdk/examples/c/` - C-API examples linking against the static library
 
 ### Running benchmarks
 
@@ -169,8 +185,8 @@ A typical development workflow:
 
 1. Make your changes
 2. Run unit tests: `zig build sdk-test`
-3. Run integration tests: `zig build sdk-integration` (if applicable)
-4. Run relevant examples: `zig build sdk-examples -Dexamples-filter=<signal>`
+3. Run integration tests: `zig build sdk-run-integration` (if applicable)
+4. Run relevant examples: `zig build sdk-run-examples -Dexamples-filter=<signal>`
 5. Run benchmarks: `zig build sdk-benchmarks -Doptimize=ReleaseFast` (if performance-critical)
 6. Commit your changes
 

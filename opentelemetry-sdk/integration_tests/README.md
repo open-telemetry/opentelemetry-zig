@@ -23,10 +23,15 @@ Each test executable runs independently with its own:
 
 ## Running the Tests
 
-To run all integration tests:
-
 ```bash
+# Build + install only
 zig build sdk-integration
+
+# Build, install, and run (Docker required)
+zig build sdk-run-integration
+
+# Filter to a single test
+zig build sdk-run-integration -- metrics
 ```
 
 The tests will run with separate collector containers, allowing for parallel execution.
@@ -100,7 +105,7 @@ To add new integration tests:
    - `waitForFile()` - Wait for collector to write output files
    - `waitForFileContent()` - Wait for specific content in output files
    - `readJsonFile()` - Read JSON output files
-4. The test will automatically be discovered and run by `zig build sdk-integration`
+4. The test will automatically be discovered, built by `zig build sdk-integration`, and executed by `zig build sdk-run-integration`
 
 ## Troubleshooting
 
@@ -113,4 +118,5 @@ If you see `error.ConnectionRefused`, check that:
 
 ### Memory Leaks
 
-The tests use a GPA (General Purpose Allocator) with leak detection. If leaks are reported, ensure all resources are properly cleaned up with `defer` statements.
+The tests use a GPA (General Purpose Allocator), that will perform leak detection if built in Debug mode.
+If leaks are reported, ensure all resources are properly cleaned up with `defer` statements.

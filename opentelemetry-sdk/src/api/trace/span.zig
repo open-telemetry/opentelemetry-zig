@@ -168,6 +168,7 @@ pub const TraceState = struct {
 /// Span represents a single operation within a trace.
 pub const Span = struct {
     span_context: SpanContext,
+    parent_span_id: ?trace.SpanID,
     name: []const u8,
     kind: SpanKind,
     start_time_unix_nano: u64,
@@ -226,6 +227,7 @@ pub const Span = struct {
     pub fn init(allocator: std.mem.Allocator, span_context: SpanContext, name: []const u8, kind: SpanKind, scope: InstrumentationScope) Self {
         return Self{
             .span_context = span_context,
+            .parent_span_id = null,
             .name = name,
             .kind = kind,
             .start_time_unix_nano = @as(u64, @intCast(clock.nanoTimestamp())),
@@ -247,6 +249,7 @@ pub const Span = struct {
         var dummy_allocator = std.heap.FixedBufferAllocator.init(&[_]u8{});
         return Self{
             .span_context = span_context,
+            .parent_span_id = null,
             .name = "", // Non-recording spans don't have meaningful names
             .kind = .Internal,
             .start_time_unix_nano = 0,

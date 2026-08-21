@@ -325,6 +325,7 @@ pub const Tracer = struct {
 
         // Create the span with instrumentation scope
         var span = trace_api.Span.init(allocator, span_context, span_name, options.kind, self.scope);
+        span.parent_span_id = if (parent_span_context) |parent_sc| parent_sc.span_id else null;
         span.is_recording = true; // SDK spans are recording by default
         span.resource = self.provider.resource;
 
@@ -430,6 +431,34 @@ test "Tracer inherits valid parent trace flags" {
     defer span.deinit();
 
     try std.testing.expectEqual(parent_span_context.trace_flags.value, span.span_context.trace_flags.value);
+}
+
+test "Tracer records parent span ID" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.shutdown();
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var parent = try tracer.startSpan(allocator, "parent", .{});
+    defer parent.deinit();
+    try std.testing.expect(parent.parent_span_id == null);
+
+    var parent_context = try trace_api.serializeSpanContext(allocator, parent.span_context);
+    defer {
+        trace_api.freeSerializedSpanContext(allocator, parent_context);
+        parent_context.deinit();
+    }
+
+    var child = try tracer.startSpan(allocator, "child", .{ .parent_context = parent_context });
+    defer child.deinit();
+
+    try std.testing.expectEqual(parent.span_context.trace_id.value, child.span_context.trace_id.value);
+    try std.testing.expectEqual(parent.span_context.span_id.value, child.parent_span_id.?.value);
 }
 
 // Mock processor

@@ -9,6 +9,7 @@ const InstrumentationScope = @import("../../../scope.zig").InstrumentationScope;
 const SerializableSpan = struct {
     trace_id: [16]u8,
     span_id: [8]u8,
+    parent_span_id: ?[8]u8,
     name: []const u8,
     kind: trace.SpanKind,
     start_time_unix_nano: u64,
@@ -22,6 +23,7 @@ const SerializableSpan = struct {
         return SerializableSpan{
             .trace_id = span.span_context.trace_id.value,
             .span_id = span.span_context.span_id.value,
+            .parent_span_id = if (span.parent_span_id) |parent_span_id| parent_span_id.value else null,
             .name = span.name,
             .kind = span.kind,
             .start_time_unix_nano = span.start_time_unix_nano,
@@ -142,6 +144,7 @@ test StdoutExporter {
 }
 
 test InMemoryExporter {
+    const expected_parent_span_id = [8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 };
     var out_buf = std.ArrayList(u8).empty;
     {
         var writer = std.Io.Writer.Allocating.fromArrayList(std.testing.allocator, &out_buf);
@@ -151,7 +154,7 @@ test InMemoryExporter {
 
         // Create test spans with different properties
         const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
-        const span_id_1 = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
+        const span_id_1 = trace.SpanID.init(expected_parent_span_id);
         const span_id_2 = trace.SpanID.init([8]u8{ 8, 7, 6, 5, 4, 3, 2, 1 });
         var trace_state = trace.TraceState.init(std.testing.allocator);
         defer trace_state.deinit();
@@ -166,6 +169,7 @@ test InMemoryExporter {
         // Second span - Client kind
         const span_context_2 = trace.SpanContext.init(trace_id, span_id_2, trace.TraceFlags.default(), trace_state, false);
         var span_2 = trace.Span.init(std.testing.allocator, span_context_2, "span-client", .Client, scope);
+        span_2.parent_span_id = span_id_1;
         defer span_2.deinit();
 
         // Export spans
@@ -185,4 +189,12 @@ test InMemoryExporter {
     try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "Client") != null);
     try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "trace_id") != null);
     try std.testing.expect(std.mem.indexOf(u8, out_buf.items, "span_id") != null);
+
+    const ExportedParent = struct { parent_span_id: ?[]const u8 };
+    const parsed = try std.json.parseFromSlice([]ExportedParent, std.testing.allocator, out_buf.items, .{
+        .ignore_unknown_fields = true,
+    });
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value[0].parent_span_id == null);
+    try std.testing.expectEqualSlices(u8, &expected_parent_span_id, parsed.value[1].parent_span_id.?);
 }

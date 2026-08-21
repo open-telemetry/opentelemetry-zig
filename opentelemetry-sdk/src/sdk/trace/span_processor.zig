@@ -378,6 +378,7 @@ pub const BatchingProcessor = struct {
 
         result.start_time_unix_nano = span.start_time_unix_nano;
         result.end_time_unix_nano = span.end_time_unix_nano;
+        result.parent_span_id = span.parent_span_id;
         result.status = span.status;
         result.is_recording = span.is_recording;
 
@@ -536,6 +537,7 @@ test "BatchingProcessor basic functionality" {
         const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), ts.*, false);
         const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
         span.* = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+        span.parent_span_id = trace.SpanID.init([8]u8{ @intCast(i + 1), 9, 8, 7, 6, 5, 4, 3 });
         span.is_recording = true;
     }
     defer {
@@ -558,4 +560,7 @@ test "BatchingProcessor basic functionality" {
 
     // Verify spans were exported
     try std.testing.expectEqual(@as(usize, 3), mock_exporter.exported_spans.items.len);
+    for (mock_exporter.exported_spans.items, 0..) |span, i| {
+        try std.testing.expectEqual(@as(u8, @intCast(i + 1)), span.parent_span_id.?.value[0]);
+    }
 }

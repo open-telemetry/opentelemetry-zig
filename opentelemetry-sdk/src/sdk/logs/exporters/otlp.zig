@@ -216,9 +216,16 @@ pub const OTLPExporter = struct {
 
     fn logRecordToOTLP(self: *Self, log_record: logs.ReadableLogRecord) !pblogs.LogRecord {
         // Convert attributes
-        var attributes: std.ArrayList(pbcommon.KeyValue) = try .initCapacity(self.allocator, log_record.attributes.len);
+        const location_count: usize = if (log_record.location != null) 4 else 0;
+        var attributes: std.ArrayList(pbcommon.KeyValue) = try .initCapacity(self.allocator, log_record.attributes.len + location_count);
         for (log_record.attributes) |attr| {
             attributes.appendAssumeCapacity(try attributeToOTLP(attr.key, attr.value));
+        }
+        if (log_record.location) |loc| {
+            attributes.appendAssumeCapacity(try attributeToOTLP("code.file.path", .{ .string = loc.file }));
+            attributes.appendAssumeCapacity(try attributeToOTLP("code.function.name", .{ .string = loc.fn_name }));
+            attributes.appendAssumeCapacity(try attributeToOTLP("code.line.number", .{ .int = @intCast(loc.line) }));
+            attributes.appendAssumeCapacity(try attributeToOTLP("code.column.number", .{ .int = @intCast(loc.column) }));
         }
 
         // trace_id and span_id are protobuf `bytes` fields.
@@ -414,6 +421,7 @@ test "Log record to OTLP conversion with all fields" {
         .attributes = attrs,
         .resource = null,
         .scope = scope,
+        .location = .{ .module = "mylib", .file = "src/mylib.zig", .fn_name = "doWork", .line = 42, .column = 4 },
     };
 
     var otlp_log = try exporter.logRecordToOTLP(log_record);
@@ -429,10 +437,20 @@ test "Log record to OTLP conversion with all fields" {
     try std.testing.expectEqual(pblogs.SeverityNumber.SEVERITY_NUMBER_ERROR, otlp_log.severity_number);
     try std.testing.expectEqualStrings("ERROR", otlp_log.severity_text);
     try std.testing.expectEqualStrings("Test log message", otlp_log.body.?.value.?.string_value);
-    try std.testing.expectEqual(@as(usize, 2), otlp_log.attributes.items.len);
+    // 2 user attributes + 4 code.* location attributes
+    try std.testing.expectEqual(@as(usize, 6), otlp_log.attributes.items.len);
     // trace_id and span_id are stored as raw bytes (not hex strings).
     try std.testing.expectEqualSlices(u8, &trace_id, otlp_log.trace_id);
     try std.testing.expectEqualSlices(u8, &span_id, otlp_log.span_id);
+    // Source location attributes
+    try std.testing.expectEqualStrings("code.file.path", otlp_log.attributes.items[2].key);
+    try std.testing.expectEqualStrings("src/mylib.zig", otlp_log.attributes.items[2].value.?.value.?.string_value);
+    try std.testing.expectEqualStrings("code.function.name", otlp_log.attributes.items[3].key);
+    try std.testing.expectEqualStrings("doWork", otlp_log.attributes.items[3].value.?.value.?.string_value);
+    try std.testing.expectEqualStrings("code.line.number", otlp_log.attributes.items[4].key);
+    try std.testing.expectEqual(@as(i64, 42), otlp_log.attributes.items[4].value.?.value.?.int_value);
+    try std.testing.expectEqualStrings("code.column.number", otlp_log.attributes.items[5].key);
+    try std.testing.expectEqual(@as(i64, 4), otlp_log.attributes.items[5].value.?.value.?.int_value);
 }
 
 test "Log records grouped by instrumentation scope" {
@@ -465,6 +483,7 @@ test "Log records grouped by instrumentation scope" {
             .attributes = &[_]attribute.Attribute{},
             .resource = null,
             .scope = scope1,
+            .location = null,
         },
         logs.ReadableLogRecord{
             .timestamp = null,
@@ -478,6 +497,7 @@ test "Log records grouped by instrumentation scope" {
             .attributes = &[_]attribute.Attribute{},
             .resource = null,
             .scope = scope2,
+            .location = null,
         },
         logs.ReadableLogRecord{
             .timestamp = null,
@@ -491,6 +511,7 @@ test "Log records grouped by instrumentation scope" {
             .attributes = &[_]attribute.Attribute{},
             .resource = null,
             .scope = scope1,
+            .location = null,
         },
     };
 
@@ -563,6 +584,7 @@ test "Resource attributes in OTLP export" {
             .attributes = &[_]attribute.Attribute{},
             .resource = resource_attrs,
             .scope = scope,
+            .location = null,
         },
     };
 
@@ -611,6 +633,7 @@ test "Trace context binary encoding" {
         .attributes = &[_]attribute.Attribute{},
         .resource = null,
         .scope = scope,
+        .location = null,
     };
 
     var otlp_log = try exporter.logRecordToOTLP(log_record);
@@ -656,6 +679,7 @@ test "Memory cleanup verification" {
             .attributes = attrs,
             .resource = null,
             .scope = scope,
+            .location = null,
         },
     };
 

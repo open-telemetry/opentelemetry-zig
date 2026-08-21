@@ -65,12 +65,6 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !v
         .link_libc = true,
         .imports = try helpers.ImportsFromBuildModules(b.allocator, dependencies, &sdk_dep_names),
     });
-    { // Build info
-        const build_info = b.addOptions();
-        build_info.addOption([]const u8, "version", info.version);
-        build_info.addOption([]const u8, "name", info.pkg_name);
-        sdk_mod.addOptions("build_info", build_info);
-    }
     try dependencies.put("opentelemetry-sdk", sdk_mod);
 
     // Static library for the OpenTelemetry SDK C users
@@ -82,6 +76,14 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !v
         .imports = try helpers.ImportsFromBuildModules(b.allocator, dependencies, &sdk_dep_names),
     });
     try dependencies.put("sdk_c_lib", sdk_c_lib_mod);
+
+    { // Build info
+        const build_info = b.addOptions();
+        build_info.addOption([]const u8, "version", info.version);
+        build_info.addOption([]const u8, "name", info.pkg_name);
+        sdk_mod.addOptions("build_info", build_info);
+        sdk_c_lib_mod.addOptions("build_info", build_info);
+    }
 
     // Attach an OTLP stub module to allow examples to use it.
     var otlp_stub_dep_names = [_][]const u8{

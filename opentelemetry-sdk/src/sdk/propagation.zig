@@ -156,11 +156,12 @@ pub const CompositePropagator = struct {
 /// it will initialize one from the supplied environment map.
 pub fn createGlobalPropagator(
     allocator: std.mem.Allocator,
+    io: std.Io,
     env_map: *const std.process.Environ.Map,
 ) !CompositePropagator {
     const config = Configuration.get() orelse blk: {
         // No global config exists, create and set one
-        const new_config = try Configuration.init(allocator, env_map);
+        const new_config = try Configuration.init(allocator, io, env_map);
         Configuration.set(new_config);
         break :blk new_config;
     };

@@ -302,16 +302,13 @@ pub fn set(cfg: *Configuration) void {
 
 /// Initialize configuration from the supplied environment map.
 /// Caller owns the returned Configuration instance and must call deinit() when done.
-pub fn init(allocator: std.mem.Allocator, env_map: *const EnvMap) !*Configuration {
+pub fn init(allocator: std.mem.Allocator, io: std.Io, env_map: *const EnvMap) !*Configuration {
     const cfg = try allocator.create(Configuration);
 
     cfg.* = Configuration{
         .allocator = allocator,
         .sdk_disabled = parseBool(env_map, "OTEL_SDK_DISABLED") orelse false,
-        .service_name = if (env_map.get("OTEL_SERVICE_NAME")) |s|
-            try allocator.dupe(u8, s)
-        else
-            try allocator.dupe(u8, "unknown_service"),
+        .service_name = try resolveServiceName(allocator, io, env_map),
         .resource_attributes = if (env_map.get("OTEL_RESOURCE_ATTRIBUTES")) |s|
             try allocator.dupe(u8, s)
         else
@@ -358,6 +355,44 @@ pub fn deinit(self: *Configuration) void {
 // ============================================================================
 // Parsing Utilities
 // ============================================================================
+
+/// Resolve service.name following the specification precedence:
+/// OTEL_SERVICE_NAME, then a service.name entry in OTEL_RESOURCE_ATTRIBUTES,
+/// then fallback as described by semantic conventions when service.name is not configured.
+/// See https://github.com/open-telemetry/semantic-conventions/blob/main/model/service/registry.yaml.
+///
+/// Caller owns the returned memory.
+fn resolveServiceName(allocator: std.mem.Allocator, io: std.Io, env_map: *const EnvMap) ![]const u8 {
+    if (env_map.get("OTEL_SERVICE_NAME")) |name| return allocator.dupe(u8, name);
+    if (env_map.get("OTEL_RESOURCE_ATTRIBUTES")) |attrs| {
+        if (serviceNameFromResourceAttributes(attrs)) |name| return allocator.dupe(u8, name);
+    }
+    return defaultServiceName(allocator, io);
+}
+
+/// Extract the service.name value from OTEL_RESOURCE_ATTRIBUTES, if present.
+fn serviceNameFromResourceAttributes(attrs: []const u8) ?[]const u8 {
+    var iter = std.mem.splitScalar(u8, attrs, ',');
+    while (iter.next()) |keyVal| {
+        const eq_pos = std.mem.indexOfScalar(u8, keyVal, '=') orelse continue;
+        const key = std.mem.trim(u8, keyVal[0..eq_pos], &std.ascii.whitespace);
+        if (std.mem.eql(u8, key, "service.name")) {
+            return std.mem.trim(u8, keyVal[eq_pos + 1 ..], &std.ascii.whitespace);
+        }
+    }
+    return null;
+}
+
+fn defaultServiceName(allocator: std.mem.Allocator, io: std.Io) ![]const u8 {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const exe_name: ?[]const u8 = if (std.process.executablePath(io, &buf)) |len|
+        std.fs.path.basename(buf[0..len])
+    else |_|
+        null;
+    if (exe_name) |name| {
+        return std.fmt.allocPrint(allocator, "unknown_service:{s}", .{name});
+    } else return allocator.dupe(u8, "unknown_service");
+}
 
 /// Parse a boolean environment variable
 /// Accepts: "true", "1" for true; "false", "0" for false (case-insensitive)
@@ -626,11 +661,11 @@ test "Configuration.init - defaults" {
     var env_map = EnvMap.init(allocator);
     defer env_map.deinit();
 
-    var config = try Configuration.init(allocator, &env_map);
+    var config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();
 
     try std.testing.expectEqual(false, config.sdk_disabled);
-    try std.testing.expectEqualStrings("unknown_service", config.service_name.?);
+    try std.testing.expect(std.mem.startsWith(u8, config.service_name.?, "unknown_service"));
     try std.testing.expectEqual(LogLevel.info, config.log_level);
     try std.testing.expectEqual(@as(usize, 2), config.trace_propagators.len);
 }
@@ -646,7 +681,7 @@ test "Configuration.init - custom values" {
     try env_map.put("OTEL_LOG_LEVEL", "debug");
     try env_map.put("OTEL_TRACES_SAMPLER", "always_on");
 
-    var config = try Configuration.init(allocator, &env_map);
+    var config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();
 
     try std.testing.expectEqual(false, config.sdk_disabled);
@@ -660,7 +695,7 @@ test Configuration {
     var env_map = EnvMap.init(allocator);
     defer env_map.deinit();
 
-    var config = try Configuration.init(allocator, &env_map);
+    var config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();
 
     Configuration.set(config);
@@ -674,15 +709,46 @@ test Configuration {
     try std.testing.expectEqual(config1, config2);
 }
 
-test "Configuration OTEL_SERVICE_NAME default is unknown_service" {
+test "Configuration OTEL_SERVICE_NAME default is unknown_service:<executable>" {
     const allocator = std.testing.allocator;
     var env_map = EnvMap.init(allocator);
     defer env_map.deinit();
 
-    const config = try Configuration.init(allocator, &env_map);
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();
 
-    try std.testing.expectEqualStrings("unknown_service", config.service_name.?);
+    const name = config.service_name.?;
+    try std.testing.expect(std.mem.startsWith(u8, name, "unknown_service"));
+    if (name.len > "unknown_service".len) {
+        try std.testing.expectEqual(@as(u8, ':'), name["unknown_service".len]);
+        // The concatenated part is a bare executable name, never a path.
+        try std.testing.expect(std.mem.indexOfScalar(u8, name, std.fs.path.sep) == null);
+    }
+}
+
+test "Configuration service.name falls back to OTEL_RESOURCE_ATTRIBUTES before unknown_service" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "host.name=server-1,service.name=checkout");
+
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
+    defer config.deinit();
+
+    try std.testing.expectEqualStrings("checkout", config.service_name.?);
+}
+
+test "Configuration OTEL_SERVICE_NAME wins over OTEL_RESOURCE_ATTRIBUTES" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_SERVICE_NAME", "checkout");
+    try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "service.name=ignored");
+
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
+    defer config.deinit();
+
+    try std.testing.expectEqualStrings("checkout", config.service_name.?);
 }
 
 const TracerProvider = @import("trace/provider.zig").TracerProvider;
@@ -700,7 +766,7 @@ test "Configuration TracerProvider with SDK disabled" {
     try testMap.put("OTEL_SDK_DISABLED", "true");
 
     // Create configuration with SDK disabled
-    var config_from_env = try Configuration.init(allocator, &testMap);
+    var config_from_env = try Configuration.init(allocator, std.testing.io, &testMap);
     defer config_from_env.deinit();
     Configuration.set(config_from_env);
 
@@ -736,7 +802,7 @@ test "ConfigurationMeterProvider with SDK disabled" {
     defer env_map.deinit();
 
     // Create configuration with SDK disabled
-    var config_from_env = try Configuration.init(allocator, &env_map);
+    var config_from_env = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config_from_env.deinit();
 
     config_from_env.sdk_disabled = true;
@@ -764,7 +830,7 @@ test "Configuration LoggerProvider with SDK disabled" {
     defer env_map.deinit();
 
     // Create configuration with SDK disabled
-    var config_from_env = try Configuration.init(allocator, &env_map);
+    var config_from_env = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config_from_env.deinit();
 
     config_from_env.sdk_disabled = true;
@@ -800,7 +866,7 @@ test "Configuration SDK disabled with OTEL_SDK_DISABLED=false" {
     defer env_map.deinit();
 
     // Create configuration with SDK explicitly enabled
-    var config_from_env = try Configuration.init(allocator, &env_map);
+    var config_from_env = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config_from_env.deinit();
 
     config_from_env.sdk_disabled = false;
@@ -835,7 +901,7 @@ test "Configuration SDK disabled by default is false" {
     defer env_map.deinit();
 
     // Don't set OTEL_SDK_DISABLED - should default to false
-    var config_from_env = try Configuration.init(allocator, &env_map);
+    var config_from_env = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config_from_env.deinit();
 
     // Verify SDK is enabled by default

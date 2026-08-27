@@ -21,7 +21,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Create a composite propagator from the global configuration
     // This reads OTEL_PROPAGATORS environment variable
-    var propagator = try sdk.propagation.createGlobalPropagator(allocator, init.environ_map);
+    var propagator = try sdk.propagation.createGlobalPropagator(allocator, init.io, init.environ_map);
     defer propagator.deinit();
 
     std.debug.print("Propagator initialized from configuration\n", .{});

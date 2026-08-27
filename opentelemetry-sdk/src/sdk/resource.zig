@@ -297,3 +297,41 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES when OTEL_SERVICE_NAME not set"
     try std.testing.expectEqualStrings("key1", resource[1].key);
     try std.testing.expectEqualStrings("value1", resource[1].value.string);
 }
+
+test "service.name from OTEL_RESOURCE_ATTRIBUTES survives resource building" {
+    const allocator = std.testing.allocator;
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "service.name=checkout,host.name=server-1");
+
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
+    defer config.deinit();
+
+    const resource = try buildFromConfig(allocator, config);
+    defer freeResource(allocator, resource);
+
+    // service.name is resolved once in the configuration, so it is emitted exactly once.
+    try std.testing.expectEqual(@as(usize, 2), resource.len);
+    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings("checkout", resource[0].value.string);
+    try std.testing.expectEqualStrings("host.name", resource[1].key);
+    try std.testing.expectEqualStrings("server-1", resource[1].value.string);
+}
+
+test "service.name defaults to unknown_service when nothing is configured" {
+    const allocator = std.testing.allocator;
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
+    defer config.deinit();
+
+    const resource = try buildFromConfig(allocator, config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(@as(usize, 1), resource.len);
+    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expect(std.mem.startsWith(u8, resource[0].value.string, "unknown_service"));
+}

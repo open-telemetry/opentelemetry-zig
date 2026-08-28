@@ -12,7 +12,7 @@ const SerializableLogRecord = struct {
     span_id: ?[8]u8,
     severity_number: ?u8,
     severity_text: ?[]const u8,
-    body: ?[]const u8,
+    body: ?logs.Body,
     scope: InstrumentationScope,
 
     pub fn fromLogRecord(log_record: logs.ReadableLogRecord) SerializableLogRecord {
@@ -92,7 +92,7 @@ test "WriterExporter" {
         var log_record: logs.ReadWriteLogRecord = .{
             .scope = scope,
             .observed_timestamp = 0,
-            .body = "test log message",
+            .body = .{ .string = "test log message" },
             .severity_number = 9,
             .severity_text = "INFO",
         };

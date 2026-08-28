@@ -429,7 +429,7 @@ test "SimpleLogRecordProcessor basic functionality" {
     var log_record: logs.ReadWriteLogRecord = .{
         .scope = scope,
         .observed_timestamp = 0,
-        .body = "test log message",
+        .body = .{ .string = "test log message" },
         .severity_number = 9,
     };
     defer log_record.deinit(allocator);
@@ -441,7 +441,7 @@ test "SimpleLogRecordProcessor basic functionality" {
 
     // Verify the log was exported
     try std.testing.expectEqual(@as(usize, 1), mock_exporter.exported_logs.items.len);
-    try std.testing.expectEqualStrings("test log message", mock_exporter.exported_logs.items[0].body.?);
+    try std.testing.expectEqualStrings("test log message", mock_exporter.exported_logs.items[0].body.?.string);
     try std.testing.expectEqual(@as(u8, 9), mock_exporter.exported_logs.items[0].severity_number.?);
 }
 
@@ -481,7 +481,7 @@ test "SimpleLogRecordProcessor with attributes" {
     var log_record: logs.ReadWriteLogRecord = .{
         .scope = scope,
         .observed_timestamp = 0,
-        .body = "log with attributes",
+        .body = .{ .string = "log with attributes" },
     };
     defer log_record.deinit(allocator);
 
@@ -554,7 +554,7 @@ test "BatchingLogRecordProcessor basic functionality" {
         var log_record: logs.ReadWriteLogRecord = .{
             .scope = scope,
             .observed_timestamp = 0,
-            .body = "test log message",
+            .body = .{ .string = "test log message" },
             .severity_number = 9,
         };
         defer log_record.deinit(allocator);
@@ -659,7 +659,7 @@ test "integration: multiple processors in pipeline" {
     var log_record: logs.ReadWriteLogRecord = .{
         .scope = scope,
         .observed_timestamp = 0,
-        .body = "test message",
+        .body = .{ .string = "test message" },
         .severity_number = 9,
     };
     defer log_record.deinit(allocator);

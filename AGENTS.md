@@ -42,37 +42,14 @@ inventing semantics.
 
 ## Commands
 
-```sh
-# Build the SDK static library into zig-out/lib/
-zig build
-
-# Formatting check - this is a CI gate, always run it before committing
-zig fmt .
-
-# Unit tests
-zig build sdk-test
-zig build semconv-test
-zig build proto-test
-
-# A single test, matched by name
-zig build sdk-test -- "counter"
-
-# Build and run the examples
-zig build sdk-examples
-zig build sdk-examples -Dexamples-filter=trace
-
-# Integration tests and semconv/proto generation require Docker
-zig build sdk-integration
-
-# Benchmarks
-zig build sdk-benchmarks -Doptimize=ReleaseFast
-```
-
-`zig build --help` lists every step. See [CONTRIBUTING.md](./CONTRIBUTING.md) for the full set of
-test, example and benchmark options.
+Don't guess the build steps of project. The root [README.md](./README.md) is the entry point: it links to each
+module's README and to [CONTRIBUTING.md](./CONTRIBUTING.md), which documents how to build, test,
+run the examples and run the benchmarks, along with the options each step accepts. Read those thoroughly before 
+running anything, and `zig build --help` for the full list of steps in the current checkout.
 
 ## Guidelines
 
+- `zig fmt .` is a CI gate. Always run it before committing.
 - The Zig version used for development is declared as `.minimum_zig_version` in
   [`build.zig.zon`](./build.zig.zon). Zig is pre-1.0: do not work around a compile error by
   guessing at standard library APIs from an older release — check the version actually in use.

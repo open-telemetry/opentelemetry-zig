@@ -48,6 +48,7 @@ pub const ReadWriteLogRecord = struct {
     attributes: std.ArrayListUnmanaged(Attribute) = .empty,
     resource: ?[]const Attribute = null,
     location: ?std.builtin.SourceLocation = null,
+    event_name: ?[]const u8 = null,
 
     const Self = @This();
 
@@ -76,6 +77,7 @@ pub const ReadWriteLogRecord = struct {
             .resource = self.resource,
             .scope = self.scope,
             .location = self.location,
+            .event_name = self.event_name,
         };
     }
 
@@ -123,6 +125,7 @@ pub const ReadWriteLogRecord = struct {
             .resource = self.resource,
             .scope = self.scope,
             .location = self.location,
+            .event_name = if (self.event_name) |en| try allocator.dupe(u8, en) else null,
         };
     }
 };
@@ -149,6 +152,7 @@ pub const ReadableLogRecord = struct {
     /// points into the Logger's scope
     scope: InstrumentationScope,
     location: ?std.builtin.SourceLocation,
+    event_name: ?[]const u8,
 };
 
 /// SDK LoggerProvider implementation
@@ -418,16 +422,20 @@ pub const Logger = struct {
         options: Options,
     ) void {
         if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) return;
-        self.emitRecord(severity, .{ .string = body }, options);
+        self.emitRecord(severity, null, .{ .string = body }, options);
     }
 
     /// Emit a structured log record whose body is a set of key-value fields.
     /// `data` must be an anonymous struct literal; each field becomes a structured entry in the body.
     /// Field values must be one of: `[]const u8`, `bool`, an integer, or a float (or comptime equivalents).
     ///
+    /// `event_name` identifies the type of event this record represents (e.g. "http.request").
+    /// Structured logs without an event name are hard to navigate as an end-user when viewing logs,
+    /// so prefer passing one; pass `null` only when no meaningful name applies.
+    ///
     /// Example:
     /// ```zig
-    /// logger.emitStructured(.info, .{
+    /// logger.emitStructured(.info, "http.request", .{
     ///     .@"http.method" = "GET",
     ///     .@"http.status" = 200,
     /// }, .{});
@@ -435,6 +443,7 @@ pub const Logger = struct {
     pub fn emitStructured(
         self: *Self,
         severity: ?Severity,
+        event_name: ?[]const u8,
         data: anytype,
         options: Options,
     ) void {
@@ -448,10 +457,10 @@ pub const Logger = struct {
                 .value = structFieldToAttributeValue(@field(data, field.name)),
             };
         }
-        self.emitRecord(severity, .{ .structured = &body_attrs }, options);
+        self.emitRecord(severity, event_name, .{ .structured = &body_attrs }, options);
     }
 
-    fn emitRecord(self: *Self, severity: ?Severity, body: Body, options: Options) void {
+    fn emitRecord(self: *Self, severity: ?Severity, event_name: ?[]const u8, body: Body, options: Options) void {
         const context = options.context orelse getCurrentContext();
 
         // Spec: trace context fields MUST be populated from the resolved Context.
@@ -471,6 +480,7 @@ pub const Logger = struct {
             .resource = self.provider.resource,
             .scope = self.scope,
             .location = options.location,
+            .event_name = event_name,
         };
         defer log_record.deinit(self.allocator);
 
@@ -975,10 +985,12 @@ test "Logger.emitStructured produces structured body with correct fields" {
         found_status: bool = false,
         found_success: bool = false,
         found_duration: bool = false,
+        event_name: ?[]const u8 = null,
 
         pub fn exportLogs(ctx: *anyopaque, records: []ReadableLogRecord) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
             if (records.len == 0) return;
+            self.event_name = records[0].event_name;
             const sb = switch (records[0].body orelse return) {
                 .structured => |kvs| kvs,
                 else => return,
@@ -1022,7 +1034,7 @@ test "Logger.emitStructured produces structured body with correct fields" {
     const scope = InstrumentationScope{ .name = "test-logger" };
     const logger = try provider.getLogger(scope);
 
-    logger.emitStructured(.info, .{
+    logger.emitStructured(.info, "http.request", .{
         .@"http.method" = "GET",
         .@"http.status" = 200,
         .@"http.success" = true,
@@ -1034,4 +1046,5 @@ test "Logger.emitStructured produces structured body with correct fields" {
     try std.testing.expect(mock_exporter.found_status);
     try std.testing.expect(mock_exporter.found_success);
     try std.testing.expect(mock_exporter.found_duration);
+    try std.testing.expectEqualStrings("http.request", mock_exporter.event_name.?);
 }

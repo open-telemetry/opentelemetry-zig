@@ -274,6 +274,7 @@ pub const OTLPExporter = struct {
             .flags = log_record.trace_flags orelse 0,
             .trace_id = (trace_id_str),
             .span_id = (span_id_str),
+            .event_name = log_record.event_name orelse "",
         };
     }
 
@@ -434,6 +435,7 @@ test "Log record to OTLP conversion with all fields" {
         .resource = null,
         .scope = scope,
         .location = .{ .module = "mylib", .file = "src/mylib.zig", .fn_name = "doWork", .line = 42, .column = 4 },
+        .event_name = "test.event",
     };
 
     var otlp_log = try exporter.logRecordToOTLP(log_record);
@@ -463,6 +465,7 @@ test "Log record to OTLP conversion with all fields" {
     try std.testing.expectEqual(@as(i64, 42), otlp_log.attributes.items[4].value.?.value.?.int_value);
     try std.testing.expectEqualStrings("code.column.number", otlp_log.attributes.items[5].key);
     try std.testing.expectEqual(@as(i64, 4), otlp_log.attributes.items[5].value.?.value.?.int_value);
+    try std.testing.expectEqualStrings("test.event", otlp_log.event_name);
 }
 
 test "Log records grouped by instrumentation scope" {
@@ -496,6 +499,7 @@ test "Log records grouped by instrumentation scope" {
             .resource = null,
             .scope = scope1,
             .location = null,
+            .event_name = null,
         },
         logs.ReadableLogRecord{
             .timestamp = null,
@@ -510,6 +514,7 @@ test "Log records grouped by instrumentation scope" {
             .resource = null,
             .scope = scope2,
             .location = null,
+            .event_name = null,
         },
         logs.ReadableLogRecord{
             .timestamp = null,
@@ -524,6 +529,7 @@ test "Log records grouped by instrumentation scope" {
             .resource = null,
             .scope = scope1,
             .location = null,
+            .event_name = null,
         },
     };
 
@@ -597,6 +603,7 @@ test "Resource attributes in OTLP export" {
             .resource = resource_attrs,
             .scope = scope,
             .location = null,
+            .event_name = null,
         },
     };
 
@@ -646,6 +653,7 @@ test "Trace context binary encoding" {
         .resource = null,
         .scope = scope,
         .location = null,
+        .event_name = null,
     };
 
     var otlp_log = try exporter.logRecordToOTLP(log_record);
@@ -692,6 +700,7 @@ test "Memory cleanup verification" {
             .resource = null,
             .scope = scope,
             .location = null,
+            .event_name = null,
         },
     };
 

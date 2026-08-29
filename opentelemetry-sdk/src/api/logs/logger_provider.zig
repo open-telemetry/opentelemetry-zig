@@ -409,6 +409,11 @@ pub const Logger = struct {
         /// file, function name, line, and column at compile time.
         location: ?std.builtin.SourceLocation = null,
 
+        /// Name identifying the class/type of event this record represents (e.g. "http.request").
+        /// A record with a non-empty event name is an OTel "Event"; see
+        /// https://opentelemetry.io/docs/specs/otel/logs/data-model/#events.
+        event_name: ?[]const u8 = null,
+
         /// Propagation context forwarded to log processors on emit.
         /// If null, the active thread-local context is used.
         context: ?Context = null,
@@ -422,28 +427,23 @@ pub const Logger = struct {
         options: Options,
     ) void {
         if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) return;
-        self.emitRecord(severity, null, .{ .string = body }, options);
+        self.emitRecord(severity, .{ .string = body }, options);
     }
 
     /// Emit a structured log record whose body is a set of key-value fields.
     /// `data` must be an anonymous struct literal; each field becomes a structured entry in the body.
     /// Field values must be one of: `[]const u8`, `bool`, an integer, or a float (or comptime equivalents).
     ///
-    /// `event_name` identifies the type of event this record represents (e.g. "http.request").
-    /// Structured logs without an event name are hard to navigate as an end-user when viewing logs,
-    /// so prefer passing one; pass `null` only when no meaningful name applies.
-    ///
     /// Example:
     /// ```zig
-    /// logger.emitStructured(.info, "http.request", .{
+    /// logger.emitStructured(.info, .{
     ///     .@"http.method" = "GET",
     ///     .@"http.status" = 200,
-    /// }, .{});
+    /// }, .{ .event_name = "http.request" });
     /// ```
     pub fn emitStructured(
         self: *Self,
         severity: ?Severity,
-        event_name: ?[]const u8,
         data: anytype,
         options: Options,
     ) void {
@@ -457,10 +457,10 @@ pub const Logger = struct {
                 .value = structFieldToAttributeValue(@field(data, field.name)),
             };
         }
-        self.emitRecord(severity, event_name, .{ .structured = &body_attrs }, options);
+        self.emitRecord(severity, .{ .structured = &body_attrs }, options);
     }
 
-    fn emitRecord(self: *Self, severity: ?Severity, event_name: ?[]const u8, body: Body, options: Options) void {
+    fn emitRecord(self: *Self, severity: ?Severity, body: Body, options: Options) void {
         const context = options.context orelse getCurrentContext();
 
         // Spec: trace context fields MUST be populated from the resolved Context.
@@ -480,7 +480,7 @@ pub const Logger = struct {
             .resource = self.provider.resource,
             .scope = self.scope,
             .location = options.location,
-            .event_name = event_name,
+            .event_name = options.event_name,
         };
         defer log_record.deinit(self.allocator);
 
@@ -1034,12 +1034,12 @@ test "Logger.emitStructured produces structured body with correct fields" {
     const scope = InstrumentationScope{ .name = "test-logger" };
     const logger = try provider.getLogger(scope);
 
-    logger.emitStructured(.info, "http.request", .{
+    logger.emitStructured(.info, .{
         .@"http.method" = "GET",
         .@"http.status" = 200,
         .@"http.success" = true,
         .@"http.duration_ms" = 12.5,
-    }, .{});
+    }, .{ .event_name = "http.request" });
 
     try std.testing.expectEqual(@as(usize, 4), mock_exporter.field_count);
     try std.testing.expect(mock_exporter.found_method);

@@ -310,9 +310,9 @@ pub const Tracer = struct {
         }
 
         const trace_flags = if (parent_span_context) |parent_sc|
-            if (parent_sc.isValid()) parent_sc.trace_flags else trace_api.TraceFlags.default().setSampled()
+            if (parent_sc.isValid()) parent_sc.trace_flags else trace_api.TraceFlags.sampled()
         else
-            trace_api.TraceFlags.default().setSampled();
+            trace_api.TraceFlags.sampled();
 
         // Create span context
         const span_context = trace_api.SpanContext.init(

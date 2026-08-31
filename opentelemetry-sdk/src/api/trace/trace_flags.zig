@@ -21,6 +21,13 @@ pub const TraceFlags = struct {
         return Self{ .value = 0 };
     }
 
+    /// Flags for a span the SDK records and exports.
+    /// Distinct from `default()`, which is the zero value used for invalid
+    /// and non-recording span contexts.
+    pub fn sampled() Self {
+        return Self{ .value = SAMPLED_FLAG };
+    }
+
     /// Check if the sampled flag is set
     pub fn isSampled(self: Self) bool {
         return (self.value & SAMPLED_FLAG) != 0;
@@ -72,4 +79,13 @@ test "TraceFlags operations" {
     flags = flags.clearRandom();
     try std.testing.expect(!flags.isSampled());
     try std.testing.expect(!flags.isRandom());
+}
+
+test "TraceFlags sampled constructor" {
+    try std.testing.expect(TraceFlags.sampled().isSampled());
+    try std.testing.expect(!TraceFlags.sampled().isRandom());
+    try std.testing.expectEqual(
+        TraceFlags.default().setSampled().value,
+        TraceFlags.sampled().value,
+    );
 }

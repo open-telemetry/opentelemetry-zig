@@ -268,6 +268,26 @@ pub const LogsConfig = struct {
     }
 };
 
+/// Selects which resource detectors contribute attributes to the resource.
+///
+/// Every detector is enabled by default: the attributes they provide are marked "Required" or
+/// "Recommended" by the semantic conventions, and both requirement levels mean the attribute is
+/// expected unless the user opts out.
+/// See https://opentelemetry.io/docs/specs/semconv/general/attribute-requirement-level/#requirement-levels
+pub const ResourceDetectors = struct {
+    /// telemetry.sdk.name, telemetry.sdk.language and telemetry.sdk.version.
+    sdk: bool = true,
+    /// host.arch.
+    host: bool = true,
+    /// os.type.
+    os: bool = true,
+    /// process.runtime.name and process.runtime.version.
+    process: bool = true,
+
+    /// No detector at all: the resource is then made of the configured attributes only.
+    pub const none: ResourceDetectors = .{ .sdk = false, .host = false, .os = false, .process = false };
+};
+
 /// Global SDK Configuration
 pub const Configuration = @This();
 
@@ -275,6 +295,7 @@ allocator: std.mem.Allocator,
 
 // Global settings
 sdk_disabled: bool,
+resource_detectors: ResourceDetectors,
 service_name: ?[]const u8,
 resource_attributes: ?[]const u8,
 log_level: LogLevel,
@@ -308,6 +329,7 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, env_map: *const EnvMap) !*
     cfg.* = Configuration{
         .allocator = allocator,
         .sdk_disabled = parseBool(env_map, "OTEL_SDK_DISABLED") orelse false,
+        .resource_detectors = parseResourceDetectors(env_map),
         .service_name = try resolveServiceName(allocator, io, env_map),
         .resource_attributes = if (env_map.get("OTEL_RESOURCE_ATTRIBUTES")) |s|
             try allocator.dupe(u8, s)
@@ -411,6 +433,40 @@ fn parseBool(env_map: *const EnvMap, key: []const u8) ?bool {
 fn parseInt(comptime T: type, env_map: *const EnvMap, key: []const u8) ?T {
     const value = env_map.get(key) orelse return null;
     return std.fmt.parseInt(T, value, 10) catch null;
+}
+
+/// Parse OTEL_EXPERIMENTAL_RESOURCE_DETECTORS (comma-separated detector names).
+/// Detectors are opt-out: when the variable is unset every detector runs, when it is set only the
+/// listed ones do.
+/// Recognized names: "sdk", "host", "os", "process", "*" for every detector and "none" for no
+/// detector at all. Unknown names are ignored with a warning.
+/// An empty value is interpreted as if the variable was unset, as mandated by the specification:
+/// https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/#parsing-empty-value
+fn parseResourceDetectors(env_map: *const EnvMap) ResourceDetectors {
+    const value = env_map.get("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS") orelse return .{};
+    const list = std.mem.trim(u8, value, &std.ascii.whitespace);
+    if (list.len == 0) return .{};
+
+    var detectors: ResourceDetectors = .none;
+    var iter = std.mem.splitScalar(u8, list, ',');
+    while (iter.next()) |item| {
+        const name = std.mem.trim(u8, item, &std.ascii.whitespace);
+        if (name.len == 0) continue;
+        if (std.mem.eql(u8, name, "*")) return .{};
+        if (std.ascii.eqlIgnoreCase(name, "sdk")) {
+            detectors.sdk = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "host")) {
+            detectors.host = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "os")) {
+            detectors.os = true;
+        } else if (std.ascii.eqlIgnoreCase(name, "process")) {
+            detectors.process = true;
+        } else if (!std.ascii.eqlIgnoreCase(name, "none")) {
+            // "none" enables no detector, anything else is a typo or an unsupported detector.
+            std.log.warn("Unknown resource detector: {s}", .{name});
+        }
+    }
+    return detectors;
 }
 
 /// Parse comma-separated list of propagators
@@ -552,6 +608,72 @@ test "parsePropagators - with whitespace" {
     try std.testing.expectEqual(TracePropagator.tracecontext, propagators[0]);
     try std.testing.expectEqual(TracePropagator.baggage, propagators[1]);
     try std.testing.expectEqual(TracePropagator.b3, propagators[2]);
+}
+
+test "parseResourceDetectors - unset enables every detector" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    try std.testing.expectEqual(ResourceDetectors{}, parseResourceDetectors(&env_map));
+}
+
+test "parseResourceDetectors - only the listed detectors are enabled" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", " OS , process ");
+
+    try std.testing.expectEqual(
+        ResourceDetectors{ .sdk = false, .host = false, .os = true, .process = true },
+        parseResourceDetectors(&env_map),
+    );
+}
+
+test "parseResourceDetectors - wildcard enables every detector" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "*");
+
+    try std.testing.expectEqual(ResourceDetectors{}, parseResourceDetectors(&env_map));
+}
+
+test "parseResourceDetectors - none disables every detector" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "none");
+
+    try std.testing.expectEqual(ResourceDetectors.none, parseResourceDetectors(&env_map));
+}
+
+test "parseResourceDetectors - an empty value is the same as unset" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "");
+    try std.testing.expectEqual(ResourceDetectors{}, parseResourceDetectors(&env_map));
+
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "  ");
+    try std.testing.expectEqual(ResourceDetectors{}, parseResourceDetectors(&env_map));
+}
+
+test "parseResourceDetectors - unknown detectors are ignored" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "container,sdk");
+
+    try std.testing.expectEqual(
+        ResourceDetectors{ .sdk = true, .host = false, .os = false, .process = false },
+        parseResourceDetectors(&env_map),
+    );
 }
 
 test "TraceConfig.fromEnv - defaults" {

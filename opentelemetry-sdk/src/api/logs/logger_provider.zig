@@ -101,7 +101,7 @@ pub const ReadWriteLogRecord = struct {
                 const copy = try allocator.alloc(Attribute, kvs.len);
                 for (kvs, copy) |source, *dest| {
                     dest.* = .{
-                        .key = source.key,
+                        .key = source.key, // shallow copied because it is a static string
                         .value = switch (source.value) {
                             .string => |s| .{ .string = try allocator.dupe(u8, s) },
                             else => source.value,
@@ -460,6 +460,8 @@ pub const Logger = struct {
         self.emitRecord(severity, .{ .structured = &body_attrs }, options);
     }
 
+    // If this function is made public, the body's keys will need to be deep copied
+    // as it would become possible to use dynamically allocated strings as keys
     fn emitRecord(self: *Self, severity: ?Severity, body: Body, options: Options) void {
         const context = options.context orelse getCurrentContext();
 

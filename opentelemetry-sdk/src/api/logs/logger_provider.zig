@@ -12,8 +12,9 @@ const SimpleLogRecordProcessor = @import("../../sdk/logs/log_record_processor.zi
 const BatchingLogRecordProcessor = @import("../../sdk/logs/log_record_processor.zig").BatchingLogRecordProcessor;
 const LogRecordProcessor = @import("../../sdk/logs/log_record_processor.zig").LogRecordProcessor;
 const Attribute = @import("../../attributes.zig").Attribute;
-const AttributeValue = @import("../../attributes.zig").AttributeValue;
 const Attributes = @import("../../attributes.zig").Attributes;
+const flattenAttributes = @import("../../attributes.zig").flatten;
+const attributesFromPairs = @import("../../attributes.zig").fromPairs;
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const context_api = @import("../context/context.zig");
 const Context = context_api.Context;
@@ -303,32 +304,6 @@ pub const LoggerProvider = struct {
     }
 };
 
-fn structFieldToAttributeValue(v: anytype) AttributeValue {
-    const T = @TypeOf(v);
-    return switch (@typeInfo(T)) {
-        .pointer => |p| switch (p.size) {
-            .slice => if (p.child == u8)
-                .{ .string = v }
-            else
-                @compileError("unsupported slice type for structured log field: " ++ @typeName(T)),
-            .one => switch (@typeInfo(p.child)) {
-                .array => |a| if (a.child == u8)
-                    .{ .string = v } // *const [N:0]u8 string literal
-                else
-                    @compileError("unsupported array type for structured log field: " ++ @typeName(T)),
-                else => @compileError("unsupported pointer type for structured log field: " ++ @typeName(T)),
-            },
-            else => @compileError("unsupported pointer type for structured log field: " ++ @typeName(T)),
-        },
-        .bool => .{ .bool = v },
-        .int => .{ .int = @as(i64, v) },
-        .comptime_int => .{ .int = @as(i64, v) },
-        .float => .{ .double = @as(f64, v) },
-        .comptime_float => .{ .double = @as(f64, v) },
-        else => @compileError("unsupported type for structured log field: " ++ @typeName(T)),
-    };
-}
-
 /// Severity level for a log record.
 ///
 /// Simple variants map to the primary sub-level of each OTel severity group:
@@ -431,15 +406,28 @@ pub const Logger = struct {
     }
 
     /// Emit a structured log record whose body is a set of key-value fields.
-    /// `data` must be an anonymous struct literal; each field becomes a structured entry in the body.
+    /// `data` must be an anonymous struct literal; each field becomes a structured entry in the
+    /// body, and nested struct literals are flattened into dot-delimited keys at compile time
+    /// (`.{ .cache = .{ .hit = false } }` becomes the body field `cache.hit`).
     /// Field values must be one of: `[]const u8`, `bool`, an integer, or a float (or comptime equivalents).
+    ///
+    /// The body carries the payload of the event. Anything covered by the semantic conventions
+    /// belongs in `options.attributes` instead, which backends index and which conventions
+    /// require for structured event details: see
+    /// https://opentelemetry.io/docs/specs/semconv/general/events/
+    /// `sdk.attributes.fromPairs` builds that list from convention definitions, and
+    /// `sdk.attributes.flatten` from a struct literal for the attributes an application owns.
     ///
     /// Example:
     /// ```zig
+    /// const attrs = sdk.attributes.fromPairs(.{
+    ///     .{ semconv.attribute.http_request_method, .get },
+    ///     .{ semconv.attribute.http_response_status_code, 200 },
+    /// });
     /// logger.emitStructured(.info, .{
-    ///     .@"http.method" = "GET",
-    ///     .@"http.status" = 200,
-    /// }, .{ .event_name = "http.request" });
+    ///     .cache = .{ .hit = false, .lookup_ms = 0.4 },
+    ///     .upstream_retries = 2,
+    /// }, .{ .event_name = "app.request.handled", .attributes = &attrs });
     /// ```
     pub fn emitStructured(
         self: *Self,
@@ -449,14 +437,9 @@ pub const Logger = struct {
     ) void {
         if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) return;
 
-        const fields = @typeInfo(@TypeOf(data)).@"struct".fields;
-        var body_attrs: [fields.len]Attribute = undefined;
-        inline for (fields, 0..) |field, i| {
-            body_attrs[i] = .{
-                .key = field.name,
-                .value = structFieldToAttributeValue(@field(data, field.name)),
-            };
-        }
+        // Borrowed by the record for the duration of emitRecord, which is the only
+        // window in which processors see it.
+        const body_attrs = flattenAttributes(data);
         self.emitRecord(severity, .{ .structured = &body_attrs }, options);
     }
 
@@ -977,16 +960,18 @@ test "LoggerProvider with config from environment" {
     try std.testing.expectEqual(@as(usize, @intCast(lc.blrp_max_export_batch_size)), batch_processor.max_export_batch_size);
 }
 
-test "Logger.emitStructured produces structured body with correct fields" {
+test "Logger.emitStructured flattens nested body fields and keeps attributes separate" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
     const MockExporter = struct {
         field_count: usize = 0,
-        found_method: bool = false,
-        found_status: bool = false,
-        found_success: bool = false,
-        found_duration: bool = false,
+        found_cache_hit: bool = false,
+        found_lookup_ms: bool = false,
+        found_retries: bool = false,
+        attribute_count: usize = 0,
+        method: ?[]const u8 = null,
+        status: ?i64 = null,
         event_name: ?[]const u8 = null,
 
         pub fn exportLogs(ctx: *anyopaque, records: []ReadableLogRecord) anyerror!void {
@@ -999,14 +984,18 @@ test "Logger.emitStructured produces structured body with correct fields" {
             };
             self.field_count = sb.len;
             for (sb) |attr| {
-                if (std.mem.eql(u8, attr.key, "http.method"))
-                    self.found_method = std.mem.eql(u8, attr.value.string, "GET");
-                if (std.mem.eql(u8, attr.key, "http.status"))
-                    self.found_status = attr.value.int == 200;
-                if (std.mem.eql(u8, attr.key, "http.success"))
-                    self.found_success = attr.value.bool == true;
-                if (std.mem.eql(u8, attr.key, "http.duration_ms"))
-                    self.found_duration = attr.value.double == 12.5;
+                if (std.mem.eql(u8, attr.key, "cache.hit"))
+                    self.found_cache_hit = attr.value.bool == false;
+                if (std.mem.eql(u8, attr.key, "cache.lookup_ms"))
+                    self.found_lookup_ms = attr.value.double == 0.4;
+                if (std.mem.eql(u8, attr.key, "upstream_retries"))
+                    self.found_retries = attr.value.int == 2;
+            }
+            self.attribute_count = records[0].attributes.len;
+            for (records[0].attributes) |attr| {
+                // Both values are string literals in this test, so they outlive the callback.
+                if (std.mem.eql(u8, attr.key, "http.request.method")) self.method = attr.value.string;
+                if (std.mem.eql(u8, attr.key, "http.response.status_code")) self.status = attr.value.int;
             }
         }
 
@@ -1036,17 +1025,42 @@ test "Logger.emitStructured produces structured body with correct fields" {
     const scope = InstrumentationScope{ .name = "test-logger" };
     const logger = try provider.getLogger(scope);
 
+    // Semantic convention fields go in the attributes, the event payload in the body.
+    // Their names are spelled out here because the SDK does not depend on the semconv
+    // module; applications pass its definitions to fromPairs instead, as the
+    // examples/logs/structured.zig example does.
+    const attrs = attributesFromPairs(.{
+        .{ "http.request.method", "GET" },
+        .{ "http.response.status_code", 200 },
+    });
     logger.emitStructured(.info, .{
-        .@"http.method" = "GET",
-        .@"http.status" = 200,
-        .@"http.success" = true,
-        .@"http.duration_ms" = 12.5,
-    }, .{ .event_name = "http.request" });
+        .cache = .{ .hit = false, .lookup_ms = 0.4 },
+        .upstream_retries = 2,
+    }, .{ .event_name = "app.request.handled", .attributes = &attrs });
 
-    try std.testing.expectEqual(@as(usize, 4), mock_exporter.field_count);
-    try std.testing.expect(mock_exporter.found_method);
-    try std.testing.expect(mock_exporter.found_status);
-    try std.testing.expect(mock_exporter.found_success);
-    try std.testing.expect(mock_exporter.found_duration);
-    try std.testing.expectEqualStrings("http.request", mock_exporter.event_name.?);
+    try std.testing.expectEqual(@as(usize, 3), mock_exporter.field_count);
+    try std.testing.expect(mock_exporter.found_cache_hit);
+    try std.testing.expect(mock_exporter.found_lookup_ms);
+    try std.testing.expect(mock_exporter.found_retries);
+    try std.testing.expectEqual(@as(usize, 2), mock_exporter.attribute_count);
+    try std.testing.expectEqualStrings("GET", mock_exporter.method.?);
+    try std.testing.expectEqual(@as(i64, 200), mock_exporter.status.?);
+    try std.testing.expectEqualStrings("app.request.handled", mock_exporter.event_name.?);
+
+    // The attribute list can also be built inline: the temporary lives until the
+    // enclosing statement ends, which covers the whole synchronous emit.
+    logger.emitStructured(.info, .{
+        .cache = .{ .hit = true, .lookup_ms = 0.1 },
+        .upstream_retries = 0,
+    }, .{
+        .event_name = "app.request.handled",
+        .attributes = &attributesFromPairs(.{
+            .{ "http.request.method", "POST" },
+            .{ "http.response.status_code", 204 },
+        }),
+    });
+
+    try std.testing.expectEqual(@as(usize, 2), mock_exporter.attribute_count);
+    try std.testing.expectEqualStrings("POST", mock_exporter.method.?);
+    try std.testing.expectEqual(@as(i64, 204), mock_exporter.status.?);
 }

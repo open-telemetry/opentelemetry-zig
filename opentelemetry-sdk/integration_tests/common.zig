@@ -1,8 +1,14 @@
 const std = @import("std");
 const clock = @import("clock");
+const integration_options = @import("integration_options");
 
 pub const COLLECTOR_HTTP_PORT = "4318";
 pub const COLLECTOR_GRPC_PORT = "4317";
+
+/// gRPC backend the SDK under test was built with (`-Dgrpc-provider`).
+/// Tests exercising the gRPC transport should skip themselves when it is
+/// `.none`, since every export then fails with UnimplementedTransportProtocol.
+pub const grpc_provider = integration_options.grpc_provider;
 
 /// Context for running integration tests with a containerized collector
 pub const TestContext = struct {

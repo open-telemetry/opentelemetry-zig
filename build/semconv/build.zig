@@ -66,7 +66,7 @@ fn addExamplesStep(b: *std.Build, semconv_mod: *std.Build.Module, info: Compilat
             }),
         });
 
-        helpers.wireExample(b, example_exe, "bin/semconv", step, run_step, null);
+        helpers.wireExample(b, example_exe, "bin/semconv", step, run_step, null, &.{});
     }
 }
 

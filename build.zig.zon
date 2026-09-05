@@ -41,6 +41,14 @@
             .hash = "N-V-__8AAIOkBQAVntdoElRMXVcOsnc-qJUZDDT8auh8Z3aj",
             .lazy = true,
         },
+        // Zig bindings to Google's libgrpc, backing the gRPC transport selected
+        // with `-Dgrpc-provider=libgrpc`. Lazy so builds using the default
+        // (`none`) never fetch it, nor the libgrpc sources it depends on.
+        .cgrpc_wrapper = .{
+            .url = "git+https://github.com/agagniere/cgrpc_wrapper?ref=zig-0.16#dad9b50c882b72fcd91cdd54f6970fb24f7cec69",
+            .hash = "cgrpc_wrapper-0.2.1-O5w4NSmZAAAhyEk5HbO_k5GKPsQQv93tlvZ9fozDc_Sn",
+            .lazy = true,
+        },
     },
     .paths = .{
         "build.zig",

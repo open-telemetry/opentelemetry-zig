@@ -893,7 +893,7 @@ pub fn Export(
 
             break :blk http_client.send(url, payload);
         },
-        .grpc => grpc_transport.send(allocator, otlp_payload.signal().grpcPath(), payload, .{
+        .grpc => grpc_transport.send(allocator, io, otlp_payload.signal().grpcPath(), payload, .{
             .endpoint = config.endpoint,
             .insecure = config.insecure,
             .timeout_sec = config.timeout_sec,

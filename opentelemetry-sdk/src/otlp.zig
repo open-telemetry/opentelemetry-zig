@@ -160,7 +160,7 @@ pub const Signal = enum {
                 .http_json => {
                     switch (self) {
                         inline else => |data| {
-                            return try protobuf.json.encode(data, .{}, .{ .emit_oneof_field_name = false }, allocator);
+                            return try encodeOtlpJson(data, allocator);
                         },
                     }
                 },
@@ -186,6 +186,72 @@ pub const Signal = enum {
         }
     };
 };
+
+const OtlpIdValue = struct {
+    field_start: usize,
+    value_start: usize,
+    value_end: usize,
+};
+
+fn nextOtlpIdValue(json: []const u8, start: usize) ?OtlpIdValue {
+    const fields = [_][]const u8{
+        "\"traceId\":\"",
+        "\"spanId\":\"",
+        "\"parentSpanId\":\"",
+    };
+    var next: ?OtlpIdValue = null;
+
+    for (fields) |field| {
+        const field_start = std.mem.indexOfPos(u8, json, start, field) orelse continue;
+        if (next != null and next.?.field_start <= field_start) continue;
+
+        const value_start = field_start + field.len;
+        const value_len = std.mem.indexOfScalar(u8, json[value_start..], '"') orelse continue;
+        next = .{
+            .field_start = field_start,
+            .value_start = value_start,
+            .value_end = value_start + value_len,
+        };
+    }
+
+    return next;
+}
+
+fn encodeOtlpIdsAsHex(json: []const u8, allocator: std.mem.Allocator) ![]u8 {
+    const digits = "0123456789abcdef";
+    var output = std.Io.Writer.Allocating.init(allocator);
+    errdefer output.deinit();
+
+    var cursor: usize = 0;
+    var search_from: usize = 0;
+    while (nextOtlpIdValue(json, search_from)) |match| {
+        try output.writer.writeAll(json[cursor..match.value_start]);
+
+        const encoded = json[match.value_start..match.value_end];
+        const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
+        var decoded: [16]u8 = undefined;
+        if (decoded_len > decoded.len) return error.InvalidOtlpIdentifier;
+        try std.base64.standard.Decoder.decode(decoded[0..decoded_len], encoded);
+
+        for (decoded[0..decoded_len]) |byte| {
+            try output.writer.writeByte(digits[byte >> 4]);
+            try output.writer.writeByte(digits[byte & 0x0f]);
+        }
+
+        cursor = match.value_end;
+        search_from = match.value_end;
+    }
+
+    try output.writer.writeAll(json[cursor..]);
+    return output.toOwnedSlice();
+}
+
+fn encodeOtlpJson(data: anytype, allocator: std.mem.Allocator) ![]const u8 {
+    const json = try protobuf.json.encode(data, .{}, .{ .emit_oneof_field_name = false }, allocator);
+    if (nextOtlpIdValue(json, 0) == null) return json;
+    defer allocator.free(json);
+    return encodeOtlpIdsAsHex(json, allocator);
+}
 
 test "otlp Signal.Data get payload bytes" {
     const allocator = std.testing.allocator;
@@ -937,6 +1003,50 @@ pub fn ExportFile(
     try file.writePositionalAll(io, payload, offset);
     try file.writePositionalAll(io, "\n", offset + payload.len);
     try file.sync(io);
+}
+
+test "OTLP JSON encodes trace identifiers as lowercase hex" {
+    const allocator = std.testing.allocator;
+    const trace_id = [16]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe };
+    const span_id = [8]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
+    const parent_span_id = [8]u8{ 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10 };
+
+    var attributes: std.ArrayList(pbcommon.KeyValue) = .empty;
+    defer attributes.deinit(allocator);
+    try attributes.append(allocator, .{
+        .key = "bytes",
+        .value = .{ .value = .{ .bytes_value = &span_id } },
+    });
+
+    var links: std.ArrayList(pbtrace.Span.Link) = .empty;
+    defer links.deinit(allocator);
+    try links.append(allocator, .{ .trace_id = &trace_id, .span_id = &span_id });
+
+    var spans: std.ArrayList(pbtrace.Span) = .empty;
+    defer spans.deinit(allocator);
+    try spans.append(allocator, .{
+        .trace_id = &trace_id,
+        .span_id = &span_id,
+        .parent_span_id = &parent_span_id,
+        .attributes = attributes,
+        .links = links,
+    });
+
+    var scope_spans: std.ArrayList(pbtrace.ScopeSpans) = .empty;
+    defer scope_spans.deinit(allocator);
+    try scope_spans.append(allocator, .{ .spans = spans });
+
+    var resource_spans: std.ArrayList(pbtrace.ResourceSpans) = .empty;
+    defer resource_spans.deinit(allocator);
+    try resource_spans.append(allocator, .{ .scope_spans = scope_spans });
+
+    const payload = try (Signal.Data{ .traces = .{ .resource_spans = resource_spans } }).toOwnedSlice(allocator, .http_json);
+    defer allocator.free(payload);
+
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, payload, "\"traceId\":\"0123456789abcdef1032547698badcfe\""));
+    try std.testing.expectEqual(@as(usize, 2), std.mem.count(u8, payload, "\"spanId\":\"0123456789abcdef\""));
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"parentSpanId\":\"fedcba9876543210\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, payload, "\"bytesValue\":\"ASNFZ4mrze8=\"") != null);
 }
 
 // Integration tests

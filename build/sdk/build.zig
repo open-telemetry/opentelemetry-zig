@@ -10,17 +10,6 @@ const sdk_root = "opentelemetry-sdk";
 
 const GrpcProvider = enum { none, libgrpc };
 
-// The gRPC backend selected with `-Dgrpc-provider`, and what the binaries
-// linking it need to run.
-const GrpcBackend = struct {
-    provider: GrpcProvider,
-    // Installs of the shared libraries the backend pulls in. libgrpc is built
-    // as a shared library in the build cache, where only a build-root-relative
-    // rpath points at it; installing it under the prefix keeps the binaries in
-    // zig-out able to load it from any working directory.
-    shared_libs: []const *std.Build.Step.InstallArtifact = &.{},
-};
-
 // Sets up the dependencies, modules and static library for the OpenTelemetry
 // SDK, and installs its artifacts and headers.
 pub fn Setup(
@@ -60,7 +49,7 @@ pub fn Setup(
 // Returns the selected gRPC backend, or null when a lazy dependency it needs
 // is not fetched yet; the caller must then stop configuring, letting Zig fetch
 // it and re-run the build.
-fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !?GrpcBackend {
+fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !?GrpcProvider {
     const clock_mod = b.createModule(.{
         .root_source_file = b.path(sdk_root ++ "/src/clock.zig"),
         .target = info.target,
@@ -70,7 +59,6 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !?
     try dependencies.put("clock", clock_mod);
 
     const grpc_provider = b.option(GrpcProvider, "grpc-provider", "Which gRPC implementation to use, if any") orelse .none;
-    var grpc: GrpcBackend = .{ .provider = grpc_provider };
 
     // The selected gRPC backend is exposed to the SDK as the `grpc_transport`
     // module. Every backend's entry file lives under `opentelemetry-sdk/src/grpc/`
@@ -87,18 +75,6 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !?
                 .target = info.target,
                 .optimize = info.optimize,
             }) orelse return null;
-
-            // The very same libgrpc the wrapper links: asking its builder for
-            // the dependency with the arguments it passed itself resolves to
-            // the cached instance rather than configuring a second build of it.
-            const libgrpc = cgrpc_dep.builder.dependency("grpc", .{
-                .target = info.target,
-                .optimize = info.optimize,
-            }).artifact("grpc");
-            grpc.shared_libs = try b.allocator.dupe(
-                *std.Build.Step.InstallArtifact,
-                &.{b.addInstallArtifact(libgrpc, .{})},
-            );
 
             break :blk b.createModule(.{
                 .root_source_file = b.path(sdk_root ++ "/src/grpc/libgrpc.zig"),
@@ -160,7 +136,7 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !?
     });
     try dependencies.put("otlp-stub", otel_stub_mod);
 
-    return grpc;
+    return grpc_provider;
 }
 
 // Registers the "sdk-test" step, building and running the SDK unit tests.
@@ -219,7 +195,7 @@ fn addExamplesStep(
     mods: *const BuildModules,
     sdk_lib_c: *std.Build.Step.Compile,
     info: CompilationInfo,
-    grpc: GrpcBackend,
+    grpc: GrpcProvider,
 ) !void {
     const step = b.step("sdk-examples", "Build and install all SDK examples to zig-out/bin/<category>/");
     const run_step = b.step("sdk-run-examples", "Run installed SDK examples from zig-out");
@@ -229,7 +205,7 @@ fn addExamplesStep(
     for (examples_dirs) |example_dir| {
         // The gRPC examples export over OTLP/gRPC on every run, which the noop
         // backend can only fail: build them for a real backend only.
-        if (grpc.provider == .none and std.mem.eql(u8, example_dir, "grpc")) continue;
+        if (grpc == .none and std.mem.eql(u8, example_dir, "grpc")) continue;
 
         const example = buildExamples(
             b,
@@ -243,7 +219,7 @@ fn addExamplesStep(
         };
         defer b.allocator.free(example);
         for (example) |exe| {
-            helpers.wireExample(b, exe, b.fmt("bin/{s}", .{example_dir}), step, run_step, null, grpc.shared_libs);
+            helpers.wireExample(b, exe, b.fmt("bin/{s}", .{example_dir}), step, run_step, null);
         }
     }
 
@@ -279,7 +255,7 @@ fn addExamplesStep(
         c_example_exe.root_module.addIncludePath(b.path(sdk_root ++ "/include"));
         c_example_exe.root_module.linkLibrary(sdk_lib_c);
 
-        helpers.wireExample(b, c_example_exe, "bin/c", step, run_step, null, grpc.shared_libs);
+        helpers.wireExample(b, c_example_exe, "bin/c", step, run_step, null);
     }
 }
 
@@ -336,7 +312,7 @@ fn addIntegrationStep(
     b: *std.Build,
     mods: *const BuildModules,
     info: CompilationInfo,
-    grpc: GrpcBackend,
+    grpc: GrpcProvider,
 ) !void {
     const step = b.step("sdk-integration", "Build and install SDK integration tests to zig-out/bin/integration_tests/");
     const run_step = b.step("sdk-run-integration", "Run installed SDK integration tests (requires Docker)");
@@ -346,14 +322,14 @@ fn addIntegrationStep(
         b.path(sdk_root ++ "/integration_tests"),
         mods,
         info,
-        grpc.provider,
+        grpc,
     ) catch |err| {
         std.debug.print("Error building integration tests: {}\n", .{err});
         return err;
     };
     defer b.allocator.free(integration_tests);
     for (integration_tests) |exe| {
-        helpers.wireExample(b, exe, "bin/integration_tests", step, run_step, b.path(sdk_root), grpc.shared_libs);
+        helpers.wireExample(b, exe, "bin/integration_tests", step, run_step, b.path(sdk_root));
     }
 }
 

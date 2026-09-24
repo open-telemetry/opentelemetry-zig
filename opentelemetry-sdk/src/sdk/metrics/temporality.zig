@@ -232,6 +232,7 @@ fn processCumulativeDataPoints(
                         dp.value.scale = stored.scale;
                     }
 
+                    // TODO: Decide how to enforce max_size when merging cumulative buckets
                     const positive_buckets = try bucketAggregation(
                         map.allocator,
                         stored.positive_offset,

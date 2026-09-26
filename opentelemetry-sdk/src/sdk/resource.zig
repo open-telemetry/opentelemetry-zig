@@ -1,12 +1,58 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const build_info = @import("build_info");
 const Attribute = @import("../attributes.zig").Attribute;
 const AttributeValue = @import("../attributes.zig").AttributeValue;
 const Configuration = @import("config.zig").Configuration;
 
+const os_type: []const u8 = switch (builtin.os.tag) {
+    .macos, .ios, .tvos, .watchos => "darwin",
+    .dragonfly => "dragonflybsd",
+    .illumos => "solaris",
+    else => @tagName(builtin.os.tag),
+};
+
+const host_arch: []const u8 = switch (builtin.cpu.arch) {
+    .x86_64 => "amd64",
+    .aarch64 => "arm64",
+    .arm => "arm32",
+    .powerpc => "ppc32",
+    .powerpc64, .powerpc64le => "ppc64",
+    else => @tagName(builtin.cpu.arch),
+};
+
+/// SDK identity attributes, provided by the "sdk" detector.
+const sdk_attributes = [_]Attribute{
+    .{ .key = "telemetry.sdk.name", .value = .{ .string = build_info.name } },
+    .{ .key = "telemetry.sdk.language", .value = .{ .string = "zig" } },
+    .{ .key = "telemetry.sdk.version", .value = .{ .string = build_info.version } },
+};
+
+/// Attributes provided by the "os" detector.
+const os_attributes = [_]Attribute{
+    .{ .key = "os.type", .value = .{ .string = os_type } },
+};
+
+/// Attributes provided by the "host" detector.
+const host_attributes = [_]Attribute{
+    .{ .key = "host.arch", .value = .{ .string = host_arch } },
+};
+
+/// Attributes provided by the "process" detector.
+const process_attributes = [_]Attribute{
+    .{ .key = "process.runtime.name", .value = .{ .string = "zig" } },
+    .{ .key = "process.runtime.version", .value = .{ .string = builtin.zig_version_string } },
+};
+
 /// Build resource attributes from configuration
 /// Combines OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
 pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuration) ![]Attribute {
-    var attributes: std.ArrayList(Attribute) = .empty;
+    const d = config.resource_detectors;
+    const detected = (if (d.sdk) sdk_attributes.len else 0) +
+        (if (d.os) os_attributes.len else 0) +
+        (if (d.host) host_attributes.len else 0) +
+        (if (d.process) process_attributes.len else 0);
+    var attributes: std.ArrayList(Attribute) = try .initCapacity(allocator, detected);
     errdefer {
         for (attributes.items) |attr| {
             allocator.free(attr.key);
@@ -17,15 +63,26 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
         attributes.deinit(allocator);
     }
 
+    if (d.sdk) for (sdk_attributes) |attr| {
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
+    };
+    if (d.os) for (os_attributes) |attr| {
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
+    };
+    if (d.host) for (host_attributes) |attr| {
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
+    };
+    if (d.process) for (process_attributes) |attr| {
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
+    };
+
     // Add service.name if configured
     const has_service_name = config.service_name != null;
     if (config.service_name) |service_name| {
-        const key = try allocator.dupe(u8, "service.name");
-        const value = try allocator.dupe(u8, service_name);
-        try attributes.append(allocator, Attribute{
-            .key = key,
-            .value = AttributeValue{ .string = value },
-        });
+        try attributes.append(allocator, try Attribute.dupe(allocator, .{
+            .key = "service.name",
+            .value = .{ .string = service_name },
+        }));
     }
 
     // Parse and add resource attributes
@@ -70,16 +127,10 @@ fn parseResourceAttributes(
             continue;
         }
 
-        const key = try allocator.dupe(u8, key_part);
-        errdefer allocator.free(key);
-
-        const value = try allocator.dupe(u8, value_part);
-        errdefer allocator.free(value);
-
-        try attributes.append(allocator, Attribute{
-            .key = key,
-            .value = AttributeValue{ .string = value },
-        });
+        try attributes.append(allocator, try Attribute.dupe(allocator, .{
+            .key = key_part,
+            .value = .{ .string = value_part },
+        }));
     }
 }
 
@@ -116,10 +167,10 @@ pub fn mergeResources(
 test "buildFromConfig with service name only" {
     const allocator = std.testing.allocator;
 
-    // Create config with service name
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = "my-service",
         .resource_attributes = null,
         .log_level = .info,
@@ -143,6 +194,7 @@ test "buildFromConfig with resource attributes only" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
         .resource_attributes = "key1=value1,key2=value2",
         .log_level = .info,
@@ -168,6 +220,7 @@ test "buildFromConfig with both service name and resource attributes" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = "test-service",
         .resource_attributes = "deployment.environment=production,host.name=server-1",
         .log_level = .info,
@@ -195,6 +248,7 @@ test "parseResourceAttributes with whitespace and empty values" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
         .resource_attributes = " key1 = value1 , key2=value2,  ,key3=",
         .log_level = .info,
@@ -217,12 +271,13 @@ test "parseResourceAttributes with whitespace and empty values" {
     try std.testing.expectEqualStrings("", resource[2].value.string);
 }
 
-test "buildFromConfig with no resource configuration" {
+test "buildFromConfig with every detector disabled" {
     const allocator = std.testing.allocator;
 
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -235,8 +290,89 @@ test "buildFromConfig with no resource configuration" {
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    // Should return empty slice
     try std.testing.expectEqual(@as(usize, 0), resource.len);
+}
+
+test "buildFromConfig runs every detector by default" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .{},
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    const expected_len = sdk_attributes.len + os_attributes.len + host_attributes.len + process_attributes.len;
+    try std.testing.expectEqual(expected_len, resource.len);
+    try std.testing.expectEqualStrings("telemetry.sdk.name", resource[0].key);
+    try std.testing.expectEqualStrings("opentelemetry", resource[0].value.string);
+    try std.testing.expectEqualStrings("telemetry.sdk.language", resource[1].key);
+    try std.testing.expectEqualStrings("zig", resource[1].value.string);
+    try std.testing.expectEqualStrings("telemetry.sdk.version", resource[2].key);
+    try std.testing.expectEqualStrings("os.type", resource[3].key);
+    try std.testing.expectEqualStrings("host.arch", resource[4].key);
+    try std.testing.expectEqualStrings("process.runtime.name", resource[5].key);
+    try std.testing.expectEqualStrings("zig", resource[5].value.string);
+    try std.testing.expectEqualStrings("process.runtime.version", resource[6].key);
+    try std.testing.expectEqualStrings(builtin.zig_version_string, resource[6].value.string);
+}
+
+test "buildFromConfig with a single detector opted out" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .{ .sdk = false },
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(os_attributes.len + host_attributes.len + process_attributes.len, resource.len);
+    try std.testing.expectEqualStrings("os.type", resource[0].key);
+    try std.testing.expectEqualStrings("host.arch", resource[1].key);
+    try std.testing.expectEqualStrings("process.runtime.name", resource[2].key);
+}
+
+test "buildFromConfig with a single detector opted in" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .{ .sdk = false, .host = false, .process = false },
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(os_attributes.len, resource.len);
+    try std.testing.expectEqualStrings("os.type", resource[0].key);
 }
 
 test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
@@ -245,6 +381,7 @@ test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = "override-service",
         .resource_attributes = "service.name=original-service,key1=value1",
         .log_level = .info,
@@ -257,7 +394,6 @@ test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    // Should have 2 attributes: service.name (override) and key1
     try std.testing.expectEqual(@as(usize, 2), resource.len);
 
     // service.name should be from OTEL_SERVICE_NAME
@@ -275,6 +411,7 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES when OTEL_SERVICE_NAME not set"
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
         .resource_attributes = "service.name=from-resource-attrs,key1=value1",
         .log_level = .info,
@@ -287,7 +424,6 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES when OTEL_SERVICE_NAME not set"
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    // Should have 2 attributes
     try std.testing.expectEqual(@as(usize, 2), resource.len);
 
     // service.name should be from OTEL_RESOURCE_ATTRIBUTES
@@ -304,6 +440,8 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES survives resource building" {
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
     try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "service.name=checkout,host.name=server-1");
+    // Keep the detectors out of the way, they have their own tests.
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "none");
 
     const config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();
@@ -324,6 +462,8 @@ test "service.name defaults to unknown_service when nothing is configured" {
 
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
+    // Keep the detectors out of the way, they have their own tests.
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "none");
 
     const config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();

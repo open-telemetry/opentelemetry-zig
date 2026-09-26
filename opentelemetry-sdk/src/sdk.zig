@@ -8,6 +8,7 @@ test {
     _ = @import("sdk/propagation.zig");
     // helpers
     _ = @import("attributes.zig");
+    _ = @import("attributes/builders.zig");
     _ = @import("scope.zig");
     _ = @import("otlp.zig");
 }

@@ -359,6 +359,7 @@ fn buildExamples(
                 "opentelemetry-sdk",
                 "otlp-stub",
                 "opentelemetry-proto",
+                "opentelemetry-semconv",
                 "clock",
             };
 

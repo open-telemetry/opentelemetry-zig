@@ -9,6 +9,7 @@ pub const Configuration = @import("config.zig").Configuration;
 
 pub fn send(
     _: std.mem.Allocator,
+    _: std.Io,
     _: []const u8,
     _: []const u8,
     _: Configuration,
@@ -19,7 +20,7 @@ pub fn send(
 test "noop send always reports UnimplementedTransportProtocol" {
     try std.testing.expectError(
         error.UnimplementedTransportProtocol,
-        send(std.testing.allocator, "/some/Service/Method", "payload", .{}),
+        send(std.testing.allocator, std.testing.io, "/some.Service/Method", "payload", .{}),
     );
 }
 

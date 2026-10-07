@@ -47,6 +47,7 @@ pub const ConfigError = error{
     InvalidWireFormatForClient,
     InvalidCompression,
     InvalidProtocol,
+    TimeoutSecTooBig,
 };
 
 /// Error set for the OTLP Export operation.
@@ -242,6 +243,8 @@ pub const ConfigOptions = struct {
     // Tracks whether `endpoint` was allocated by us and must be freed on deinit.
     endpoint_owned: bool = false,
 
+    const max_timeout_sec = 600;
+
     pub fn init(allocator: std.mem.Allocator, env_map: *const EnvMap) !*ConfigOptions {
         const s = try allocator.create(ConfigOptions);
         s.* = ConfigOptions{
@@ -269,6 +272,9 @@ pub const ConfigOptions = struct {
             if (self.insecure) |ins| {
                 if (ins) return ConfigError.ConflictingOptions;
             }
+        }
+        if (self.timeout_sec > max_timeout_sec) {
+            return ConfigError.TimeoutSecTooBig;
         }
     }
 
@@ -644,6 +650,7 @@ const HTTPClient = struct {
                     // These are connection-level errors that should be treated as non-retryable
                     return ExportError.NonRetryableStatusCodeInResponse;
                 },
+                error.Timeout => return ExportError.Timeout,
                 else => return err,
             }
         };

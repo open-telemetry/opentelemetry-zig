@@ -83,11 +83,11 @@ fn PayloadOf(comptime Fn: type) type {
     };
 }
 
-/// Calls `function` with `args`, returning `error.Timeout` and canceling it if
-/// it has not finished after `ms` milliseconds.
+/// Calls `function` with `args`, propagates any error returned by "function",
+/// or returns `error.Timeout` and cancels the execution of "function" takse more than `ms` milliseconds.
 ///
 /// It works only when the `Io` implementation can multiplex fibers;
-/// when it cannot, the call runs unbounded rather than failing (see the catch)
+/// when it cannot, the call runs unbounded rather than failing (see the catch).
 pub fn callTimeout(
     io: std.Io,
     ms: u64,

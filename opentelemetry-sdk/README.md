@@ -44,7 +44,7 @@ const sdk = @import("opentelemetry-sdk");
 |---------|--------|
 | HTTP/Protobuf | ✅ |
 | HTTP/JSON | ✅ |
-| gRPC | ❌ |
+| gRPC | ✅ opt-in, see [OTLP over gRPC](#otlp-over-grpc) |
 | Compression (gzip) | ✅ |
 
 
@@ -89,6 +89,77 @@ pub fn main() !void {
 - **Source location tracking**: Optional file/line information as attributes
 
 See [examples/logs/std_log_basic.zig](./examples/logs/std_log_basic.zig) and [examples/logs/std_log_migration.zig](./examples/logs/std_log_migration.zig) for complete examples.
+
+### OTLP over gRPC
+
+Exporting over gRPC requires linking a gRPC implementation, which the SDK does not
+pull in unless asked: the default build has no gRPC backend, and selecting the gRPC
+protocol then fails every export with `error.UnimplementedTransportProtocol`. The
+HTTP protocols are unaffected.
+
+Pick an implementation with the `grpc-provider` option. `libgrpc` is currently the
+only one, binding [gRPC Core](https://github.com/grpc/grpc) through
+[cgrpc_wrapper](https://github.com/agagniere/cgrpc_wrapper):
+
+```zig
+const otel = b.dependency("opentelemetry", .{
+    .target = target,
+    .@"grpc-provider" = "libgrpc",
+});
+exe.root_module.addImport("opentelemetry-sdk", otel.module("sdk"));
+```
+
+This package declares a preferred optimize mode, so it takes `.release = true`
+rather than `.optimize` — see `zig build --help` for the full option list.
+
+Then select the protocol at runtime, along with the collector's gRPC port (4317,
+where the HTTP protocols use 4318):
+
+```zig
+var config = try sdk.otlp.ConfigOptions.init(allocator, env_map);
+defer config.deinit();
+
+config.protocol = .grpc;
+config.endpoint = "localhost:4317";
+```
+
+`OTEL_EXPORTER_OTLP_PROTOCOL=grpc` and `OTEL_EXPORTER_OTLP_ENDPOINT=<host:port>`
+select the same thing from the environment. See
+[examples/grpc/all_signals.zig](./examples/grpc/all_signals.zig) for a complete
+program exporting all three signals over gRPC.
+
+#### Building against libgrpc
+
+gRPC Core is built from source by default. It is a large C++ project, so expect a
+slow first build and a shared library that the executable loads at runtime. Two
+consequences are worth knowing about:
+
+- **Moving the binary.** Zig records an rpath into the build cache, which only
+  resolves relative to the build root, so an installed binary run from anywhere else
+  aborts with `Library not loaded: @rpath/libgrpc.dylib`. Install the shared library
+  alongside the executable and add an rpath relative to the executable itself; this
+  repository does that for its own examples in
+  [build/helpers.zig](../build/helpers.zig).
+- **Using the system libgrpc instead.** `-fsys=grpc` links the libgrpc already
+  installed on the machine and skips the source build altogether. The system library
+  carries an absolute install name, so the rpath caveat above does not apply:
+
+  ```bash
+  zig build sdk-examples -Dgrpc-provider=libgrpc -fsys=grpc \
+      --search-prefix "$(brew --prefix grpc)"
+  ```
+
+  This needs a libgrpc recent enough to ship `<grpc/credentials.h>`: Homebrew's
+  1.83 qualifies, while Debian and Ubuntu's `libgrpc-dev` (1.51.1) is too old.
+
+Inside this repository the option applies to every SDK step, so the examples and the
+integration tests can be exercised with a local collector:
+
+```bash
+docker run --rm -p 4317:4317 otel/opentelemetry-collector
+zig build sdk-run-examples -Dgrpc-provider=libgrpc -Dexamples-filter=all_signals
+zig build sdk-run-integration -Dgrpc-provider=libgrpc -- logs_grpc
+```
 
 ## C Language Bindings
 

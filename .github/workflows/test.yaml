@@ -103,12 +103,85 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           mirror: 'https://zigmirror.com'
       - run: zig build --fetch
-      # The optimize argument builds the SDK library with optimizations,
+      # The release argument builds the SDK library with optimizations,
       # benchmarks files are always compiled with ReleaseFast.
       - run: |
-          zig build sdk-benchmarks -Doptimize=ReleaseFast -Dbenchmark-output=benchmarks-result.txt
+          zig build sdk-benchmarks -Drelease -Dbenchmark-output=benchmarks-result.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: benchmarks-result
           path: benchmarks-result.txt
           retention-days: 60
+
+  # gRPC is opt-in (`-Dgrpc-provider=libgrpc`) and compiling gRPC Core from
+  # source is slow, so the two jobs below only run when a PR carries the
+  # 'run::grpc' label.
+  #
+  # This one takes the default route: gRPC Core is built from source as part of
+  # the dependency tree.
+  grpc_vendored:
+    needs: proto
+    if: contains(github.event.pull_request.labels.*.name, 'run::grpc')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+      # The provider flag is what makes the gRPC dependencies non-lazy.
+      - name: Fetch dependencies
+        run: zig build --fetch -Dgrpc-provider=libgrpc
+      - name: Run SDK tests with the libgrpc provider
+        run: zig build sdk-test -Dgrpc-provider=libgrpc -Dtest-verbose=true
+        timeout-minutes: 60
+      - name: Build gRPC examples
+        run: zig build sdk-examples -Dgrpc-provider=libgrpc
+        timeout-minutes: 15
+      # The integration harness starts its own collector container.
+      - name: Run gRPC integration test
+        run: zig build sdk-run-integration -Dgrpc-provider=libgrpc -- logs_grpc
+        timeout-minutes: 15
+
+  # Same provider, linking the libgrpc that Homebrew installed (`-fsys=grpc`)
+  # instead of building gRPC Core from source. GitHub's macOS runners have no
+  # Docker daemon, so this job stops short of the integration tests.
+  grpc_system:
+    needs: proto
+    if: contains(github.event.pull_request.labels.*.name, 'run::grpc')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+      - name: Install libgrpc
+        run: |
+          brew install grpc
+          echo "GRPC_PREFIX=$(brew --prefix grpc)" >> "$GITHUB_ENV"
+      - name: Fetch dependencies
+        run: zig build --fetch -Dgrpc-provider=libgrpc -fsys=grpc
+      - name: Run SDK tests against the system libgrpc
+        run: |
+          zig build sdk-test -Dtest-verbose=true \
+            -Dgrpc-provider=libgrpc -fsys=grpc --search-prefix "$GRPC_PREFIX"
+        timeout-minutes: 15
+      - name: Build gRPC examples against the system libgrpc
+        run: |
+          zig build sdk-examples \
+            -Dgrpc-provider=libgrpc -fsys=grpc --search-prefix "$GRPC_PREFIX"
+        timeout-minutes: 15
+      # Fails if the source build quietly took over: nothing should have been
+      # vendored into zig-out/lib, and the example must load Homebrew's library.
+      - name: Check the system library was the one linked
+        run: |
+          if ls zig-out/lib/libgrpc* >/dev/null 2>&1; then
+            echo "gRPC Core was built from source despite -fsys=grpc"
+            exit 1
+          fi
+          otool -L zig-out/bin/grpc/all_signals | grep -F "$GRPC_PREFIX"

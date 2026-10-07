@@ -313,6 +313,7 @@ pub const ConfigOptions = struct {
             const Scheme = @FieldType(ConfigOptions, "scheme");
             self.scheme = std.meta.stringToEnum(Scheme, lower) orelse return ConfigError.InvalidScheme;
             value = raw[uri.scheme.len + "://".len ..];
+            self.insecure = self.scheme == .https;
         }
         while (value.len > 0 and value[value.len - 1] == '/') {
             value = value[0 .. value.len - 1];
@@ -893,7 +894,7 @@ pub fn Export(
 
             break :blk http_client.send(url, payload);
         },
-        .grpc => grpc_transport.send(allocator, otlp_payload.signal().grpcPath(), payload, .{
+        .grpc => grpc_transport.send(allocator, io, otlp_payload.signal().grpcPath(), payload, .{
             .endpoint = config.endpoint,
             .insecure = config.insecure,
             .timeout_sec = config.timeout_sec,

@@ -10,6 +10,7 @@ The integration tests are split into separate test executables that can run in p
 - `metrics.zig` - Metrics export tests (uncompressed and gzip-compressed)
 - `traces.zig` - Traces export tests (uncompressed and gzip-compressed)
 - `logs.zig` - Logs export tests (uncompressed and gzip-compressed)
+- `logs_grpc.zig` - Logs export over OTLP/gRPC, which needs a gRPC backend compiled in (see below)
 
 Each test executable runs independently with its own:
 - Unique Docker container (named `otel-test-{signal}-{timestamp}-{random}`)
@@ -35,6 +36,17 @@ zig build sdk-run-integration -- metrics
 ```
 
 The tests will run with separate collector containers, allowing for parallel execution.
+
+### Tests Needing a gRPC Backend
+
+The SDK is built without a gRPC implementation by default, so every export over
+OTLP/gRPC fails with `UnimplementedTransportProtocol`. Tests of that transport
+(`logs_grpc.zig`) print a warning and exit successfully in that configuration,
+and exercise the transport when a backend is selected:
+
+```bash
+zig build sdk-run-integration -Dgrpc-provider=libgrpc -- logs_grpc
+```
 
 ## What the Tests Do
 

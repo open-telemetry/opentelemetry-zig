@@ -313,7 +313,10 @@ pub const ConfigOptions = struct {
             const Scheme = @FieldType(ConfigOptions, "scheme");
             self.scheme = std.meta.stringToEnum(Scheme, lower) orelse return ConfigError.InvalidScheme;
             value = raw[uri.scheme.len + "://".len ..];
-            self.insecure = self.scheme == .https;
+            // gRPC dials a bare host:port, so for it the scheme is the TLS
+            // switch — and per spec it wins: the insecure setting applies only
+            // to endpoints given without a scheme.
+            self.insecure = self.scheme != .https;
         }
         while (value.len > 0 and value[value.len - 1] == '/') {
             value = value[0 .. value.len - 1];
@@ -371,6 +374,8 @@ test "otlp config from env" {
     try std.testing.expectEqualStrings(new_endpoint, config.endpoint);
     try std.testing.expectEqual(Compression.gzip, config.compression);
     try std.testing.expectEqual(Protocol.grpc, config.protocol);
+    // No scheme in the endpoint: the transport security choice stays unset.
+    try std.testing.expectEqual(@as(?bool, null), config.insecure);
 }
 
 test "otlp config from env with URL scheme in endpoint" {
@@ -380,6 +385,7 @@ test "otlp config from env with URL scheme in endpoint" {
         env: []const u8,
         endpoint: []const u8,
         scheme: @FieldType(ConfigOptions, "scheme"),
+        insecure: ?bool,
         url: []const u8,
         signal: Signal,
     };
@@ -388,6 +394,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "http://localhost:4318",
             .endpoint = "localhost:4318",
             .scheme = .http,
+            .insecure = true,
             .signal = .traces,
             .url = "http://localhost:4318/v1/traces",
         },
@@ -395,6 +402,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "https://collector.example.com:4318/",
             .endpoint = "collector.example.com:4318",
             .scheme = .https,
+            .insecure = false,
             .signal = .metrics,
             .url = "https://collector.example.com:4318/v1/metrics",
         },
@@ -403,6 +411,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "HTTPS://collector:4318",
             .endpoint = "collector:4318",
             .scheme = .https,
+            .insecure = false,
             .signal = .logs,
             .url = "https://collector:4318/v1/logs",
         },
@@ -411,6 +420,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "http://host:4318/mycollector/",
             .endpoint = "host:4318/mycollector",
             .scheme = .http,
+            .insecure = true,
             .signal = .traces,
             .url = "http://host:4318/mycollector/v1/traces",
         },
@@ -419,6 +429,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "http://host:4318///",
             .endpoint = "host:4318",
             .scheme = .http,
+            .insecure = true,
             .signal = .traces,
             .url = "http://host:4318/v1/traces",
         },
@@ -434,6 +445,7 @@ test "otlp config from env with URL scheme in endpoint" {
 
         try std.testing.expectEqualStrings(c.endpoint, config.endpoint);
         try std.testing.expect(config.scheme == c.scheme);
+        try std.testing.expectEqual(c.insecure, config.insecure);
 
         const url = try config.httpUrlForSignal(c.signal, allocator);
         defer allocator.free(url);

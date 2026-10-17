@@ -174,14 +174,19 @@ pub const BatchingLogRecordProcessor = struct {
 
     // State
     queue: LogRecordQueue,
-    batch_arena: std.heap.ArenaAllocator,
+    /// The data of queued records lives in the active arena. An export makes the other arena the
+    /// active one, and resets this one once all the records queued in it have been exported.
+    arenas: [2]std.heap.ArenaAllocator,
+    active_arena: u1,
+    /// Holds the batch being exported. Only touched by the caller that is exporting.
+    batch_buffer: []logs.ReadableLogRecord,
     mutex: std.Io.Mutex,
     wake: std.Io.Event,
     io: std.Io,
     export_task: ?std.Io.Future(void),
     should_shutdown: std.atomic.Value(bool),
     /// True while a batch is being exported. The exporter's `Export` must never be called
-    /// concurrently, so `exportBatch` waits on `export_done` until it is false. Guarded by `mutex`.
+    /// concurrently, so `exportQueued` waits on `export_done` until it is false. Guarded by `mutex`.
     exporting: bool,
     export_done: std.Io.Condition,
 
@@ -204,6 +209,8 @@ pub const BatchingLogRecordProcessor = struct {
             @max(@as(usize, 1), @min(config.max_export_batch_size, config.max_queue_size));
         var queue = try LogRecordQueue.init(allocator, config.max_queue_size);
         errdefer queue.deinit(allocator);
+        const batch_buffer = try allocator.alloc(logs.ReadableLogRecord, max_export_batch_size);
+        errdefer allocator.free(batch_buffer);
 
         self.* = Self{
             .allocator = allocator,
@@ -213,7 +220,9 @@ pub const BatchingLogRecordProcessor = struct {
             .export_timeout_millis = config.export_timeout_millis,
             .max_export_batch_size = max_export_batch_size,
             .queue = queue,
-            .batch_arena = std.heap.ArenaAllocator.init(allocator),
+            .arenas = .{ .init(allocator), .init(allocator) },
+            .active_arena = 0,
+            .batch_buffer = batch_buffer,
             .mutex = std.Io.Mutex.init,
             .wake = .unset,
             .io = io,
@@ -234,7 +243,8 @@ pub const BatchingLogRecordProcessor = struct {
         std.debug.assert(self.export_task == null);
 
         self.queue.deinit(self.allocator);
-        self.batch_arena.deinit();
+        self.allocator.free(self.batch_buffer);
+        for (&self.arenas) |*arena| arena.deinit();
         self.allocator.destroy(self);
     }
 
@@ -263,7 +273,7 @@ pub const BatchingLogRecordProcessor = struct {
         }
 
         // Deep-copy into the batch arena and enqueue
-        const readable = log_record.toReadable(self.batch_arena.allocator()) catch |err| {
+        const readable = log_record.toReadable(self.arenas[self.active_arena].allocator()) catch |err| {
             std.log.err("BatchingLogRecordProcessor failed to convert log record: {}", .{err});
             return;
         };
@@ -302,23 +312,15 @@ pub const BatchingLogRecordProcessor = struct {
         self.mutex.lockUncancelable(self.io);
         defer self.mutex.unlock(self.io);
 
-        // Export all pending log records
-        while (self.queue.len > 0) {
-            if (!self.exportBatch()) break;
-        }
-
-        // A batch taken by another caller (e.g. the background task) may still be exporting:
-        // wait for it, so that every record queued before this call has been exported on return.
-        while (self.exporting) self.export_done.waitUncancelable(self.io, &self.mutex);
+        // Waits for an export in flight, then exports every record queued before this call.
+        self.exportQueued();
     }
 
     fn exportLoop(self: *Self) void {
         while (true) {
             self.mutex.lockUncancelable(self.io);
             if (self.should_shutdown.load(.acquire)) {
-                while (self.queue.len > 0) {
-                    if (!self.exportBatch()) break;
-                }
+                self.exportQueued();
                 self.mutex.unlock(self.io);
                 break;
             }
@@ -341,55 +343,47 @@ pub const BatchingLogRecordProcessor = struct {
             }
 
             self.mutex.lockUncancelable(self.io);
-            if (self.queue.len > 0) {
-                _ = self.exportBatch();
-            }
+            self.exportQueued();
             self.mutex.unlock(self.io);
         }
     }
 
-    /// Must be called while holding the mutex. The mutex is released while exporting, but at most
-    /// one batch is exported at a time: concurrent callers wait for the in-flight export first.
-    fn exportBatch(self: *Self) bool {
+    /// Exports every record queued when called, in batches of at most `max_export_batch_size`.
+    ///
+    /// Must be called while holding the mutex, which is released while exporting. At most one
+    /// export runs at a time: a concurrent caller waits for the one in flight, then exports what
+    /// is queued by then.
+    fn exportQueued(self: *Self) void {
         while (self.exporting) self.export_done.waitUncancelable(self.io, &self.mutex);
 
-        if (self.queue.len == 0) return false;
-
-        const batch_size = @min(self.queue.len, self.max_export_batch_size);
-        if (batch_size == 0) return false;
-
-        const export_logs = self.allocator.alloc(logs.ReadableLogRecord, batch_size) catch {
-            std.log.err("BatchingLogRecordProcessor failed to allocate memory for export batch", .{});
-            return false;
-        };
-
-        const logs_to_export = self.queue.popBatch(export_logs);
-
-        // Export the batch (unlock mutex during export to allow concurrent onEmit calls)
+        // Records queued from now on are not exported here, and go to the other arena.
+        var remaining = self.queue.len;
+        if (remaining == 0) return;
+        const exported_arena = &self.arenas[self.active_arena];
+        self.active_arena +%= 1;
         self.exporting = true;
-        self.mutex.unlock(self.io);
-        clock.callTimeout(
-            self.io,
-            self.export_timeout_millis,
-            LogRecordExporter.exportLogs,
-            .{ self.exporter, logs_to_export },
-        ) catch |err| {
-            std.log.err("BatchingLogRecordProcessor failed to export log batch: {}", .{err});
-        };
-        self.mutex.lockUncancelable(self.io);
-        self.exporting = false;
-        self.export_done.broadcast(self.io);
 
-        self.allocator.free(export_logs);
+        while (remaining > 0) {
+            const batch = self.queue.popBatch(self.batch_buffer[0..@min(remaining, self.batch_buffer.len)]);
+            remaining -= batch.len;
 
-        // Reset the batch arena once the queue is fully drained — all records have been exported
-        // and no remaining records point into the arena. No other batch can be exporting: exports
-        // are serialized, and this one just finished.
-        if (self.queue.len == 0) {
-            _ = self.batch_arena.reset(.retain_capacity);
+            // Unlock while exporting to allow concurrent onEmit calls
+            self.mutex.unlock(self.io);
+            clock.callTimeout(
+                self.io,
+                self.export_timeout_millis,
+                LogRecordExporter.exportLogs,
+                .{ self.exporter, batch },
+            ) catch |err| {
+                std.log.err("BatchingLogRecordProcessor failed to export log batch: {}", .{err});
+            };
+            self.mutex.lockUncancelable(self.io);
         }
 
-        return true;
+        // Every record that was in this arena has been exported, and no new one was added to it.
+        _ = exported_arena.reset(.retain_capacity);
+        self.exporting = false;
+        self.export_done.broadcast(self.io);
     }
 
     fn enabled(ctx: *anyopaque, params: EnabledParameters) bool {
@@ -991,4 +985,72 @@ test "LogRecordQueue wrap-around split" {
     try std.testing.expectEqual(@as(u64, 3), batch[0].observed_timestamp);
     try std.testing.expectEqual(@as(u64, 4), batch[1].observed_timestamp);
     try std.testing.expectEqual(@as(u64, 5), batch[2].observed_timestamp);
+}
+
+test "BatchingLogRecordProcessor memory stays bounded when the queue never drains" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const rounds = 200;
+    const body: *const [1024]u8 = &@splat('x');
+
+    // Queues a record on every export, so the queue is never empty once an export completes.
+    const RefillingExporter = struct {
+        processor: LogRecordProcessor = undefined,
+        exported: usize = 0,
+
+        pub fn exportLogs(ctx: *anyopaque, log_records: []logs.ReadableLogRecord) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.exported += log_records.len;
+            var log_record: logs.ReadWriteLogRecord = .{
+                .scope = InstrumentationScope{ .name = "test-logger" },
+                .observed_timestamp = 0,
+                .body = .{ .string = body },
+                .severity_number = 9,
+            };
+            defer log_record.deinit(std.testing.allocator);
+            self.processor.onEmit(&log_record, context.Context.init());
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asLogRecordExporter(self: *@This()) LogRecordExporter {
+            return LogRecordExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportLogsFn = exportLogs,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+    };
+
+    var refilling: RefillingExporter = .{};
+    var processor = try BatchingLogRecordProcessor.init(allocator, io, refilling.asLogRecordExporter(), .{
+        // Keep the background loop asleep so forceFlush is what drives the exports.
+        .max_export_batch_size = 8,
+        .scheduled_delay_millis = 60_000,
+    });
+    defer processor.deinit();
+    refilling.processor = processor.asLogRecordProcessor();
+
+    var log_record: logs.ReadWriteLogRecord = .{
+        .scope = InstrumentationScope{ .name = "test-logger" },
+        .observed_timestamp = 0,
+        .body = .{ .string = body },
+        .severity_number = 9,
+    };
+    defer log_record.deinit(allocator);
+    refilling.processor.onEmit(&log_record, context.Context.init());
+
+    for (0..rounds) |_| try refilling.processor.forceFlush();
+    try std.testing.expectEqual(@as(usize, rounds), refilling.exported);
+
+    // Without ever reaching an empty queue, every record would have been retained: rounds KiB.
+    processor.mutex.lockUncancelable(io);
+    var capacity: usize = 0;
+    for (&processor.arenas) |*arena| capacity += arena.queryCapacity();
+    processor.mutex.unlock(io);
+    try std.testing.expect(capacity < rounds * body.len / 4);
+
+    try refilling.processor.shutdown();
 }

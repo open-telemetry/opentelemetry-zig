@@ -159,6 +159,9 @@ pub const SimpleLogRecordProcessor = struct {
 
 /// BatchingLogRecordProcessor batches log records and passes them to the configured exporter.
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#batching-processor
+///
+/// The processor never calls the exporter concurrently, but that guarantee is per processor:
+/// an exporter instance must belong to a single processor.
 pub const BatchingLogRecordProcessor = struct {
     allocator: std.mem.Allocator,
     exporter: LogRecordExporter,

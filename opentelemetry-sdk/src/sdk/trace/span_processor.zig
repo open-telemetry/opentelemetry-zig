@@ -152,6 +152,9 @@ pub const SimpleProcessor = struct {
 };
 
 /// BatchingProcessor batches finished spans and passes them to the configured SpanExporter
+///
+/// The processor never calls the exporter concurrently, but that guarantee is per processor:
+/// an exporter instance must belong to a single processor.
 pub const BatchingProcessor = struct {
     allocator: std.mem.Allocator,
     exporter: SpanExporter,

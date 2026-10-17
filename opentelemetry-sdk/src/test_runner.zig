@@ -8,7 +8,7 @@ const test_options = @import("test_options");
 
 const Allocator = std.mem.Allocator;
 
-const BORDER = "=" ** 80;
+const BORDER: *const [80]u8 = &@splat('=');
 
 // use in custom panic handler
 var current_test: ?[]const u8 = null;
@@ -179,7 +179,10 @@ pub fn main(init: std.process.Init) !void {
         };
 
         current_test = friendly_name;
-        std.testing.allocator_instance = .{};
+        std.testing.allocator_instance = .init(std.heap.page_allocator, .{
+            .canary = 0xc3a701ba,
+            .check_write_after_free = true,
+        });
 
         capture.enable();
         const result = t.func();
@@ -190,7 +193,7 @@ pub fn main(init: std.process.Init) !void {
 
         const ns_taken = slowest.endTiming(io, friendly_name);
 
-        if (std.testing.allocator_instance.deinit() == .leak) {
+        if (std.testing.allocator_instance.deinit() != 0) {
             leak += 1;
             Printer.status(.fail, "\n{s}\n\"{s}\" - Memory Leak\n{s}\n", .{ BORDER, friendly_name, BORDER });
         }

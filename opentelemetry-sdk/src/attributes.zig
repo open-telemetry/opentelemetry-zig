@@ -96,7 +96,7 @@ pub const Attribute = struct {
 
     // Caller owns the memory returned by this function and shold free it.
     fn toString(self: Attribute, allocator: std.mem.Allocator) ![]const u8 {
-        var buf = [_]u8{0} ** 1024;
+        var buf: [1024]u8 = @splat(0);
         const value = try self.value.toString(allocator);
         defer allocator.free(value);
 
@@ -204,20 +204,20 @@ pub const Attributes = struct {
             @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
         }
         // Fast path: if the length is 0, return null.
-        const fields_info = args_type_info.@"struct".fields;
-        if (fields_info.len == 0) {
+        const field_names = args_type_info.@"struct".field_names;
+        if (field_names.len == 0) {
             return null;
         }
-        if (fields_info.len % 2 != 0) {
+        if (field_names.len % 2 != 0) {
             @compileError("expected an even number of arguments");
         }
 
-        var attrs: []Attribute = try allocator.alloc(Attribute, fields_info.len / 2);
+        var attrs: []Attribute = try allocator.alloc(Attribute, field_names.len / 2);
         var key: []const u8 = undefined;
         comptime var i = 1;
         // Unroll the loop at compile time.
-        inline for (std.meta.fields(ArgsType)) |kv| {
-            const e = @field(keyValues, kv.name);
+        inline for (field_names) |name| {
+            const e = @field(keyValues, name);
             if (i % 2 == 0) {
                 const keyVal = keyValue(@TypeOf(e)){ .key = key, .value = e };
                 attrs[i / 2 - 1] = keyVal.resolve();

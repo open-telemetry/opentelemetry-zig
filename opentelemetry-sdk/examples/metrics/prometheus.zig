@@ -19,16 +19,14 @@ pub fn main(init: std.process.Init) !void {
         .host = "127.0.0.1",
         .port = 9464,
     });
-    defer {
-        result.prometheus.deinit();
-        result.exporter.shutdown();
-    }
+    defer result.prometheus.deinit();
 
     // Start HTTP server
     try result.prometheus.start();
     defer result.prometheus.stop();
 
-    // Create a periodic reader that collects metrics every 5 seconds
+    // Create a periodic reader that collects metrics every 5 seconds.
+    // The reader owns the exporter: shutting the reader down also shuts the exporter down.
     const periodic_reader = try PeriodicExportingReader.init(
         allocator,
         io,

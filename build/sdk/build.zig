@@ -34,7 +34,7 @@ pub fn Setup(
         .install_subdir = "",
     });
 
-    _ = try addTestStep(b, dependencies);
+    _ = try addTestStep(b, dependencies, info);
     try addExamplesStep(b, dependencies, sdk_lib, info);
     _ = try addBenchmarksStep(b, dependencies, info);
     try addIntegrationStep(b, dependencies, info);
@@ -109,7 +109,7 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !v
         .root_source_file = b.path(sdk_root ++ "/examples/otlp_stub/server.zig"),
         .target = info.target,
         // Examples are always run in Debug mode to catch potential API issues.
-        .optimize = .Debug,
+        .optimize = .debug,
         .imports = try helpers.ImportsFromBuildModules(b.allocator, dependencies, &otlp_stub_dep_names),
     });
     try dependencies.put("otlp-stub", otel_stub_mod);
@@ -118,7 +118,7 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !v
 }
 
 // Registers the "sdk-test" step, building and running the SDK unit tests.
-fn addTestStep(b: *std.Build, mods: *const BuildModules) !*std.Build.Step {
+fn addTestStep(b: *std.Build, mods: *const BuildModules, info: CompilationInfo) !*std.Build.Step {
     const step = b.step("sdk-test", "Run SDK unit tests");
 
     const test_verbose = b.option(bool, "test-verbose", "Show verbose test output") orelse false;
@@ -129,8 +129,7 @@ fn addTestStep(b: *std.Build, mods: *const BuildModules) !*std.Build.Step {
         .root_module = mods.get("opentelemetry-sdk") orelse return BuildError.ModuleNotFound,
         // Use custom test runner to capture log output
         .test_runner = .{ .path = b.path(sdk_root ++ "/src/test_runner.zig"), .mode = .simple },
-        // Allow passing test filter using the build args.
-        .filters = b.args orelse &[0][]const u8{},
+        .filters = info.test_filters,
     });
 
     // Pass test options as build options
@@ -149,7 +148,7 @@ fn addTestStep(b: *std.Build, mods: *const BuildModules) !*std.Build.Step {
     const grpc_transport_unit_tests = b.addTest(.{
         .root_module = mods.get("grpc_transport") orelse return BuildError.ModuleNotFound,
         .test_runner = .{ .path = b.path(sdk_root ++ "/src/test_runner.zig"), .mode = .simple },
-        .filters = b.args orelse &[0][]const u8{},
+        .filters = info.test_filters,
     });
     {
         const grpc_test_options = b.addOptions();
@@ -282,6 +281,11 @@ pub fn addBenchmarksStep(b: *std.Build, mods: *const BuildModules, info: Compila
 // zig-out/bin/integration_tests/, without running them) and the
 // "sdk-run-integration" step (run the installed binaries; requires Docker).
 fn addIntegrationStep(b: *std.Build, mods: *const BuildModules, info: CompilationInfo) !void {
+    const integration_filter = b.option(
+        []const []const u8,
+        "integration-filter",
+        "Only build the integration tests with this exact name (repeatable)",
+    );
     const step = b.step("sdk-integration", "Build and install SDK integration tests to zig-out/bin/integration_tests/");
     const run_step = b.step("sdk-run-integration", "Run installed SDK integration tests (requires Docker)");
 
@@ -290,6 +294,7 @@ fn addIntegrationStep(b: *std.Build, mods: *const BuildModules, info: Compilatio
         b.path(sdk_root ++ "/integration_tests"),
         mods,
         info,
+        integration_filter,
     ) catch |err| {
         std.debug.print("Error building integration tests: {}\n", .{err});
         return err;
@@ -317,7 +322,7 @@ fn addDocsStep(b: *std.Build, mods: *const BuildModules, info: CompilationInfo) 
             .target = info.target,
             // Doc emission is independent of optimize mode; pin to Debug
             // for the fastest doc builds.
-            .optimize = .Debug,
+            .optimize = .debug,
             .link_libc = true,
             .imports = try helpers.ImportsFromBuildModules(b.allocator, mods, &dep_names),
         }),
@@ -343,11 +348,11 @@ fn buildExamples(
     var exes: std.ArrayList(*std.Build.Step.Compile) = .empty;
     errdefer exes.deinit(b.allocator);
 
-    var ex_dir = try examples_dir.getPath3(b, null).openDir(std.Options.debug_io, "", .{ .iterate = true });
-    defer ex_dir.close(std.Options.debug_io);
+    var ex_dir = try helpers.openSourceDir(b, examples_dir);
+    defer ex_dir.close(b.graph.io);
 
     var ex_dir_iter = ex_dir.iterate();
-    while (try ex_dir_iter.next(std.Options.debug_io)) |file| {
+    while (try ex_dir_iter.next(b.graph.io)) |file| {
         if (helpers.getZigFileName(file.name)) |name| {
             // Discard the modules that do not match the filter
             if (name_filter) |filter| {
@@ -388,11 +393,11 @@ fn buildBenchmarks(
     var bench_tests: std.ArrayList(*std.Build.Step.Compile) = .empty;
     errdefer bench_tests.deinit(b.allocator);
 
-    var test_dir = try bench_dir.getPath3(b, null).openDir(std.Options.debug_io, "", .{ .iterate = true });
-    defer test_dir.close(std.Options.debug_io);
+    var test_dir = try helpers.openSourceDir(b, bench_dir);
+    defer test_dir.close(b.graph.io);
 
     var iter = test_dir.iterate();
-    while (try iter.next(std.Options.debug_io)) |file| {
+    while (try iter.next(b.graph.io)) |file| {
         if (helpers.getZigFileName(file.name)) |name| {
             const file_name = try bench_dir.join(b.allocator, file.name);
 
@@ -406,7 +411,7 @@ fn buildBenchmarks(
                 .target = info.target,
                 // We set the optimization level to ReleaseFast for benchmarks
                 // because we want to have the best performance.
-                .optimize = if (debug_mode) .Debug else .ReleaseFast,
+                .optimize = if (debug_mode) .debug else .fast,
                 .strip = !debug_mode,
                 .imports = try helpers.ImportsFromBuildModules(b.allocator, mods, &dep_names),
             });
@@ -423,8 +428,7 @@ fn buildBenchmarks(
                 .root_module = b_mod,
                 // Use custom test runner to avoid server protocol (--listen=-)
                 .test_runner = .{ .path = b.path("opentelemetry-sdk/src/test_runner.zig"), .mode = .simple },
-                // Allow passing benchmark filter using the build args.
-                .filters = b.args orelse &[0][]const u8{},
+                .filters = info.test_filters,
             });
 
             try bench_tests.append(b.allocator, test_step);
@@ -439,6 +443,7 @@ fn buildIntegrationTests(
     integration_dir: std.Build.LazyPath,
     mods: *const BuildModules,
     info: CompilationInfo,
+    integration_filter: ?[]const []const u8,
 ) ![]*std.Build.Step.Compile {
     const otel_mod = mods.get("opentelemetry-sdk") orelse return BuildError.ModuleNotFound;
     const clock_mod = mods.get("clock") orelse return BuildError.ModuleNotFound;
@@ -446,11 +451,11 @@ fn buildIntegrationTests(
     var integration_tests: std.ArrayList(*std.Build.Step.Compile) = .empty;
     errdefer integration_tests.deinit(b.allocator);
 
-    var test_dir = integration_dir.getPath3(b, null).openDir(std.Options.debug_io, "", .{ .iterate = true }) catch |err| switch (err) {
+    var test_dir = helpers.openSourceDir(b, integration_dir) catch |err| switch (err) {
         error.FileNotFound => return integration_tests.toOwnedSlice(b.allocator),
         else => return err,
     };
-    defer test_dir.close(std.Options.debug_io);
+    defer test_dir.close(b.graph.io);
 
     // Create common module for shared integration test utilities
     const common_path = try integration_dir.join(b.allocator, "common.zig");
@@ -467,13 +472,12 @@ fn buildIntegrationTests(
     });
 
     var iter = test_dir.iterate();
-    while (try iter.next(std.Options.debug_io)) |file| {
+    while (try iter.next(b.graph.io)) |file| {
         if (helpers.getZigFileName(file.name)) |name| {
             // Skip common.zig as it's not a test executable
             if (std.mem.eql(u8, name, "common")) continue;
 
             // If integration filter is specified, skip non-matching tests
-            const integration_filter = b.args;
 
             const file_name = try integration_dir.join(b.allocator, file.name);
             if (integration_filter) |filter| {

@@ -31,7 +31,7 @@ zig build sdk-integration
 zig build sdk-run-integration
 
 # Filter to a single test
-zig build sdk-run-integration -- metrics
+zig build sdk-run-integration -Dintegration-filter=metrics
 ```
 
 The tests will run with separate collector containers, allowing for parallel execution.

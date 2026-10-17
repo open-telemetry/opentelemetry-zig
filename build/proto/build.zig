@@ -46,7 +46,7 @@ pub fn Setup(
     });
     try dependencies.put("opentelemetry-proto", proto_mod);
 
-    _ = try addTestStep(b, proto_mod);
+    _ = try addTestStep(b, proto_mod, info);
     _ = addUpdateTagStep(b);
     try addGenerateStep(b, info);
 }
@@ -79,9 +79,9 @@ fn addGenerateStep(b: *std.Build, info: CompilationInfo) !void {
             proto_dep.path("."),
         },
     });
-    protoc_step.verbose = info.optimize == .Debug;
+    protoc_step.verbose = info.optimize == .debug;
 
-    step.dependOn(&protoc_step.step);
+    step.dependOn(protoc_step.step);
 }
 
 // Registers the "proto-update-tag" step, re-pinning the opentelemetry_proto
@@ -104,12 +104,12 @@ fn addUpdateTagStep(b: *std.Build) *std.Build.Step {
 }
 
 // Registers the "proto-test" step, building and running the proto unit tests.
-fn addTestStep(b: *std.Build, proto_mod: *std.Build.Module) !*std.Build.Step {
+fn addTestStep(b: *std.Build, proto_mod: *std.Build.Module, info: CompilationInfo) !*std.Build.Step {
     const step = b.step("proto-test", "Run opentelemetry-proto unit tests");
 
     const proto_tests = b.addTest(.{
         .root_module = proto_mod,
-        .filters = b.args orelse &[0][]const u8{},
+        .filters = info.test_filters,
     });
     const run_proto_tests = b.addRunArtifact(proto_tests);
     step.dependOn(&run_proto_tests.step);

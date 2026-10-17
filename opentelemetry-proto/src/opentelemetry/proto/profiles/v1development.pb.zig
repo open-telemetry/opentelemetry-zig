@@ -4,6 +4,7 @@ const std = @import("std");
 
 const protobuf = @import("protobuf");
 const fd = protobuf.fd;
+const fdf = protobuf.fdf;
 /// import package opentelemetry.proto.common.v1
 const opentelemetry_proto_common_v1 = @import("../common/v1.pb.zig");
 /// import package opentelemetry.proto.resource.v1
@@ -49,7 +50,7 @@ pub const ProfilesDictionary = struct {
         .location_table = fd(2, .{ .repeated = .submessage }),
         .function_table = fd(3, .{ .repeated = .submessage }),
         .link_table = fd(4, .{ .repeated = .submessage }),
-        .string_table = fd(5, .{ .repeated = .{ .scalar = .string } }),
+        .string_table = fdf(5, .{ .repeated = .{ .scalar = .string } }, .{ .utf8_validation = .verify }),
         .attribute_table = fd(6, .{ .repeated = .submessage }),
         .stack_table = fd(7, .{ .repeated = .submessage }),
     };
@@ -72,6 +73,10 @@ pub const ProfilesDictionary = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -153,6 +158,10 @@ pub const ProfilesData = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -204,7 +213,7 @@ pub const ResourceProfiles = struct {
     pub const _desc_table = .{
         .resource = fd(1, .submessage),
         .scope_profiles = fd(2, .{ .repeated = .submessage }),
-        .schema_url = fd(3, .{ .scalar = .string }),
+        .schema_url = fdf(3, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
     };
 
     /// Encodes the message to the writer
@@ -225,6 +234,10 @@ pub const ResourceProfiles = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -277,7 +290,7 @@ pub const ScopeProfiles = struct {
     pub const _desc_table = .{
         .scope = fd(1, .submessage),
         .profiles = fd(2, .{ .repeated = .submessage }),
-        .schema_url = fd(3, .{ .scalar = .string }),
+        .schema_url = fdf(3, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
     };
 
     /// Encodes the message to the writer
@@ -298,6 +311,10 @@ pub const ScopeProfiles = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -367,7 +384,7 @@ pub const Profile = struct {
         .period = fd(6, .{ .scalar = .int64 }),
         .profile_id = fd(7, .{ .scalar = .bytes }),
         .dropped_attributes_count = fd(8, .{ .scalar = .uint32 }),
-        .original_payload_format = fd(9, .{ .scalar = .string }),
+        .original_payload_format = fdf(9, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
         .original_payload = fd(10, .{ .scalar = .bytes }),
         .attribute_indices = fd(11, .{ .packed_repeated = .{ .scalar = .int32 } }),
     };
@@ -390,6 +407,10 @@ pub const Profile = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -463,6 +484,10 @@ pub const Link = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -533,6 +558,10 @@ pub const ValueType = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -640,6 +669,10 @@ pub const Sample = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -718,6 +751,10 @@ pub const Mapping = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -790,6 +827,10 @@ pub const Stack = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -866,6 +907,10 @@ pub const Location = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -938,6 +983,10 @@ pub const Line = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -1016,6 +1065,10 @@ pub const Function = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -1092,6 +1145,10 @@ pub const KeyValueAndUnit = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -1130,4 +1187,17 @@ pub const KeyValueAndUnit = struct {
     ) !@This() {
         return protobuf.json.parse(@This(), allocator, source, options);
     }
+};
+
+/// Options of the files of this package that have some
+/// (`google.protobuf.FileOptions`), by file name.
+pub const _file_options = .{
+    .@"opentelemetry/proto/profiles/v1development/profiles.proto" = .{
+        .@"#raw" = "\n-io.opentelemetry.proto.profiles.v1developmentB\rProfilesProtoP\x01Z5go.opentelemetry.io/proto/otlp/profiles/v1development\xaa\x02*OpenTelemetry.Proto.Profiles.V1Development",
+        .java_package = "io.opentelemetry.proto.profiles.v1development",
+        .java_outer_classname = "ProfilesProto",
+        .java_multiple_files = true,
+        .go_package = "go.opentelemetry.io/proto/otlp/profiles/v1development",
+        .csharp_namespace = "OpenTelemetry.Proto.Profiles.V1Development",
+    },
 };

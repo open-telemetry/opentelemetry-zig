@@ -4,6 +4,7 @@ const std = @import("std");
 
 const protobuf = @import("protobuf");
 const fd = protobuf.fd;
+const fdf = protobuf.fdf;
 /// import package opentelemetry.proto.common.v1
 const opentelemetry_proto_common_v1 = @import("../common/v1.pb.zig");
 /// import package opentelemetry.proto.resource.v1
@@ -67,6 +68,10 @@ pub const TracesData = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -116,7 +121,7 @@ pub const ResourceSpans = struct {
     pub const _desc_table = .{
         .resource = fd(1, .submessage),
         .scope_spans = fd(2, .{ .repeated = .submessage }),
-        .schema_url = fd(3, .{ .scalar = .string }),
+        .schema_url = fdf(3, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
     };
 
     /// Encodes the message to the writer
@@ -137,6 +142,10 @@ pub const ResourceSpans = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -187,7 +196,7 @@ pub const ScopeSpans = struct {
     pub const _desc_table = .{
         .scope = fd(1, .submessage),
         .spans = fd(2, .{ .repeated = .submessage }),
-        .schema_url = fd(3, .{ .scalar = .string }),
+        .schema_url = fdf(3, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
     };
 
     /// Encodes the message to the writer
@@ -208,6 +217,10 @@ pub const ScopeSpans = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -259,7 +272,7 @@ pub const Span = struct {
     parent_span_id: []const u8 = &.{},
     flags: u32 = 0,
     name: []const u8 = &.{},
-    kind: Span.SpanKind = @enumFromInt(0),
+    kind: Span.SpanKind = @fromBackingInt(0),
     start_time_unix_nano: u64 = 0,
     end_time_unix_nano: u64 = 0,
     attributes: std.ArrayList(opentelemetry_proto_common_v1.KeyValue) = .empty,
@@ -273,10 +286,10 @@ pub const Span = struct {
     pub const _desc_table = .{
         .trace_id = fd(1, .{ .scalar = .bytes }),
         .span_id = fd(2, .{ .scalar = .bytes }),
-        .trace_state = fd(3, .{ .scalar = .string }),
+        .trace_state = fdf(3, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
         .parent_span_id = fd(4, .{ .scalar = .bytes }),
         .flags = fd(16, .{ .scalar = .fixed32 }),
-        .name = fd(5, .{ .scalar = .string }),
+        .name = fdf(5, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
         .kind = fd(6, .@"enum"),
         .start_time_unix_nano = fd(7, .{ .scalar = .fixed64 }),
         .end_time_unix_nano = fd(8, .{ .scalar = .fixed64 }),
@@ -311,7 +324,7 @@ pub const Span = struct {
 
         pub const _desc_table = .{
             .time_unix_nano = fd(1, .{ .scalar = .fixed64 }),
-            .name = fd(2, .{ .scalar = .string }),
+            .name = fdf(2, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
             .attributes = fd(3, .{ .repeated = .submessage }),
             .dropped_attributes_count = fd(4, .{ .scalar = .uint32 }),
         };
@@ -334,6 +347,10 @@ pub const Span = struct {
         ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
             return protobuf.decode(@This(), reader, allocator);
         }
+
+        /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+        /// field at a time without allocating. See `src/stream.zig`.
+        pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
         /// Deinitializes and frees the memory associated with the message.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -390,7 +407,7 @@ pub const Span = struct {
         pub const _desc_table = .{
             .trace_id = fd(1, .{ .scalar = .bytes }),
             .span_id = fd(2, .{ .scalar = .bytes }),
-            .trace_state = fd(3, .{ .scalar = .string }),
+            .trace_state = fdf(3, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
             .attributes = fd(4, .{ .repeated = .submessage }),
             .dropped_attributes_count = fd(5, .{ .scalar = .uint32 }),
             .flags = fd(6, .{ .scalar = .fixed32 }),
@@ -414,6 +431,10 @@ pub const Span = struct {
         ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
             return protobuf.decode(@This(), reader, allocator);
         }
+
+        /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+        /// field at a time without allocating. See `src/stream.zig`.
+        pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
         /// Deinitializes and frees the memory associated with the message.
         pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -474,6 +495,10 @@ pub const Span = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -518,10 +543,10 @@ pub const Span = struct {
 /// programming environments, including REST APIs and RPC APIs.
 pub const Status = struct {
     message: []const u8 = &.{},
-    code: Status.StatusCode = @enumFromInt(0),
+    code: Status.StatusCode = @fromBackingInt(0),
 
     pub const _desc_table = .{
-        .message = fd(2, .{ .scalar = .string }),
+        .message = fdf(2, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
         .code = fd(3, .@"enum"),
     };
 
@@ -552,6 +577,10 @@ pub const Status = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -591,4 +620,17 @@ pub const Status = struct {
     ) !@This() {
         return protobuf.json.parse(@This(), allocator, source, options);
     }
+};
+
+/// Options of the files of this package that have some
+/// (`google.protobuf.FileOptions`), by file name.
+pub const _file_options = .{
+    .@"opentelemetry/proto/trace/v1/trace.proto" = .{
+        .@"#raw" = "\n\x1fio.opentelemetry.proto.trace.v1B\nTraceProtoP\x01Z'go.opentelemetry.io/proto/otlp/trace/v1\xaa\x02\x1cOpenTelemetry.Proto.Trace.V1",
+        .java_package = "io.opentelemetry.proto.trace.v1",
+        .java_outer_classname = "TraceProto",
+        .java_multiple_files = true,
+        .go_package = "go.opentelemetry.io/proto/otlp/trace/v1",
+        .csharp_namespace = "OpenTelemetry.Proto.Trace.V1",
+    },
 };

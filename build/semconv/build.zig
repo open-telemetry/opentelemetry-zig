@@ -19,18 +19,18 @@ pub fn Setup(
     });
     try dependencies.put("opentelemetry-semconv", semconv_mod);
 
-    _ = try addTestStep(b, semconv_mod);
+    _ = try addTestStep(b, semconv_mod, info);
     try addExamplesStep(b, semconv_mod, info);
     _ = try addDocsStep(b, info);
     addGenerateStep(b);
 }
 
-fn addTestStep(b: *std.Build, semconv_mod: *std.Build.Module) !*std.Build.Step {
+fn addTestStep(b: *std.Build, semconv_mod: *std.Build.Module, info: CompilationInfo) !*std.Build.Step {
     const step = b.step("semconv-test", "Run opentelemetry-semconv unit tests");
 
     const semconv_tests = b.addTest(.{
         .root_module = semconv_mod,
-        .filters = b.args orelse &[0][]const u8{},
+        .filters = info.test_filters,
     });
     const run_semconv_tests = b.addRunArtifact(semconv_tests);
     step.dependOn(&run_semconv_tests.step);
@@ -46,11 +46,11 @@ fn addExamplesStep(b: *std.Build, semconv_mod: *std.Build.Module, info: Compilat
     const run_step = b.step("semconv-run-examples", "Run installed opentelemetry-semconv examples from zig-out");
 
     const examples_dir = b.path(semconv_root ++ "/examples");
-    var dir = try examples_dir.getPath3(b, null).openDir(std.Options.debug_io, "", .{ .iterate = true });
-    defer dir.close(std.Options.debug_io);
+    var dir = try helpers.openSourceDir(b, examples_dir);
+    defer dir.close(b.graph.io);
 
     var iter = dir.iterate();
-    while (try iter.next(std.Options.debug_io)) |file| {
+    while (try iter.next(b.graph.io)) |file| {
         const name = helpers.getZigFileName(file.name) orelse continue;
 
         const example_exe = b.addExecutable(.{
@@ -59,7 +59,7 @@ fn addExamplesStep(b: *std.Build, semconv_mod: *std.Build.Module, info: Compilat
                 .root_source_file = try examples_dir.join(b.allocator, file.name),
                 .target = info.target,
                 // Examples are always run in Debug mode to catch potential API issues.
-                .optimize = .Debug,
+                .optimize = .debug,
                 .imports = &.{
                     .{ .name = "opentelemetry-semconv", .module = semconv_mod },
                 },
@@ -80,7 +80,7 @@ fn addDocsStep(b: *std.Build, info: CompilationInfo) !*std.Build.Step {
             .target = info.target,
             // Doc emission is independent of optimize mode; pin to Debug
             // for the fastest doc builds.
-            .optimize = .Debug,
+            .optimize = .debug,
         }),
     });
     const install_docs = b.addInstallDirectory(.{

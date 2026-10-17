@@ -42,11 +42,11 @@ pub fn milliToNano(millis: u64) u64 {
 
 // Context keys for SpanContext serialization - generated at compile time using metaprogramming
 const SpanContextKeys = blk: {
-    const fields = std.meta.fields(SpanContext);
-    var keys: [fields.len]context.ContextKey = undefined;
-    for (fields, 0..) |field, i| {
+    const field_names = @typeInfo(SpanContext).@"struct".field_names;
+    var keys: [field_names.len]context.ContextKey = undefined;
+    for (field_names, 0..) |name, i| {
         // Use compile-time string concatenation to create unique key names
-        const key_name = "opentelemetry.span_context." ++ field.name;
+        const key_name = "opentelemetry.span_context." ++ name;
         keys[i] = context.ContextKey{
             .id = i, // Use field index as unique ID
             .name = key_name,
@@ -57,9 +57,9 @@ const SpanContextKeys = blk: {
 
 /// Get the context key for a specific SpanContext field at compile time
 fn getSpanContextKey(comptime field_name: []const u8) context.ContextKey {
-    const fields = std.meta.fields(SpanContext);
-    inline for (fields, 0..) |field, i| {
-        if (comptime std.mem.eql(u8, field.name, field_name)) {
+    const field_names = @typeInfo(SpanContext).@"struct".field_names;
+    inline for (field_names, 0..) |name, i| {
+        if (comptime std.mem.eql(u8, name, field_name)) {
             return SpanContextKeys[i];
         }
     }
@@ -163,11 +163,11 @@ pub fn serializeSpanContext(allocator: std.mem.Allocator, span_context: SpanCont
     var ctx = context.Context.init();
 
     // Use metaprogramming to serialize all fields
-    const fields = std.meta.fields(SpanContext);
-    inline for (fields) |field| {
-        const field_value = @field(span_context, field.name);
+    const field_names = @typeInfo(SpanContext).@"struct".field_names;
+    inline for (field_names) |name| {
+        const field_value = @field(span_context, name);
         const attr_value = try serializeField(allocator, field_value);
-        const key = getSpanContextKey(field.name);
+        const key = getSpanContextKey(name);
 
         // Handle intermediate Context allocations properly
         const new_ctx = try ctx.setValue(allocator, key, attr_value);
@@ -181,9 +181,9 @@ pub fn serializeSpanContext(allocator: std.mem.Allocator, span_context: SpanCont
 /// Free all allocated strings in a serialized SpanContext before calling deinit().
 /// This function must be called on contexts created by serializeSpanContext() to prevent memory leaks.
 pub fn freeSerializedSpanContext(allocator: std.mem.Allocator, ctx: context.Context) void {
-    const fields = std.meta.fields(SpanContext);
-    inline for (fields) |field| {
-        const key = getSpanContextKey(field.name);
+    const field_names = @typeInfo(SpanContext).@"struct".field_names;
+    inline for (field_names) |name| {
+        const key = getSpanContextKey(name);
         if (ctx.getValue(key)) |attr_value| {
             switch (attr_value) {
                 .string => |str| {
@@ -202,21 +202,23 @@ pub fn deserializeSpanContext(ctx: context.Context) ?SpanContext {
     const allocator = ctx.allocator orelse return null;
 
     // Use metaprogramming to deserialize all fields
-    const fields = std.meta.fields(SpanContext);
-    var field_values: [fields.len]?attribute.AttributeValue = undefined;
+    const span_context_info = @typeInfo(SpanContext).@"struct";
+    const field_names = span_context_info.field_names;
+    const field_types = span_context_info.field_types;
+    var field_values: [field_names.len]?attribute.AttributeValue = undefined;
 
     // Read all field values from context
-    inline for (fields, 0..) |field, i| {
-        const key = getSpanContextKey(field.name);
+    inline for (field_names, 0..) |name, i| {
+        const key = getSpanContextKey(name);
         field_values[i] = ctx.getValue(key);
         if (field_values[i] == null) return null;
     }
 
     // Deserialize all fields
     var result: SpanContext = undefined;
-    inline for (fields, 0..) |field, i| {
-        const field_value = deserializeField(allocator, field.type, field_values[i].?) orelse return null;
-        @field(result, field.name) = field_value;
+    inline for (field_names, field_types, 0..) |name, T, i| {
+        const field_value = deserializeField(allocator, T, field_values[i].?) orelse return null;
+        @field(result, name) = field_value;
     }
 
     return result;

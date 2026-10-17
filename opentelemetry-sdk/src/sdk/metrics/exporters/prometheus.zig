@@ -1078,9 +1078,9 @@ test "PrometheusExporter e2e" {
             .include_scope_labels = true,
         },
     });
-    defer result.exporter.shutdown();
     defer result.prometheus.deinit();
 
+    // The reader owns the exporter: shutting the reader down also shuts the exporter down.
     const reader = try MetricReader.init(allocator, io, result.exporter);
     defer reader.shutdown();
     try mp.addReader(reader);
@@ -1152,6 +1152,5 @@ test "PrometheusExporter e2e" {
     // 1. result.prometheus.stop()
     // 2. reader.shutdown()
     // 3. result.prometheus.deinit()
-    // 4. result.exporter.shutdown()
-    // 5. mp.shutdown()
+    // 4. mp.shutdown()
 }

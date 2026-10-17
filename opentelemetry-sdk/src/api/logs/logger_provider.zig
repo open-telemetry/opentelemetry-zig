@@ -449,12 +449,12 @@ pub const Logger = struct {
     ) void {
         if (self.provider.sdk_disabled or self.provider.is_shutdown.load(.acquire)) return;
 
-        const fields = @typeInfo(@TypeOf(data)).@"struct".fields;
-        var body_attrs: [fields.len]Attribute = undefined;
-        inline for (fields, 0..) |field, i| {
+        const field_names = @typeInfo(@TypeOf(data)).@"struct".field_names;
+        var body_attrs: [field_names.len]Attribute = undefined;
+        inline for (field_names, 0..) |name, i| {
             body_attrs[i] = .{
-                .key = field.name,
-                .value = structFieldToAttributeValue(@field(data, field.name)),
+                .key = name,
+                .value = structFieldToAttributeValue(@field(data, name)),
             };
         }
         self.emitRecord(severity, .{ .structured = &body_attrs }, options);

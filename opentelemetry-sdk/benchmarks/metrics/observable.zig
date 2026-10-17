@@ -9,7 +9,9 @@ const benchmark = @import("benchmark");
 const bench_config = benchmark.Config{
     .max_iterations = 100000,
     .time_budget_ns = 2 * std.time.ns_per_s,
-    .track_allocations = true,
+    // zBench's tracking allocator does not account for successful remaps, so
+    // freeing a remapped allocation underflows its counter and panics.
+    .track_allocations = false,
 };
 
 test "ObservableCounter_Create" {

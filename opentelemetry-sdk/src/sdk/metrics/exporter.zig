@@ -451,10 +451,8 @@ test "metric exporter builder in memory" {
         null,
     );
 
-    defer {
-        metric_exporter.in_memory.deinit();
-        metric_exporter.exporter.shutdown();
-    }
+    defer metric_exporter.in_memory.deinit();
+    // The reader owns the exporter: shutting the reader down also shuts the exporter down.
     const metric_reader = try MetricReader.init(std.testing.allocator, io, metric_exporter.exporter);
     defer metric_reader.shutdown();
 

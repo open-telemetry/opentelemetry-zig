@@ -102,8 +102,8 @@ pub fn main(init: std.process.Init) !void {
     http_span.end(null);
 
     // Verify spans were created successfully with valid IDs (not all zeros)
-    const zero_trace_id = [_]u8{0} ** 16;
-    const zero_span_id = [_]u8{0} ** 8;
+    const zero_trace_id: [16]u8 = @splat(0);
+    const zero_span_id: [8]u8 = @splat(0);
     std.debug.assert(!std.mem.eql(u8, &http_span.span_context.trace_id.value, &zero_trace_id));
     std.debug.assert(!std.mem.eql(u8, &http_span.span_context.span_id.value, &zero_span_id));
     std.debug.assert(!std.mem.eql(u8, &db_span.span_context.trace_id.value, &zero_trace_id));

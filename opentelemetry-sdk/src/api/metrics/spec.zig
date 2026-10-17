@@ -50,8 +50,14 @@ fn validateName(name: []const u8) FormatError!void {
     return;
 }
 
+/// Repeats `str` `n` times at comptime.
+inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
+    const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
+    return @ptrCast(&buf);
+}
+
 test "instrument name must conform to the OpenTelemetry specification" {
-    const longname = "longname" ** 32;
+    const longname = repeatString(32, "longname");
     const invalid_names = &[_][]const u8{
         "0invalid",
         "wrongchar()",
@@ -99,7 +105,7 @@ fn validateUnit(unit: ?[]const u8) FormatError!void {
 }
 
 test "validate unit" {
-    const longunit = "longunit" ** 8;
+    const longunit = repeatString(8, "longunit");
     const invalid_units = &[_][]const u8{
         // 64 chars exceeds the limit
         longunit,
@@ -126,7 +132,7 @@ fn validateDescription(description: ?[]const u8) FormatError!void {
 }
 
 test "validate description" {
-    const longdesc = "longdesc" ** 128;
+    const longdesc = repeatString(128, "longdesc");
     const invalid_descs = &[_][]const u8{
         // 1024 chars exceeds the limit
         longdesc,

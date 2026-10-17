@@ -9,6 +9,13 @@ pub fn getZigFileName(file_name: []const u8) ?[]const u8 {
     return file_name[0..index];
 }
 
+/// Opens `dir` (a `b.path(...)` directory) for iteration while configuring the
+/// build, and registers it so that adding or removing files re-runs configure.
+pub fn openSourceDir(b: *std.Build, dir: std.Build.LazyPath) !std.Io.Dir {
+    b.dependOnDirectoryContents(dir);
+    return b.root.openDir(b.graph.io, dir.src_path.sub_path, .{ .iterate = true });
+}
+
 pub const BuildModules = std.StringHashMap(*std.Build.Module);
 
 // Generates a ist of imports from a BuildModules map, only including the modules whose names are in the `include` list.
@@ -35,9 +42,12 @@ pub const BuildError = error{
 
 pub const CompilationInfo = struct {
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.builtin.Optimize,
     version: []const u8,
     pkg_name: []const u8,
+    /// Selects which tests to compile: a test is kept if its name contains any of
+    /// these strings (-Dtest-filter, repeatable). Empty keeps every test.
+    test_filters: []const []const u8,
 };
 
 /// Installs `exe` to zig-out/<install_subdir>/ and hooks that install into

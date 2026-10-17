@@ -370,7 +370,7 @@ pub const ConfigOptions = struct {
     }
 
     fn entryFromEnvMap(environ: *const EnvMap, varSuffix: []const u8) ?[]const u8 {
-        var env_var_name: [128]u8 = [_]u8{0} ** 128;
+        var env_var_name: [128]u8 = @splat(0);
         for (env_var_prefix, 0..) |c, i| {
             env_var_name[i] = c;
         }
@@ -832,6 +832,12 @@ fn parseHeaders(allocator: std.mem.Allocator, key_values: []const u8) ![]std.htt
     return ret;
 }
 
+/// Repeats `str` `n` times at comptime.
+inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
+    const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
+    return @ptrCast(&buf);
+}
+
 test "otlp config parse headers" {
     const allocator = std.testing.allocator;
 
@@ -863,10 +869,10 @@ test "otlp config parse headers" {
     }
 
     // 150 bytes * 60 == 9000 bytes
-    const invalid_too_many_bytes: []const u8 = "key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA," ** 60;
+    const invalid_too_many_bytes: []const u8 = repeatString(60, "key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,");
     try std.testing.expectError(ConfigError.InvalidHeadersTooManyBytes, parseHeaders(allocator, invalid_too_many_bytes));
 
-    const invalid_too_many_items: []const u8 = "key=val," ** 65;
+    const invalid_too_many_items: []const u8 = repeatString(65, "key=val,");
     try std.testing.expectError(ConfigError.InvalidHeadersTooManyItems, parseHeaders(allocator, invalid_too_many_items));
 }
 
@@ -922,7 +928,7 @@ test "otlp HTTPClient send fails for missing server" {
     const url = try config.httpUrlForSignal(.metrics, allocator);
     defer allocator.free(url);
 
-    var payload = [_]u8{0} ** 1024;
+    var payload: [1024]u8 = @splat(0);
     const result = client.send(url, &payload);
     try std.testing.expectError(error.ConnectionRefused, result);
 }

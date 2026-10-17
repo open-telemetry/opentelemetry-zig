@@ -525,7 +525,7 @@ test "metric reader cumulative histogram across collection" {
             const expected_max: f64 = if (cycle == 0) expected_min else if (T == f64) second else @floatFromInt(second);
             try std.testing.expectEqual(expected_min, value.min.?);
             try std.testing.expectEqual(expected_max, value.max.?);
-            var counts = [_]u64{0} ** (bounds.len + 1);
+            var counts: [bounds.len + 1]u64 = @splat(0);
             counts[1] = 1;
             if (cycle > 0) counts[if (T == f64) 1 else 2] += 1;
             try std.testing.expectEqualSlices(u64, &counts, value.bucket_counts);

@@ -8,7 +8,13 @@ const sdk_build = @import("build/sdk/build.zig");
 
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
-    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseSafe });
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .safe });
+
+    const test_filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "Only build tests and benchmarks whose name contains this string (repeatable)",
+    ) orelse &.{};
 
     const benchmarks_mod = b.dependency("zbench", .{}).module("zbench");
     const protobuf_mod = b.dependency("protobuf", .{
@@ -27,6 +33,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
         .pkg_name = @tagName(zon.name),
         .version = zon.version,
+        .test_filters = test_filters,
     };
 
     // proto and semconv expose modules the SDK can import so they need to be built first.

@@ -44,10 +44,12 @@ The test build supports the following options:
 - `-Dtest-fail-first=true`: Stop on first test failure
 - `-Dtest-show-logs=true`: Show captured log output for tests with warnings/errors
 
-To run only specific tests matching a pattern, use build args:
+To run only specific tests whose name contains a string, use `-Dtest-filter` (repeat it to match
+several strings). It applies to every test step (`sdk-test`, `proto-test`, `semconv-test`) and to
+`sdk-benchmarks`:
 
 ```
-zig build sdk-test -- "counter"
+zig build sdk-test -Dtest-filter=counter
 ```
 
 Example usage:
@@ -57,7 +59,7 @@ Example usage:
 zig build sdk-test -Dtest-verbose=true
 
 # Run specific tests with verbose output and stop on first failure
-zig build sdk-test -Dtest-verbose=true -Dtest-fail-first=true -- "counter"
+zig build sdk-test -Dtest-verbose=true -Dtest-fail-first=true -Dtest-filter=counter
 
 # Show captured logs for tests with warnings/errors
 zig build sdk-test -Dtest-show-logs=true
@@ -75,7 +77,7 @@ zig build sdk-integration
 zig build sdk-run-integration
 
 # Filter to a specific test by name
-zig build sdk-run-integration -- metrics
+zig build sdk-run-integration -Dintegration-filter=metrics
 ```
 
 Integration tests are executed as part of CI on pull requests.
@@ -134,17 +136,17 @@ The benchmark build supports the following options:
 - `-Dbenchmark-output=<path>`: Path to write benchmark results to a file
 - `-Dbenchmark-debug=true`: Enable debug build mode for benchmarks (useful for profiling)
 
-To run only specific benchmarks matching a pattern, use build args:
+To run only specific benchmarks whose name contains a string, use `-Dtest-filter`:
 
 ```
 # Run only counter benchmarks
-zig build sdk-benchmarks -Doptimize=ReleaseFast -- "counter"
+zig build sdk-benchmarks -Doptimize=ReleaseFast -Dtest-filter=counter
 
 # Run a specific benchmark and save results
-zig build sdk-benchmarks -Doptimize=ReleaseFast -Dbenchmark-output="results.txt" -- "hist.record"
+zig build sdk-benchmarks -Doptimize=ReleaseFast -Dbenchmark-output="results.txt" -Dtest-filter=hist.record
 
 # Run benchmarks in debug mode for profiling
-zig build sdk-benchmarks -Dbenchmark-debug=true -- "counter"
+zig build sdk-benchmarks -Dbenchmark-debug=true -Dtest-filter=counter
 ```
 
 > [!NOTE]

@@ -15,7 +15,7 @@
     // This field is optional.
     // This is currently advisory only; Zig does not yet do anything
     // with this value.
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -24,14 +24,14 @@
     // internet connectivity.
     .dependencies = .{
         .zbench = .{
-            .url = "git+https://github.com/hendriknielaender/zBench?ref=v0.13.0#b2b89c475e3ef1bb2bd71255c80478a82d3e0ca8",
-            .hash = "zbench-0.13.0-YTdc7xVBAQCCMC-IdLLuotBeiNNNm8k9Pi2V4VYqrwfI",
+            .url = "git+https://github.com/hendriknielaender/zBench?ref=v0.14.1#f12a2262bcd9d300207890555c577da5e29de453",
+            .hash = "zbench-0.14.1-YTdc781OAQCR6wxqkgAwm9bG4TnFGzm8c9aE-ZPiTAU1",
         },
         // Consumed by the vendored opentelemetry-proto module (see
         // build/proto/build.zig) and, transitively, by the SDK.
         .protobuf = .{
-            .url = "git+https://github.com/Arwalk/zig-protobuf?ref=v5.0.0#1f6cb06156b3ff4f52f98bc14f829c0b8393a6fc",
-            .hash = "protobuf-5.0.0-0e82avKUKAAVwTWJzTIEZ14Fu0zC11_lElR8tE6H__y1",
+            .url = "git+https://github.com/Arwalk/zig-protobuf?ref=master#e9e18c7664b8c950e5fc679259c968dd66ccc48b",
+            .hash = "protobuf-7.0.0-0e82aqFhNADVgEgPYPI7ddEg_dzhphBToYgkjQTrMKWv",
         },
         // Upstream .proto definitions, used only to regenerate the vendored
         // bindings (zig build proto-generate -Dproto-src). Lazy so plain builds

@@ -157,6 +157,15 @@ pub const SimpleLogRecordProcessor = struct {
     }
 };
 
+/// The size of the batches to export `count` records in the fewest batches of at most `max`
+/// records: spread evenly, instead of full batches followed by a tiny one (513 records are
+/// exported as 257 + 256, not 512 + 1). The last batch may be smaller by a few records.
+fn evenBatchSize(count: usize, max: usize) usize {
+    std.debug.assert(count > 0 and max > 0);
+    const batches = (count + max - 1) / max;
+    return (count + batches - 1) / batches;
+}
+
 /// BatchingLogRecordProcessor batches log records and passes them to the configured exporter.
 /// see: https://opentelemetry.io/docs/specs/otel/logs/sdk/#batching-processor
 ///
@@ -348,7 +357,8 @@ pub const BatchingLogRecordProcessor = struct {
         }
     }
 
-    /// Exports every record queued when called, in batches of at most `max_export_batch_size`.
+    /// Exports every record queued when called, in batches of at most `max_export_batch_size`,
+    /// of similar sizes (see `evenBatchSize`).
     ///
     /// Must be called while holding the mutex, which is released while exporting. At most one
     /// export runs at a time: a concurrent caller waits for the one in flight, then exports what
@@ -363,8 +373,9 @@ pub const BatchingLogRecordProcessor = struct {
         self.active_arena +%= 1;
         self.exporting = true;
 
+        const batch_size = evenBatchSize(remaining, self.batch_buffer.len);
         while (remaining > 0) {
-            const batch = self.queue.popBatch(self.batch_buffer[0..@min(remaining, self.batch_buffer.len)]);
+            const batch = self.queue.popBatch(self.batch_buffer[0..@min(remaining, batch_size)]);
             remaining -= batch.len;
 
             // Unlock while exporting to allow concurrent onEmit calls
@@ -1053,4 +1064,14 @@ test "BatchingLogRecordProcessor memory stays bounded when the queue never drain
     try std.testing.expect(capacity < rounds * body.len / 4);
 
     try refilling.processor.shutdown();
+}
+
+test "evenBatchSize spreads records evenly over the fewest batches" {
+    try std.testing.expectEqual(@as(usize, 1), evenBatchSize(1, 512));
+    try std.testing.expectEqual(@as(usize, 512), evenBatchSize(512, 512));
+    try std.testing.expectEqual(@as(usize, 257), evenBatchSize(513, 512));
+    try std.testing.expectEqual(@as(usize, 350), evenBatchSize(700, 512));
+    try std.testing.expectEqual(@as(usize, 515), evenBatchSize(1030, 1024));
+    try std.testing.expectEqual(@as(usize, 1024), evenBatchSize(2048, 1024));
+    try std.testing.expectEqual(@as(usize, 1), evenBatchSize(5, 1));
 }

@@ -1031,7 +1031,7 @@ test "otlp http_json encodes trace and span IDs as lowercase hex" {
 
     var log_records = [_]pblogs.LogRecord{
         .{ .trace_id = &trace_id, .span_id = &span_id, .body = .{ .value = .{ .string_value = "\"traceId\":\"AAAA\"" } } },
-        // Logs emitted outside a span carry empty IDs.
+        // Logs emitted outside a span carry empty IDs, which the protobuf JSON encoding omits.
         .{},
     };
     var scope_logs = [_]pblogs.ScopeLogs{.{ .log_records = .fromOwnedSlice(&log_records) }};
@@ -1040,7 +1040,8 @@ test "otlp http_json encodes trace and span IDs as lowercase hex" {
     defer allocator.free(logs);
 
     try std.testing.expect(std.mem.indexOf(u8, logs, "\"traceId\":\"0123456789abcdef1032547698badcfe\",\"spanId\":\"0123456789abcdef\"") != null);
-    try std.testing.expect(std.mem.indexOf(u8, logs, "\"traceId\":\"\",\"spanId\":\"\"") != null);
+    try std.testing.expectEqual(1, std.mem.count(u8, logs, "\"traceId\":"));
+    try std.testing.expectEqual(1, std.mem.count(u8, logs, "\"spanId\":"));
     // A key-like sequence inside a string value is left untouched.
     try std.testing.expect(std.mem.indexOf(u8, logs, "\"stringValue\":\"\\\"traceId\\\":\\\"AAAA\\\"\"") != null);
 }

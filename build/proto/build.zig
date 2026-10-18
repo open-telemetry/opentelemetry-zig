@@ -79,7 +79,6 @@ fn addGenerateStep(b: *std.Build, info: CompilationInfo) !void {
             proto_dep.path("."),
         },
     });
-    protoc_step.verbose = info.optimize == .debug;
 
     step.dependOn(protoc_step.step);
 }

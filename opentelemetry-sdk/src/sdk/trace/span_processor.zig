@@ -152,6 +152,9 @@ pub const SimpleProcessor = struct {
 };
 
 /// BatchingProcessor batches finished spans and passes them to the configured SpanExporter
+///
+/// The processor never calls the exporter concurrently, but that guarantee is per processor:
+/// an exporter instance must belong to a single processor.
 pub const BatchingProcessor = struct {
     allocator: std.mem.Allocator,
     exporter: SpanExporter,
@@ -169,6 +172,10 @@ pub const BatchingProcessor = struct {
     io: std.Io,
     export_task: ?std.Io.Future(void),
     should_shutdown: std.atomic.Value(bool),
+    /// True while a batch is being exported. The exporter's `Export` must never be called
+    /// concurrently, so `exportBatch` waits on `export_done` until it is false. Guarded by `mutex`.
+    exporting: bool,
+    export_done: std.Io.Condition,
 
     const Self = @This();
 
@@ -203,6 +210,8 @@ pub const BatchingProcessor = struct {
             .io = io,
             .export_task = null,
             .should_shutdown = std.atomic.Value(bool).init(false),
+            .exporting = false,
+            .export_done = .init,
         };
 
         // Start the background export task using io.concurrent
@@ -295,6 +304,10 @@ pub const BatchingProcessor = struct {
         while (self.queue.len > 0) {
             if (!self.exportBatch()) break;
         }
+
+        // A batch taken by another caller (e.g. the background task) may still be exporting:
+        // wait for it, so that every span queued before this call has been exported on return.
+        while (self.exporting) self.export_done.waitUncancelable(self.io, &self.mutex);
     }
 
     fn exportLoop(self: *Self) void {
@@ -333,8 +346,11 @@ pub const BatchingProcessor = struct {
         }
     }
 
-    /// Must be called while holding the mutex
+    /// Must be called while holding the mutex. The mutex is released while exporting, but at most
+    /// one batch is exported at a time: concurrent callers wait for the in-flight export first.
     fn exportBatch(self: *Self) bool {
+        while (self.exporting) self.export_done.waitUncancelable(self.io, &self.mutex);
+
         if (self.queue.len == 0) return false;
 
         const batch_size = @min(self.queue.len, self.max_export_batch_size);
@@ -348,7 +364,13 @@ pub const BatchingProcessor = struct {
 
         const spans_to_export = self.queue.popBatch(export_spans);
 
-        // Export the batch (unlock mutex during export)
+        // Export the batch (unlock mutex during export). Deferred first so that it runs last,
+        // once the mutex is held again.
+        self.exporting = true;
+        defer {
+            self.exporting = false;
+            self.export_done.broadcast(self.io);
+        }
         self.mutex.unlock(self.io);
         defer self.mutex.lockUncancelable(self.io);
         defer for (export_spans) |*span| {
@@ -548,6 +570,107 @@ test "BatchingProcessor bounds export with export_timeout_millis" {
     try std.testing.expect(stalling.canceled.load(.acquire));
     // The exporter would have blocked for 5s; the deadline is 100ms.
     try std.testing.expect(elapsed_ms < 2000);
+}
+
+test "BatchingProcessor never exports concurrently and forceFlush waits for the batch in flight" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    // Holds its first batch inside `Export` until released, and records whether any `Export` call
+    // overlapped another one.
+    const BlockingExporter = struct {
+        calls: std.atomic.Value(usize) = .init(0),
+        active: std.atomic.Value(usize) = .init(0),
+        exported: std.atomic.Value(usize) = .init(0),
+        first_started: std.atomic.Value(bool) = .init(false),
+        release: std.atomic.Value(bool) = .init(false),
+        overlapped: std.atomic.Value(bool) = .init(false),
+
+        pub fn exportSpans(ctx: *anyopaque, spans: []trace.Span) anyerror!void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            if (self.active.fetchAdd(1, .acq_rel) != 0) self.overlapped.store(true, .release);
+            defer _ = self.active.fetchSub(1, .acq_rel);
+
+            if (self.calls.fetchAdd(1, .acq_rel) == 0) {
+                self.first_started.store(true, .release);
+                while (!self.release.load(.acquire)) clock.sleep(1 * std.time.ns_per_ms);
+            }
+            _ = self.exported.fetchAdd(spans.len, .acq_rel);
+        }
+
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+
+        pub fn asSpanExporter(self: *@This()) SpanExporter {
+            return SpanExporter{
+                .ptr = self,
+                .vtable = &.{
+                    .exportSpansFn = exportSpans,
+                    .shutdownFn = shutdown,
+                },
+            };
+        }
+
+        fn waitFor(flag: *const std.atomic.Value(bool)) !void {
+            var attempts: usize = 0;
+            while (!flag.load(.acquire)) : (attempts += 1) {
+                if (attempts == 5000) return error.Timeout;
+                clock.sleep(1 * std.time.ns_per_ms);
+            }
+        }
+    };
+
+    const Flusher = struct {
+        fn run(p: SpanProcessor, done: *std.atomic.Value(bool)) void {
+            p.forceFlush() catch {};
+            done.store(true, .release);
+        }
+    };
+
+    var mock_exporter: BlockingExporter = .{};
+    var processor = try BatchingProcessor.init(allocator, io, mock_exporter.asSpanExporter(), .{
+        .max_export_batch_size = 5,
+        .scheduled_delay_millis = 60_000,
+    });
+    defer {
+        const span_processor = processor.asSpanProcessor();
+        span_processor.shutdown() catch {};
+        processor.deinit();
+    }
+
+    const span_processor = processor.asSpanProcessor();
+
+    const trace_id = trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 });
+    const span_id = trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 });
+    var trace_state = trace.TraceState.init(allocator);
+    defer trace_state.deinit();
+    const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
+    const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
+    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+    defer test_span.deinit();
+
+    // A full batch wakes the background task, which pops it and blocks inside the exporter.
+    for (0..5) |_| span_processor.onEnd(test_span);
+    try BlockingExporter.waitFor(&mock_exporter.first_started);
+    for (0..7) |_| span_processor.onEnd(test_span);
+
+    // forceFlush from another thread must wait for the batch in flight instead of exporting
+    // alongside it.
+    var flush_done: std.atomic.Value(bool) = .init(false);
+    const flusher = try std.Thread.spawn(.{}, Flusher.run, .{ span_processor, &flush_done });
+    defer {
+        mock_exporter.release.store(true, .release);
+        flusher.join();
+    }
+    clock.sleep(50 * std.time.ns_per_ms);
+    try std.testing.expect(!flush_done.load(.acquire));
+    try std.testing.expectEqual(@as(usize, 1), mock_exporter.calls.load(.acquire));
+
+    mock_exporter.release.store(true, .release);
+    try BlockingExporter.waitFor(&flush_done);
+
+    // Once forceFlush returns, everything queued before it has been exported.
+    try std.testing.expectEqual(@as(usize, 12), mock_exporter.exported.load(.acquire));
+    try std.testing.expect(!mock_exporter.overlapped.load(.acquire));
 }
 
 test "BatchingProcessor shutdown exports pending spans" {

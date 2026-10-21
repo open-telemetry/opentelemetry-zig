@@ -126,7 +126,7 @@ Benchmarks are executed as part of the pipeline on Pull Requests if they contain
 They can be executed locally with:
 
 ```
-zig build sdk-benchmarks -Doptimize=ReleaseFast
+zig build sdk-benchmarks --release
 ```
 
 #### Benchmark options
@@ -140,10 +140,10 @@ To run only specific benchmarks whose name contains a string, use `-Dtest-filter
 
 ```
 # Run only counter benchmarks
-zig build sdk-benchmarks -Doptimize=ReleaseFast -Dtest-filter=counter
+zig build sdk-benchmarks --release -Dtest-filter=counter
 
 # Run a specific benchmark and save results
-zig build sdk-benchmarks -Doptimize=ReleaseFast -Dbenchmark-output="results.txt" -Dtest-filter=hist.record
+zig build sdk-benchmarks --release -Dbenchmark-output="results.txt" -Dtest-filter=Histogram_Record
 
 # Run benchmarks in debug mode for profiling
 zig build sdk-benchmarks -Dbenchmark-debug=true -Dtest-filter=counter
@@ -192,7 +192,7 @@ A typical development workflow:
 2. Run unit tests: `zig build sdk-test`
 3. Run integration tests: `zig build sdk-run-integration` (if applicable)
 4. Run relevant examples: `zig build sdk-run-examples -Dexamples-filter=<signal>`
-5. Run benchmarks: `zig build sdk-benchmarks -Doptimize=ReleaseFast` (if performance-critical)
+5. Run benchmarks: `zig build sdk-benchmarks --release` (if performance-critical)
 6. Commit your changes
 
 

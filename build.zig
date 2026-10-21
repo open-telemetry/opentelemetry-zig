@@ -16,7 +16,10 @@ pub fn build(b: *std.Build) !void {
         "Only build tests and benchmarks whose name contains this string (repeatable)",
     ) orelse &.{};
 
-    const benchmarks_mod = b.dependency("zbench", .{}).module("zbench");
+    const benchmarks_mod = b.dependency("zbench", .{
+        .optimize = optimize,
+        .target = target,
+    }).module("zbench");
     const protobuf_mod = b.dependency("protobuf", .{
         .optimize = optimize,
         .target = target,

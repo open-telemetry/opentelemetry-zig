@@ -15,7 +15,6 @@ const DataPoint = @import("../../../api/metrics/measurement.zig").DataPoint;
 const HistogramDataPoint = @import("../../../api/metrics/measurement.zig").HistogramDataPoint;
 const Attribute = @import("../../../attributes.zig").Attribute;
 const AttributeValue = @import("../../../attributes.zig").AttributeValue;
-const Kind = @import("../../../api/metrics/instrument.zig").Kind;
 
 /// Naming convention for metric names in Prometheus format.
 pub const NamingConvention = enum {
@@ -69,11 +68,11 @@ pub const PrometheusFormatter = struct {
 
     fn formatMeasurement(self: Self, writer: *std.Io.Writer, measurement: Measurements) !void {
         // Translate the metric name according to naming convention
-        const base_name = try self.translateName(measurement.instrumentOptions.name, measurement.instrumentOptions.unit, measurement.instrumentKind);
+        const base_name = try self.translateName(measurement.instrumentOptions.name, measurement.instrumentOptions.unit, isCounter(measurement));
         defer self.allocator.free(base_name);
 
         // Get the Prometheus metric type
-        const prom_type = self.getPrometheusType(measurement.instrumentKind);
+        const prom_type = getPrometheusType(measurement);
 
         // Write HELP line if description is provided
         if (measurement.instrumentOptions.description) |desc| {
@@ -99,8 +98,8 @@ pub const PrometheusFormatter = struct {
     }
 
     fn formatDataPoints(self: Self, writer: *std.Io.Writer, base_name: []const u8, measurement: Measurements, datapoints: anytype) !void {
-        // Determine if we need to add suffix based on instrument kind
-        const metric_name = try self.getMetricNameWithSuffix(base_name, measurement.instrumentKind);
+        // Determine if we need to add suffix based on the aggregated data
+        const metric_name = try self.getMetricNameWithSuffix(base_name, isCounter(measurement));
         defer if (metric_name.ptr != base_name.ptr) self.allocator.free(metric_name);
 
         for (datapoints) |dp| {
@@ -254,7 +253,7 @@ pub const PrometheusFormatter = struct {
     }
 
     /// Translate OTel metric name to Prometheus format.
-    fn translateName(self: Self, name: []const u8, unit: ?[]const u8, kind: Kind) ![]const u8 {
+    fn translateName(self: Self, name: []const u8, unit: ?[]const u8, is_counter: bool) ![]const u8 {
         switch (self.config.naming_convention) {
             .NoTranslation => return try self.allocator.dupe(u8, name),
             .NoUTF8EscapingWithSuffixes, .UnderscoreEscapingWithSuffixes, .UnderscoreEscapingWithoutSuffixes => {
@@ -287,14 +286,8 @@ pub const PrometheusFormatter = struct {
 
                 // Add type suffix if naming convention includes suffixes
                 const add_suffixes = self.config.naming_convention != .UnderscoreEscapingWithoutSuffixes;
-                if (add_suffixes) {
-                    switch (kind) {
-                        .Counter => {
-                            // Add _total suffix for monotonic counters
-                            try result.appendSlice("_total");
-                        },
-                        else => {},
-                    }
+                if (add_suffixes and is_counter) {
+                    try result.appendSlice("_total");
                 }
 
                 // Collapse consecutive underscores
@@ -362,7 +355,7 @@ pub const PrometheusFormatter = struct {
         return try result.toOwnedSlice();
     }
 
-    fn getMetricNameWithSuffix(self: Self, base_name: []const u8, kind: Kind) ![]const u8 {
+    fn getMetricNameWithSuffix(self: Self, base_name: []const u8, is_counter: bool) ![]const u8 {
         const add_suffixes = switch (self.config.naming_convention) {
             .UnderscoreEscapingWithSuffixes, .NoUTF8EscapingWithSuffixes => true,
             .UnderscoreEscapingWithoutSuffixes, .NoTranslation => false,
@@ -372,8 +365,7 @@ pub const PrometheusFormatter = struct {
             return try self.allocator.dupe(u8, base_name);
         }
 
-        // Add _total suffix for monotonic counters
-        if (kind == .Counter) {
+        if (is_counter) {
             if (!std.mem.endsWith(u8, base_name, "_total")) {
                 return try std.fmt.allocPrint(self.allocator, "{s}_total", .{base_name});
             }
@@ -382,16 +374,19 @@ pub const PrometheusFormatter = struct {
         return try self.allocator.dupe(u8, base_name);
     }
 
-    fn getPrometheusType(self: Self, kind: Kind) []const u8 {
-        _ = self;
-        return switch (kind) {
-            .Counter => "counter",
-            .UpDownCounter => "gauge",
-            .Gauge => "gauge",
-            .Histogram => "histogram",
-            .ObservableCounter => "counter",
-            .ObservableUpDownCounter => "gauge",
-            .ObservableGauge => "gauge",
+    /// Views can change the aggregation of an instrument, so the type follows the aggregated data.
+    /// See https://opentelemetry.io/docs/specs/otel/compatibility/prometheus_and_openmetrics/#sums
+    fn isCounter(measurement: Measurements) bool {
+        return switch (measurement.data) {
+            .int, .double => !measurement.isLastValue() and measurement.instrumentKind.isMonotonic(),
+            .histogram, .exponential_histogram => false,
+        };
+    }
+
+    fn getPrometheusType(measurement: Measurements) []const u8 {
+        return switch (measurement.data) {
+            .int, .double => if (isCounter(measurement)) "counter" else "gauge",
+            .histogram, .exponential_histogram => "histogram",
         };
     }
 
@@ -800,17 +795,17 @@ test "PrometheusFormatter: metric name with unit conversion" {
     var formatter = PrometheusFormatter.init(allocator, .{});
 
     // Test milliseconds conversion
-    const name1 = try formatter.translateName("duration", "ms", .Gauge);
+    const name1 = try formatter.translateName("duration", "ms", false);
     defer allocator.free(name1);
     try std.testing.expectEqualStrings("duration_milliseconds", name1);
 
     // Test ratio (unit "1")
-    const name2 = try formatter.translateName("ratio", "1", .Gauge);
+    const name2 = try formatter.translateName("ratio", "1", false);
     defer allocator.free(name2);
     try std.testing.expectEqualStrings("ratio", name2);
 
     // Test per-unit conversion
-    const name3 = try formatter.translateName("speed", "m/s", .Gauge);
+    const name3 = try formatter.translateName("speed", "m/s", false);
     defer allocator.free(name3);
     try std.testing.expectEqualStrings("speed_m_per_s", name3);
 }
@@ -881,6 +876,55 @@ test "PrometheusFormatter: histogram formatting" {
     try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_bucket{le=\"+Inf\"} 50") != null);
     try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_sum 15.5") != null);
     try std.testing.expect(std.mem.indexOf(u8, formatted_output, "request_duration_count 50") != null);
+}
+
+test "PrometheusFormatter: type follows the aggregated data" {
+    const allocator = std.testing.allocator;
+
+    var formatter = PrometheusFormatter.init(allocator, .{
+        .include_scope_labels = false,
+    });
+
+    // A view can aggregate a counter into a histogram, and a histogram into a sum.
+    var bucket_counts = [_]u64{ 1, 0 };
+    var histogram_points = [_]DataPoint(HistogramDataPoint){.{ .value = .{
+        .count = 1,
+        .sum = 0.5,
+        .bucket_counts = &bucket_counts,
+        .explicit_bounds = &.{1.0},
+    } }};
+    var sum_points = [_]DataPoint(i64){.{ .value = 42 }};
+
+    var measurements = [_]Measurements{
+        .{
+            .scope = .{ .name = "test" },
+            .instrumentKind = .Counter,
+            .instrumentOptions = .{ .name = "counter_as_histogram" },
+            .data = .{ .histogram = &histogram_points },
+            .aggregation = .ExplicitBucketHistogram,
+        },
+        .{
+            .scope = .{ .name = "test" },
+            .instrumentKind = .Histogram,
+            .instrumentOptions = .{ .name = "histogram_as_sum" },
+            .data = .{ .int = &sum_points },
+            .aggregation = .Sum,
+        },
+    };
+
+    var output = std.ArrayListUnmanaged(u8).empty;
+    var writer_alloc = std.Io.Writer.Allocating.fromArrayList(allocator, &output);
+    defer writer_alloc.deinit();
+
+    try formatter.format(&writer_alloc.writer, &measurements);
+    try writer_alloc.writer.flush();
+
+    const formatted_output = writer_alloc.writer.buffer[0..writer_alloc.writer.end];
+
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "# TYPE counter_as_histogram histogram\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "counter_as_histogram_count 1\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "# TYPE histogram_as_sum_total counter\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, formatted_output, "histogram_as_sum_total 42\n") != null);
 }
 
 // HTTP Server Lifecycle Tests

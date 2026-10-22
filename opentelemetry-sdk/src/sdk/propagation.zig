@@ -537,7 +537,7 @@ test "extracted trace context parents a server span that is injected downstream"
 
     var default_prng = std.Random.DefaultPrng.init(0);
     var provider = try TracerProvider.init(allocator, io, .{ .Random = RandomIDGenerator.init(default_prng.random()) });
-    defer provider.shutdown();
+    defer provider.deinit();
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
 
     // Incoming request from an upstream service

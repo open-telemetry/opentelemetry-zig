@@ -226,7 +226,11 @@ pub const MetricReader = struct {
                 return Temporality.TemporalAggregationError.MissingTimestampTimeUnixNano;
             var dp = try entry.value_ptr.deepCopy(self.allocator);
             errdefer dp.deinit(self.allocator);
-            dp.attributes = try Attributes.with(entry.key_ptr.datapoint_attributes).dupe(self.allocator);
+            dp.attributes = if (entry.key_ptr.datapoint_attributes) |attrs|
+                try @import("exemplar.zig").Exemplar.copyAttributes(self.allocator, attrs)
+            else
+                null;
+            dp.attributes_owned = true;
             dp.timestamps = .{
                 .start_time_ns = timestamps.start_time_ns,
                 .time_ns = collection_time,
@@ -1034,4 +1038,60 @@ test "metric reader cumulative exponential histogram merges buckets at the same 
     try std.testing.expectEqual(0, dp4[0].value.sum.?);
     try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp4[0].value.positive_bucket_counts);
     try std.testing.expectEqualSlices(u64, &[3]u64{ 1, 2, 1 }, dp4[0].value.negative_bucket_counts);
+}
+
+test "exemplar cumulative collection retains values after exported attributes are freed" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const provider = try MeterProvider.init(allocator, io);
+    defer provider.shutdown();
+    const memory = try MetricExporter.InMemory(allocator, io, null, null);
+    defer memory.in_memory.deinit();
+    const reader = try MetricReader.init(allocator, io, memory.exporter);
+    defer reader.shutdown();
+    try provider.addReader(reader);
+    const meter = try provider.getMeter(.{ .name = "exemplar-reader" });
+    const counter = try meter.createCounter(u64, .{ .name = "requests" });
+    counter.exemplar_filter = .always_on;
+    const region: []const u8 = "west";
+    for ([_]u64{ 1, 2 }, [_]i64{ 1, 3 }) |increment, total| {
+        try counter.add(increment, .{ "region", region });
+        try reader.collect();
+        const collected = try memory.in_memory.fetch(allocator);
+        defer {
+            for (collected) |*measurement| measurement.deinit(allocator);
+            allocator.free(collected);
+        }
+        const point = collected[0].data.int[0];
+        try std.testing.expectEqual(total, point.value);
+        try std.testing.expectEqual(@as(usize, 1), point.exemplars.len);
+        try std.testing.expectEqual(@as(i64, @intCast(increment)), point.exemplars[0].value.int);
+    }
+}
+
+test "exemplar cumulative histograms do not replay samples on idle collection" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const provider = try MeterProvider.init(allocator, io);
+    defer provider.shutdown();
+    const memory = try MetricExporter.InMemory(allocator, io, null, null);
+    defer memory.in_memory.deinit();
+    const reader = try MetricReader.init(allocator, io, memory.exporter);
+    defer reader.shutdown();
+    try provider.addReader(reader);
+    const meter = try provider.getMeter(.{ .name = "exemplar-reader" });
+    const histogram = try meter.createHistogram(f64, .{ .name = "latency" });
+    histogram.exemplar_filter = .always_on;
+    try histogram.record(1.5, .{});
+    for ([_]usize{ 1, 0 }) |expected_samples| {
+        try reader.collect();
+        const collected = try memory.in_memory.fetch(allocator);
+        defer {
+            for (collected) |*measurement| measurement.deinit(allocator);
+            allocator.free(collected);
+        }
+        const point = collected[0].data.histogram[0];
+        try std.testing.expectEqual(@as(u64, 1), point.value.count);
+        try std.testing.expectEqual(expected_samples, point.exemplars.len);
+    }
 }

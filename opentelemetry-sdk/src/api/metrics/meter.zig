@@ -1032,6 +1032,72 @@ pub const AggregatedMetrics = struct {
     }
 };
 
+pub fn AggregatedMeasurement(comptime T: type) type {
+    return struct {
+        scope: InstrumentationScope,
+        instrumentKind: Kind,
+        instrumentOptions: InstrumentOptions,
+        aggregation: view.AggregationType,
+        data: []DataPoint(T),
+
+        pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+            for (self.data) |*dp| {
+                dp.deinit(allocator);
+            }
+            allocator.free(self.data);
+        }
+    };
+}
+
+pub const AggregatedMeasurementsByType = struct {
+    ints: std.ArrayList(AggregatedMeasurement(i64)) = .empty,
+    doubles: std.ArrayList(AggregatedMeasurement(f64)) = .empty,
+    histograms: std.ArrayList(AggregatedMeasurement(HistogramDataPoint)) = .empty,
+    exponential_histograms: std.ArrayList(AggregatedMeasurement(ExponentialHistogramDataPoint)) = .empty,
+
+    pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
+        const field_names = @typeInfo(@This()).@"struct".field_names;
+        inline for (field_names) |name| {
+            const list = &@field(self.*, name);
+            for (list.items) |*measurement| {
+                measurement.deinit(allocator);
+            }
+            list.deinit(allocator);
+        }
+    }
+};
+
+test "aggregated measurements by type frees histogram data" {
+    const allocator = std.testing.allocator;
+    var results: AggregatedMeasurementsByType = .{};
+    defer results.deinit(allocator);
+
+    {
+        const points = try allocator.alloc(DataPoint(HistogramDataPoint), 1);
+        errdefer allocator.free(points);
+
+        points[0] = .{
+            .value = .{
+                .bucket_counts = try allocator.dupe(u64, &.{ 1, 0 }),
+                .explicit_bounds = &.{1.0},
+                .sum = 0.5,
+                .count = 1,
+            },
+        };
+        errdefer points[0].deinit(allocator);
+
+        try results.histograms.append(allocator, .{
+            .scope = .{ .name = "test" },
+            .instrumentKind = .Histogram,
+            .instrumentOptions = .{ .name = "latency" },
+            .aggregation = .ExplicitBucketHistogram,
+            .data = points,
+        });
+    }
+
+    try std.testing.expectEqual(1, results.histograms.items.len);
+}
+
 test "aggregated metrics deduplicated from meter without attributes" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);

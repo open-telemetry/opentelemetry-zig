@@ -93,6 +93,10 @@ pub const MetricReader = struct {
             // When shutdown has already been called, collect is a no-op.
             return;
         }
+        return self.collectInternal();
+    }
+
+    fn collectInternal(self: *Self) !void {
         if (!self.mx.tryLock()) {
             return MetricReadError.ConcurrentCollectNotAllowed;
         }
@@ -271,11 +275,30 @@ pub const MetricReader = struct {
         }
     }
 
+    /// Force flush any unexported metrics to the exporter.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#metricreader-forceflush
+    pub fn forceFlush(self: *Self) !void {
+        if (@atomicLoad(bool, &self.hasShutDown, .acquire)) {
+            return;
+        }
+        try self.collect();
+        const timeout = self.exportTimeout orelse 30_000;
+        try self.exporter.forceFlush(timeout);
+    }
+
     pub fn shutdown(self: *Self) void {
-        @atomicStore(bool, &self.hasShutDown, true, .release);
-        self.collect() catch |e| {
-            log.err("shutdown: error while collecting metrics: {}", .{e});
+        if (@atomicRmw(bool, &self.hasShutDown, .Xchg, true, .acq_rel)) {
+            return;
+        }
+        self.collectInternal() catch |e| {
+            if (e != MetricReadError.CollectFailedOnMissingMeterProvider) {
+                log.err("shutdown: error while collecting metrics: {}", .{e});
+            }
         };
+        if (self.meterProvider) |mp| {
+            mp.detachReader(self);
+            self.meterProvider = null;
+        }
         self.exporter.shutdown();
         self.temporal_aggregation.deinit();
         self.allocator.destroy(self);
@@ -290,6 +313,8 @@ test "metric reader shutdown prevents collect() to execute" {
     const e = metric_reader.collect();
     try std.testing.expectEqual(MetricReadError.CollectFailedOnMissingMeterProvider, e);
     metric_reader.shutdown();
+    // Subsequent collect calls are no-ops
+    try metric_reader.collect();
 }
 
 test "metric reader collects data from meter provider" {

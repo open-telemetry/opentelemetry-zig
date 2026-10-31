@@ -30,6 +30,9 @@ const Counter = @import("instrument.zig").Counter;
 const Histogram = @import("instrument.zig").Histogram;
 const Gauge = @import("instrument.zig").Gauge;
 const MetricReader = @import("../../sdk/metrics/reader.zig").MetricReader;
+const exporter = @import("../../sdk/metrics/exporter.zig");
+const MetricExporter = exporter.MetricExporter;
+const InMemoryExporter = @import("../../sdk/metrics/exporters/in_memory.zig").InMemoryExporter;
 
 const AsyncInstrument = @import("async_instrument.zig");
 
@@ -57,6 +60,7 @@ pub const MeterProvider = struct {
     // Resource attributes for this provider
     resource: ?[]const Attribute = null,
 
+    is_shutdown: std.atomic.Value(bool) = std.atomic.Value(bool).init(false),
     mx: std.Io.Mutex = std.Io.Mutex.init,
 
     const Self = @This();
@@ -87,19 +91,58 @@ pub const MeterProvider = struct {
         return provider;
     }
 
-    /// Delete the meter provider and free up the memory allocated for it,
-    /// as well as its owned Meters.
-    pub fn shutdown(self: *Self) void {
+    /// Detach a MetricReader from this provider without shutting it down.
+    pub fn detachReader(self: *Self, reader: *MetricReader) void {
         self.mx.lockUncancelable(self.io);
+        defer self.mx.unlock(self.io);
+
+        for (self.readers.items, 0..) |r, i| {
+            if (r == reader) {
+                _ = self.readers.swapRemove(i);
+                break;
+            }
+        }
+    }
+
+    /// Immediately export all metrics that have not yet been exported across all registered MetricReaders.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#meterprovider-forceflush
+    pub fn forceFlush(self: *Self) !void {
+        if (self.is_shutdown.load(.acquire)) {
+            return error.MeterProviderShutdown;
+        }
+
+        self.mx.lockUncancelable(self.io);
+        defer self.mx.unlock(self.io);
+
+        for (self.readers.items) |reader| {
+            try reader.forceFlush();
+        }
+    }
+
+    /// Delete the meter provider, flushing and shutting down all registered MetricReaders,
+    /// and free up the memory allocated for it as well as its owned Meters.
+    /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#meterprovider-shutdown
+    pub fn shutdown(self: *Self) void {
+        if (self.is_shutdown.swap(true, .acq_rel)) {
+            return;
+        }
+
+        self.mx.lockUncancelable(self.io);
+
+        // Shut down all registered metric readers
+        while (self.readers.items.len > 0) {
+            const reader = self.readers.items[0];
+            self.mx.unlock(self.io);
+            reader.shutdown();
+            self.mx.lockUncancelable(self.io);
+        }
+        self.readers.deinit(self.allocator);
 
         var meters = self.meters.valueIterator();
         while (meters.next()) |m| {
             m.deinit();
         }
         self.meters.deinit(self.allocator);
-        // TODO call shutdown on all readers?
-        // This means users should not call shutdown on readers directly.
-        self.readers.deinit(self.allocator);
         self.views.deinit(self.allocator);
 
         if (self.resource) |res| {
@@ -117,6 +160,10 @@ pub const MeterProvider = struct {
     /// If a meter with the same name already exists, it will be returned.
     /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#get-a-meter
     pub fn getMeter(self: *Self, scope: InstrumentationScope) !*Meter {
+        if (self.is_shutdown.load(.acquire)) {
+            return error.MeterProviderShutdown;
+        }
+
         self.mx.lockUncancelable(self.io);
         defer self.mx.unlock(self.io);
 
@@ -133,6 +180,10 @@ pub const MeterProvider = struct {
     }
 
     pub fn addReader(self: *Self, m: *MetricReader) !void {
+        if (self.is_shutdown.load(.acquire)) {
+            return error.MeterProviderShutdown;
+        }
+
         self.mx.lockUncancelable(self.io);
         defer self.mx.unlock(self.io);
 
@@ -145,6 +196,10 @@ pub const MeterProvider = struct {
 
     /// Register a view with this meter provider
     pub fn addView(self: *Self, new_view: view.View) !void {
+        if (self.is_shutdown.load(.acquire)) {
+            return error.MeterProviderShutdown;
+        }
+
         try new_view.aggregation.validate();
 
         self.mx.lockUncancelable(self.io);
@@ -452,8 +507,10 @@ test "meter provider adds metric reader" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
-    var mr = MetricReader{ .allocator = std.testing.allocator, .io = io };
-    try mp.addReader(&mr);
+    var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
+    const mr = try MetricReader.init(std.testing.allocator, io, metric_exporter);
+    try mp.addReader(mr);
 
     std.debug.assert(mp.readers.items.len == 1);
 }
@@ -462,10 +519,14 @@ test "meter provider adds multiple metric readers" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
     defer mp.shutdown();
-    var mr1 = MetricReader{ .allocator = std.testing.allocator, .io = io };
-    var mr2 = MetricReader{ .allocator = std.testing.allocator, .io = io };
-    try mp.addReader(&mr1);
-    try mp.addReader(&mr2);
+    var noop1 = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
+    const metric_exporter1 = try MetricExporter.new(std.testing.allocator, io, &noop1);
+    const mr1 = try MetricReader.init(std.testing.allocator, io, metric_exporter1);
+    var noop2 = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
+    const metric_exporter2 = try MetricExporter.new(std.testing.allocator, io, &noop2);
+    const mr2 = try MetricReader.init(std.testing.allocator, io, metric_exporter2);
+    try mp.addReader(mr1);
+    try mp.addReader(mr2);
 
     std.debug.assert(mp.readers.items.len == 2);
 }
@@ -478,10 +539,12 @@ test "metric reader cannot be registered with multiple providers" {
     const mp2 = try MeterProvider.init(std.testing.allocator, io);
     defer mp2.shutdown();
 
-    var mr = MetricReader{ .allocator = std.testing.allocator, .io = io };
+    var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
+    const mr = try MetricReader.init(std.testing.allocator, io, metric_exporter);
 
-    try mp1.addReader(&mr);
-    const err = mp2.addReader(&mr);
+    try mp1.addReader(mr);
+    const err = mp2.addReader(mr);
     try std.testing.expectError(spec.ResourceError.MetricReaderAlreadyAttached, err);
 }
 
@@ -490,11 +553,77 @@ test "metric reader cannot be registered twice on same meter provider" {
     const mp1 = try MeterProvider.init(std.testing.allocator, io);
     defer mp1.shutdown();
 
-    var mr = MetricReader{ .allocator = std.testing.allocator, .io = io };
+    var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
+    const mr = try MetricReader.init(std.testing.allocator, io, metric_exporter);
 
-    try mp1.addReader(&mr);
-    const err = mp1.addReader(&mr);
+    try mp1.addReader(mr);
+    const err = mp1.addReader(mr);
     try std.testing.expectError(spec.ResourceError.MetricReaderAlreadyAttached, err);
+}
+
+test "meter provider shutdown shuts down registered readers and flushes metrics" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+
+    var mp = try MeterProvider.init(allocator, io);
+
+    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+    const reader = try MetricReader.init(allocator, io, metric_exporter);
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "shutdown-flush-test" });
+    var counter = try meter.createCounter(u64, .{ .name = "requests" });
+    try counter.add(42, .{});
+
+    // Calling shutdown on the provider must shut down the reader and export pending metrics
+    mp.shutdown();
+
+    // Verify metrics were collected and exported during provider shutdown
+    const exported = try inMem.fetch(allocator);
+    defer {
+        for (exported) |*d| {
+            d.deinit(allocator);
+        }
+        allocator.free(exported);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), exported.len);
+}
+
+test "meter provider forceFlush flushes all registered readers" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+
+    var mp = try MeterProvider.init(allocator, io);
+    defer mp.shutdown();
+
+    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+    const reader = try MetricReader.init(allocator, io, metric_exporter);
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "forceflush-test" });
+    var counter = try meter.createCounter(u64, .{ .name = "requests" });
+    try counter.add(100, .{});
+
+    // Force flush
+    try mp.forceFlush();
+
+    const exported = try inMem.fetch(allocator);
+    defer {
+        for (exported) |*d| {
+            d.deinit(allocator);
+        }
+        allocator.free(exported);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), exported.len);
 }
 
 test "meter provider end to end" {

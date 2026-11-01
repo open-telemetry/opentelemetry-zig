@@ -658,43 +658,88 @@ pub fn Counter(comptime T: type) type {
 }
 
 /// A Histogram is used to sample observations and count them in pre-defined buckets.
+/// Aggregates measurements in place by attribute set to avoid unbounded memory growth.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#histogram
 pub fn Histogram(comptime T: type) type {
     return struct {
         const Self = @This();
 
+        pub const Mode = enum {
+            explicit,
+            exponential,
+        };
+
         allocator: std.mem.Allocator,
         io: std.Io,
         lock: std.Io.Mutex,
 
-        /// Keeps track of the raw recorded values for each set of attributes.
-        /// The measurements are cleared after each collection cycle.
-        data_points: std.ArrayListUnmanaged(DataPoint(T)),
+        mode: Mode = .explicit,
+        cardinality_limit: usize = 2000,
+
+        // Explicit bucket configuration
+        buckets: []const f64 = spec.default_histogram_explicit_bucket_boundaries,
+        record_min_max: bool = true,
+        record_sum: bool = true,
+
+        /// Aggregated explicit bucket measurement values keyed by distinct attribute sets.
+        explicit_points: std.ArrayHashMapUnmanaged(
+            Attributes,
+            HistogramDataPoint,
+            Attributes.ArrayHashContext,
+            true,
+        ),
+
+        // Exponential bucket configuration
+        max_scale: i32 = 20,
+        max_size: u32 = 1024,
+
+        /// Aggregated exponential bucket measurement values keyed by distinct attribute sets.
+        exponential_points: std.ArrayHashMapUnmanaged(
+            Attributes,
+            aggregation.ExponentialHistogramState,
+            Attributes.ArrayHashContext,
+            true,
+        ),
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
-                .data_points = .empty,
+                .explicit_points = .empty,
+                .exponential_points = .empty,
             };
         }
 
         fn deinit(self: *Self) void {
-            // Cleanup the arraylist or measures and their attributes.
-            for (self.data_points.items) |*m| {
-                m.deinit(self.allocator);
+            for (self.explicit_points.keys(), self.explicit_points.values()) |key, val| {
+                if (key.attributes) |attrs| {
+                    self.allocator.free(attrs);
+                }
+                self.allocator.free(val.bucket_counts);
             }
-            self.data_points.deinit(self.allocator);
+            self.explicit_points.deinit(self.allocator);
+
+            for (self.exponential_points.keys(), self.exponential_points.values()) |key, *val| {
+                if (key.attributes) |attrs| {
+                    self.allocator.free(attrs);
+                }
+                val.deinit(self.allocator);
+            }
+            self.exponential_points.deinit(self.allocator);
         }
 
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            const dp = try DataPoint(T).new(self.allocator, value, attributes);
-            try self.data_points.append(self.allocator, dp);
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
+            }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.recordWithSlice(value, attrs);
         }
 
         /// Record a value with a pre-built attribute slice.
@@ -703,55 +748,167 @@ pub fn Histogram(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            const dp = DataPoint(T){
-                .value = value,
-                .attributes = if (attributes) |attrs|
-                    try self.allocator.dupe(Attribute, attrs)
-                else
-                    null,
+            const f64_val: f64 = switch (T) {
+                u16, u32, u64, i16, i32, i64 => @as(f64, @floatFromInt(value)),
+                f32, f64 => @as(f64, value),
+                else => unreachable,
             };
-            try self.data_points.append(self.allocator, dp);
+
+            const key = Attributes.with(attributes);
+
+            switch (self.mode) {
+                .explicit => {
+                    if (self.explicit_points.getPtr(key)) |dp| {
+                        if (self.record_sum) {
+                            dp.sum = (dp.sum orelse 0) + f64_val;
+                        }
+                        dp.count += 1;
+                        if (self.record_min_max) {
+                            dp.min = if (dp.min) |curr| @min(curr, f64_val) else f64_val;
+                            dp.max = if (dp.max) |curr| @max(curr, f64_val) else f64_val;
+                        }
+                        var bucket_index = self.buckets.len;
+                        for (self.buckets, 0..) |boundary, i| {
+                            if (f64_val <= boundary) {
+                                bucket_index = i;
+                                break;
+                            }
+                        }
+                        dp.bucket_counts[bucket_index] += 1;
+                        return;
+                    }
+
+                    if (self.explicit_points.count() >= self.cardinality_limit) {
+                        log.warn("cardinality limit {d} reached; dropping new attribute set", .{self.cardinality_limit});
+                        return;
+                    }
+
+                    const bucket_counts = try self.allocator.alloc(u64, self.buckets.len + 1);
+                    errdefer self.allocator.free(bucket_counts);
+                    @memset(bucket_counts, 0);
+
+                    var bucket_index = self.buckets.len;
+                    for (self.buckets, 0..) |boundary, i| {
+                        if (f64_val <= boundary) {
+                            bucket_index = i;
+                            break;
+                        }
+                    }
+                    bucket_counts[bucket_index] = 1;
+
+                    const dp = HistogramDataPoint{
+                        .explicit_bounds = self.buckets,
+                        .bucket_counts = bucket_counts,
+                        .sum = if (self.record_sum) f64_val else null,
+                        .count = 1,
+                        .min = if (self.record_min_max) f64_val else null,
+                        .max = if (self.record_min_max) f64_val else null,
+                    };
+
+                    const owned_attrs = if (attributes) |attrs|
+                        try self.allocator.dupe(Attribute, attrs)
+                    else
+                        null;
+                    errdefer if (owned_attrs) |a| self.allocator.free(a);
+
+                    try self.explicit_points.put(self.allocator, Attributes.with(owned_attrs), dp);
+                },
+                .exponential => {
+                    if (self.exponential_points.getPtr(key)) |state_ptr| {
+                        try state_ptr.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
+                        return;
+                    }
+
+                    if (self.exponential_points.count() >= self.cardinality_limit) {
+                        log.warn("cardinality limit {d} reached; dropping new attribute set", .{self.cardinality_limit});
+                        return;
+                    }
+
+                    var state = aggregation.ExponentialHistogramState.init(self.allocator, self.max_scale);
+                    errdefer state.deinit(self.allocator);
+                    try state.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
+
+                    const owned_attrs = if (attributes) |attrs|
+                        try self.allocator.dupe(Attribute, attrs)
+                    else
+                        null;
+                    errdefer if (owned_attrs) |a| self.allocator.free(a);
+
+                    try self.exponential_points.put(self.allocator, Attributes.with(owned_attrs), state);
+                },
+            }
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            // We have to clear up the data points after we return a copy of them.
-            // This resets the collected measurements, allowing to record more datapoints
-            // until the next collection cycle.
-            defer {
-                for (self.data_points.items) |*dp| {
-                    dp.deinit(self.allocator);
-                }
-                self.data_points.clearRetainingCapacity();
-            }
+            switch (self.mode) {
+                .explicit => {
+                    const count = self.explicit_points.count();
+                    var data = try allocator.alloc(DataPoint(HistogramDataPoint), count);
+                    var success_count: usize = 0;
+                    errdefer {
+                        for (data[0..success_count]) |*dp| {
+                            dp.deinit(allocator);
+                        }
+                        allocator.free(data);
+                    }
 
-            // Return raw data points without aggregation
-            // Aggregation will be performed later in AggregateMetrics.fetch()
-            switch (T) {
-                u16, u32, u64, i16, i32, i64 => {
-                    var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
-                    for (self.data_points.items, 0..) |m, idx| {
+                    for (self.explicit_points.keys(), self.explicit_points.values(), 0..) |key, val, idx| {
                         data[idx] = .{
-                            .value = @intCast(m.value),
-                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                            .value = .{
+                                .explicit_bounds = val.explicit_bounds,
+                                .bucket_counts = try allocator.dupe(u64, val.bucket_counts),
+                                .sum = val.sum,
+                                .count = val.count,
+                                .min = val.min,
+                                .max = val.max,
+                            },
+                            .attributes = try key.dupe(allocator),
                         };
+                        success_count += 1;
                     }
-                    return .{ .int = data };
+
+                    for (self.explicit_points.keys(), self.explicit_points.values()) |key, val| {
+                        if (key.attributes) |attrs| {
+                            self.allocator.free(attrs);
+                        }
+                        self.allocator.free(val.bucket_counts);
+                    }
+                    self.explicit_points.clearRetainingCapacity();
+
+                    return .{ .histogram = data };
                 },
-                f32, f64 => {
-                    var data = try allocator.alloc(DataPoint(f64), self.data_points.items.len);
-                    for (self.data_points.items, 0..) |m, idx| {
+                .exponential => {
+                    const count = self.exponential_points.count();
+                    var data = try allocator.alloc(DataPoint(ExponentialHistogramDataPoint), count);
+                    var success_count: usize = 0;
+                    errdefer {
+                        for (data[0..success_count]) |*dp| {
+                            dp.deinit(allocator);
+                        }
+                        allocator.free(data);
+                    }
+
+                    for (self.exponential_points.keys(), self.exponential_points.values(), 0..) |key, *val, idx| {
                         data[idx] = .{
-                            .value = @floatCast(m.value),
-                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                            .value = try val.toDataPoint(allocator),
+                            .attributes = try key.dupe(allocator),
                         };
+                        success_count += 1;
                     }
-                    return .{ .double = data };
+
+                    for (self.exponential_points.keys(), self.exponential_points.values()) |key, *val| {
+                        if (key.attributes) |attrs| {
+                            self.allocator.free(attrs);
+                        }
+                        val.deinit(self.allocator);
+                    }
+                    self.exponential_points.clearRetainingCapacity();
+
+                    return .{ .exponential_histogram = data };
                 },
-                // inner types are filtered before this point
-                else => unreachable,
             }
         }
     };
@@ -907,21 +1064,21 @@ test "histogram records value without explicit buckets" {
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    // After recording, we get raw measurements data (int/double values, not pre-aggregated histogram)
+    // Aggregates in place at record time: single attribute set yields 1 HistogramDataPoint
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.int) |*dp| {
+        for (measurements.histogram) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.int);
+        std.testing.allocator.free(measurements.histogram);
     }
 
-    // We should have 3 raw data points corresponding to the 3 recorded values
-    try std.testing.expectEqual(3, measurements.int.len);
-    // Verify the raw values are stored correctly
-    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
-    try std.testing.expectEqual(@as(i64, 5), measurements.int[1].value);
-    try std.testing.expectEqual(@as(i64, 15), measurements.int[2].value);
+    try std.testing.expectEqual(1, measurements.histogram.len);
+    const dp = measurements.histogram[0].value;
+    try std.testing.expectEqual(3, dp.count);
+    try std.testing.expectEqual(21, dp.sum.?);
+    try std.testing.expectEqual(1, dp.min.?);
+    try std.testing.expectEqual(15, dp.max.?);
 }
 
 test "histogram records value with explicit buckets" {
@@ -930,28 +1087,33 @@ test "histogram records value with explicit buckets" {
     defer mp.shutdown();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
+    histogram.buckets = &[_]f64{ 2.0, 10.0 };
 
     try histogram.record(1, .{});
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    try std.testing.expectEqual(3, histogram.data_points.items.len);
+    try std.testing.expectEqual(1, histogram.explicit_points.count());
 
-    // After recording, we get raw measurements data (int values, not pre-aggregated histogram)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.int) |*dp| {
+        for (measurements.histogram) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.int);
+        std.testing.allocator.free(measurements.histogram);
     }
 
-    // We should have 3 raw data points corresponding to the 3 recorded values
-    try std.testing.expectEqual(3, measurements.int.len);
-    // Verify the raw values are stored correctly
-    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
-    try std.testing.expectEqual(@as(i64, 5), measurements.int[1].value);
-    try std.testing.expectEqual(@as(i64, 15), measurements.int[2].value);
+    try std.testing.expectEqual(1, measurements.histogram.len);
+    const dp = measurements.histogram[0].value;
+    try std.testing.expectEqual(3, dp.count);
+    try std.testing.expectEqual(21, dp.sum.?);
+    try std.testing.expectEqual(1, dp.min.?);
+    try std.testing.expectEqual(15, dp.max.?);
+    // Buckets: <= 2.0 (1), <= 10.0 (1), > 10.0 (1)
+    try std.testing.expectEqual(3, dp.bucket_counts.len);
+    try std.testing.expectEqual(1, dp.bucket_counts[0]);
+    try std.testing.expectEqual(1, dp.bucket_counts[1]);
+    try std.testing.expectEqual(1, dp.bucket_counts[2]);
 }
 
 test "histogram keeps track of bucket counts by attribute" {
@@ -965,23 +1127,17 @@ test "histogram keeps track of bucket counts by attribute" {
     try histogram.record(1, .{ "some-key", val });
     try histogram.record(1000, .{ "other-key", val });
 
-    try std.testing.expectEqual(2, histogram.data_points.items.len);
+    try std.testing.expectEqual(2, histogram.explicit_points.count());
 
-    // After recording, we get raw measurements data (not aggregated histogram data)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.int) |*dp| {
+        for (measurements.histogram) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.int);
+        std.testing.allocator.free(measurements.histogram);
     }
 
-    // Now we get raw integer data points instead of histogram buckets
-    try std.testing.expectEqual(2, measurements.int.len);
-
-    // Check that the raw values are preserved
-    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
-    try std.testing.expectEqual(@as(i64, 1000), measurements.int[1].value);
+    try std.testing.expectEqual(2, measurements.histogram.len);
 }
 
 test "histogram keeps track of count, sum and min/max by attribute" {
@@ -996,37 +1152,112 @@ test "histogram keeps track of count, sum and min/max by attribute" {
     try histogram.record(5, .{ "key", val });
     try histogram.record(15, .{ "key", val });
 
-    std.debug.assert(histogram.data_points.items.len == 3);
+    std.debug.assert(histogram.explicit_points.count() == 2);
 
-    // After recording, we get raw measurements data (not aggregated histogram data)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.int) |*dp| {
+        for (measurements.histogram) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.int);
+        std.testing.allocator.free(measurements.histogram);
     }
 
-    // We get raw integer data points, grouped by attributes
-    try std.testing.expectEqual(3, measurements.int.len);
+    // 2 attribute sets: empty attributes and {"key": "some-val"}
+    try std.testing.expectEqual(2, measurements.histogram.len);
 
-    // Check that the raw values are preserved (order may vary by attribute hash)
-    var found_1 = false;
-    var found_5 = false;
-    var found_15 = false;
+    var found_empty = false;
+    var found_key = false;
 
-    for (measurements.int) |dp| {
-        switch (dp.value) {
-            1 => found_1 = true,
-            5 => found_5 = true,
-            15 => found_15 = true,
-            else => unreachable,
+    for (measurements.histogram) |dp| {
+        if (dp.attributes == null) {
+            found_empty = true;
+            try std.testing.expectEqual(1, dp.value.count);
+            try std.testing.expectEqual(1, dp.value.sum.?);
+            try std.testing.expectEqual(1, dp.value.min.?);
+            try std.testing.expectEqual(1, dp.value.max.?);
+        } else {
+            found_key = true;
+            try std.testing.expectEqual(2, dp.value.count);
+            try std.testing.expectEqual(20, dp.value.sum.?);
+            try std.testing.expectEqual(5, dp.value.min.?);
+            try std.testing.expectEqual(15, dp.value.max.?);
         }
     }
 
-    try std.testing.expect(found_1);
-    try std.testing.expect(found_5);
-    try std.testing.expect(found_15);
+    try std.testing.expect(found_empty);
+    try std.testing.expect(found_key);
+}
+
+test "histogram aggregates measurements in place without growing memory" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(f64, .{ .name = "latency" });
+
+    const val: []const u8 = "127.0.0.1";
+    for (0..10_000) |i| {
+        try histogram.record(@floatFromInt(i % 100), .{ "server.address", val });
+    }
+
+    // Must be exactly 1 series in memory despite 10,000 recordings
+    try std.testing.expectEqual(1, histogram.explicit_points.count());
+
+    const measurements = try histogram.measurementsData(std.testing.allocator);
+    defer {
+        for (measurements.histogram) |*dp| {
+            dp.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(measurements.histogram);
+    }
+
+    try std.testing.expectEqual(1, measurements.histogram.len);
+    try std.testing.expectEqual(10_000, measurements.histogram[0].value.count);
+}
+
+test "histogram enforces cardinality limit" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(u32, .{ .name = "cardinality-test" });
+    histogram.cardinality_limit = 2;
+
+    try histogram.record(1, .{ "attr", @as([]const u8, "a") });
+    try histogram.record(2, .{ "attr", @as([]const u8, "b") });
+    try histogram.record(3, .{ "attr", @as([]const u8, "c") }); // dropped
+
+    try std.testing.expectEqual(2, histogram.explicit_points.count());
+}
+
+test "histogram exponential bucket mode aggregates in place" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.shutdown();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(f64, .{ .name = "exp-test" });
+    histogram.mode = .exponential;
+    histogram.max_scale = 10;
+    histogram.max_size = 4;
+
+    try histogram.record(1.0, .{});
+    try histogram.record(2.0, .{});
+    try histogram.record(4.0, .{});
+
+    try std.testing.expectEqual(1, histogram.exponential_points.count());
+
+    const measurements = try histogram.measurementsData(std.testing.allocator);
+    defer {
+        for (measurements.exponential_histogram) |*dp| {
+            dp.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(measurements.exponential_histogram);
+    }
+
+    try std.testing.expectEqual(1, measurements.exponential_histogram.len);
+    const dp = measurements.exponential_histogram[0].value;
+    try std.testing.expectEqual(3, dp.count);
+    try std.testing.expectEqual(7.0, dp.sum.?);
 }
 
 test "gauge instrument records value without attributes" {
@@ -1212,18 +1443,15 @@ fn testHistogramCollect(histogram: *Histogram(u64)) !void {
 
     const fetched = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (fetched.int) |*m| {
+        for (fetched.histogram) |*m| {
             m.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(fetched.int);
+        std.testing.allocator.free(fetched.histogram);
     }
-    // Assert that we have 2 raw data points (since both recordings have same attributes but are separate records)
-    try std.testing.expectEqual(2, fetched.int.len);
-
-    // Check that we have the raw values recorded
-    const values = [_]i64{ fetched.int[0].value, fetched.int[1].value };
-    try std.testing.expect(std.mem.containsAtLeast(i64, &values, 1, &[_]i64{1}));
-    try std.testing.expect(std.mem.containsAtLeast(i64, &values, 1, &[_]i64{20}));
+    // Both recordings have the same attribute set, aggregating into 1 HistogramDataPoint
+    try std.testing.expectEqual(1, fetched.histogram.len);
+    try std.testing.expectEqual(2, fetched.histogram[0].value.count);
+    try std.testing.expectEqual(21, fetched.histogram[0].value.sum.?);
 }
 
 test "instrument cleans up internal state when datapoints are fetched" {

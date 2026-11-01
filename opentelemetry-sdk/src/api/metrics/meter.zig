@@ -143,6 +143,19 @@ pub const MeterProvider = struct {
         }
         m.meterProvider = self;
         try self.readers.append(self.allocator, m);
+
+        const reader_agg = m.aggregation(.Histogram);
+        if (reader_agg == .ExponentialBucketHistogram) {
+            var meter_iter = self.meters.valueIterator();
+            while (meter_iter.next()) |meter| {
+                var instr_iter = meter.instruments.valueIterator();
+                while (instr_iter.next()) |instr| {
+                    if (instr.*.kind == .Histogram) {
+                        applyAggregationToInstrument(instr.*, reader_agg);
+                    }
+                }
+            }
+        }
     }
 
     /// Register a view with this meter provider
@@ -213,6 +226,34 @@ fn applyAggregationToInstrument(instr: *Instrument, agg: view.Aggregation) void 
                 },
             }
         },
+        inline .Histogram_u16,
+        .Histogram_u32,
+        .Histogram_u64,
+        .Histogram_i16,
+        .Histogram_i32,
+        .Histogram_i64,
+        .Histogram_f32,
+        .Histogram_f64,
+        => |h| {
+            switch (agg) {
+                .ExplicitBucketHistogram => |conf| {
+                    if (h.explicit_points.count() == 0) {
+                        h.buckets = conf.buckets;
+                    }
+                    h.mode = .explicit;
+                    h.record_min_max = conf.record_min_max;
+                },
+                .ExponentialBucketHistogram => |conf| {
+                    if (h.exponential_points.count() == 0) {
+                        h.max_scale = conf.max_scale;
+                        h.max_size = conf.max_size;
+                    }
+                    h.mode = .exponential;
+                    h.record_min_max = conf.record_min_max;
+                },
+                else => {},
+            }
+        },
         else => {},
     }
 }
@@ -277,6 +318,20 @@ pub const Meter = struct {
             self.allocator.destroy(i);
             return err;
         };
+        h.cardinality_limit = self.cardinality_limit;
+        if (self.provider) |p| {
+            const agg = view.aggregationForViews(p.views.items, i, &self.scope, view.DefaultAggregation);
+            applyAggregationToInstrument(i, agg);
+            if (h.mode == .explicit) {
+                for (p.readers.items) |r| {
+                    const reader_agg = r.aggregation(.Histogram);
+                    if (reader_agg == .ExponentialBucketHistogram) {
+                        applyAggregationToInstrument(i, reader_agg);
+                        break;
+                    }
+                }
+            }
+        }
         errdefer i.deinit();
         try self.registerInstrument(i);
 
@@ -906,6 +961,10 @@ test "fetch validates exponential histogram max_size" {
 
     const meter = try mp.getMeter(.{ .name = "test" });
     var histogram = try meter.createHistogram(f64, .{ .name = "test_histogram" });
+    histogram.mode = .exponential;
+    histogram.max_scale = 10;
+    histogram.max_size = 2;
+    histogram.record_min_max = false;
     try histogram.record(1.0, .{});
     try histogram.record(2.0, .{});
 

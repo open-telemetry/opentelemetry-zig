@@ -126,6 +126,7 @@ pub const MeterProvider = struct {
             .allocator = self.allocator,
             .io = self.io,
             .cardinality_limit = if (self.config) |c| c.metrics_config.cardinality_limit else 2000,
+            .provider = self,
         };
 
         const meter = try self.meters.getOrPutValue(self.allocator, scope, i);
@@ -152,6 +153,16 @@ pub const MeterProvider = struct {
         defer self.mx.unlock(self.io);
 
         try self.views.append(self.allocator, new_view);
+
+        var meter_iter = self.meters.valueIterator();
+        while (meter_iter.next()) |m| {
+            var instr_iter = m.instruments.valueIterator();
+            while (instr_iter.next()) |instr| {
+                if (new_view.matches(instr.*, &m.scope)) {
+                    applyAggregationToInstrument(instr.*, new_view.aggregation);
+                }
+            }
+        }
     }
 
     /// Helper: Create a MetricReader configured with environment variable settings
@@ -170,6 +181,42 @@ pub const MeterProvider = struct {
     }
 };
 
+fn applyAggregationToInstrument(instr: *Instrument, agg: view.Aggregation) void {
+    switch (instr.data) {
+        inline .Counter_u16,
+        .Counter_u32,
+        .Counter_u64,
+        .UpDownCounter_i16,
+        .UpDownCounter_i32,
+        .UpDownCounter_i64,
+        => |c| {
+            switch (agg) {
+                .Sum => c.mode = .sum,
+                .LastValue => c.mode = .last_value,
+                .Drop => c.mode = .drop,
+                .ExplicitBucketHistogram => |conf| {
+                    c.mode = .explicit_histogram;
+                    if (c.explicit_points.count() == 0) {
+                        c.buckets = conf.buckets;
+                    }
+                    c.record_min_max = conf.record_min_max;
+                    c.record_sum = instr.kind.isMonotonic();
+                },
+                .ExponentialBucketHistogram => |conf| {
+                    c.mode = .exponential_histogram;
+                    if (c.exponential_points.count() == 0) {
+                        c.max_scale = conf.max_scale;
+                        c.max_size = conf.max_size;
+                    }
+                    c.record_min_max = conf.record_min_max;
+                    c.record_sum = instr.kind.isMonotonic();
+                },
+            }
+        },
+        else => {},
+    }
+}
+
 /// Meter is a named instance that is used to record measurements.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#meter
 pub const Meter = struct {
@@ -178,6 +225,7 @@ pub const Meter = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
     cardinality_limit: usize = 2000,
+    provider: ?*MeterProvider = null,
 
     mx: std.Io.Mutex = std.Io.Mutex.init,
 
@@ -192,6 +240,10 @@ pub const Meter = struct {
             return err;
         };
         c.cardinality_limit = self.cardinality_limit;
+        if (self.provider) |p| {
+            const agg = view.aggregationForViews(p.views.items, i, &self.scope, view.DefaultAggregation);
+            applyAggregationToInstrument(i, agg);
+        }
         errdefer i.deinit();
         try self.registerInstrument(i);
 
@@ -207,6 +259,10 @@ pub const Meter = struct {
             return err;
         };
         c.cardinality_limit = self.cardinality_limit;
+        if (self.provider) |p| {
+            const agg = view.aggregationForViews(p.views.items, i, &self.scope, view.DefaultAggregation);
+            applyAggregationToInstrument(i, agg);
+        }
         errdefer i.deinit();
         try self.registerInstrument(i);
 
@@ -928,7 +984,7 @@ test "fetch records histogram sum only for instruments without negative values" 
                 try std.testing.expectEqual(10, dp.sum);
             },
             .UpDownCounter => {
-                try std.testing.expectEqual(1, dp.count);
+                try std.testing.expectEqual(2, dp.count);
                 try std.testing.expectEqual(null, dp.sum);
             },
             else => return error.UnexpectedInstrument,

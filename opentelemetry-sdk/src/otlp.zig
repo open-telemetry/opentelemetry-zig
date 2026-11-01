@@ -47,8 +47,6 @@ pub const ConfigError = error{
     InvalidWireFormatForClient,
     InvalidCompression,
     InvalidProtocol,
-    InvalidTimeout,
-    InvalidInsecure,
     TimeoutSecTooBig,
 };
 
@@ -282,8 +280,10 @@ pub const ConfigOptions = struct {
     // Tracks whether `endpoint` was allocated by us and must be freed on deinit.
     endpoint_owned: bool = false,
 
-    // Tracks whether `headers` was allocated by us and must be freed on deinit.
-    headers_owned: bool = false,
+    // Owned copy of headers allocated during environment parsing.
+    // Stored separately from the public `headers` field so that callers can
+    // reassign `headers` without causing invalid frees or leaking this allocation.
+    allocated_headers: ?[]const u8 = null,
 
     // The transport security that the scheme of `endpoint` selects, if it had one.
     // Kept apart from `insecure`, which also applies to signal endpoints without a scheme.
@@ -303,7 +303,7 @@ pub const ConfigOptions = struct {
 
     pub fn deinit(self: *ConfigOptions) void {
         if (self.endpoint_owned) self.allocator.free(self.endpoint);
-        if (self.headers_owned) if (self.headers) |h| self.allocator.free(h);
+        if (self.allocated_headers) |h| self.allocator.free(h);
         var it = self.custom_signal_urls.valueIterator();
         while (it.next()) |v| self.allocator.free(v.*);
         self.custom_signal_urls.deinit(self.allocator);
@@ -355,24 +355,27 @@ pub const ConfigOptions = struct {
             self.protocol = try Protocol.fromString(protocol);
         }
         if (entryFromEnvMap(environ, "INSECURE")) |insecure_str| {
-            if (std.ascii.eqlIgnoreCase(insecure_str, "true")) {
-                self.insecure = true;
-            } else if (std.ascii.eqlIgnoreCase(insecure_str, "false")) {
-                self.insecure = false;
-            } else {
-                return ConfigError.InvalidInsecure;
+            if (insecure_str.len != 0) {
+                const insecure = std.ascii.eqlIgnoreCase(insecure_str, "true");
+                self.insecure = insecure;
+                if (!insecure and !std.ascii.eqlIgnoreCase(insecure_str, "false")) {
+                    log.warn("invalid OTEL_EXPORTER_OTLP_INSECURE value '{s}'; using false", .{insecure_str});
+                }
             }
-        }
-        if (self.scheme == .https and (self.insecure orelse false)) {
-            return ConfigError.ConflictingOptions;
         }
         if (entryFromEnvMap(environ, "TIMEOUT")) |timeout_str| {
-            const timeout_ms = std.fmt.parseInt(u64, timeout_str, 10) catch return ConfigError.InvalidTimeout;
-            const timeout_sec = if (timeout_ms == 0) 0 else @max(1, (timeout_ms + 999) / 1000);
-            if (timeout_sec > max_timeout_sec) {
-                return ConfigError.TimeoutSecTooBig;
+            if (timeout_str.len != 0) {
+                const timeout_ms: ?u64 = std.fmt.parseInt(u64, timeout_str, 10) catch null;
+                if (timeout_ms) |ms| {
+                    if (ms <= max_timeout_sec * std.time.ms_per_s) {
+                        self.timeout_sec = if (ms == 0) 0 else @max(1, (ms + 999) / 1000);
+                    } else {
+                        log.warn("OTEL_EXPORTER_OTLP_TIMEOUT value '{s}' exceeds the supported maximum; ignoring setting", .{timeout_str});
+                    }
+                } else {
+                    log.warn("invalid OTEL_EXPORTER_OTLP_TIMEOUT value '{s}'; ignoring setting", .{timeout_str});
+                }
             }
-            self.timeout_sec = timeout_sec;
         }
         if (entryFromEnvMap(environ, "HEADERS")) |headers_val| {
             const trimmed = std.mem.trim(u8, headers_val, " ");
@@ -380,14 +383,19 @@ pub const ConfigOptions = struct {
                 const parsed = try parseHeaders(self.allocator, trimmed);
                 self.allocator.free(parsed);
 
+                if (self.allocated_headers) |h| {
+                    self.allocator.free(h);
+                    self.allocated_headers = null;
+                }
                 const owned = try self.allocator.dupe(u8, trimmed);
-                if (self.headers_owned) if (self.headers) |h| self.allocator.free(h);
+                self.allocated_headers = owned;
                 self.headers = owned;
-                self.headers_owned = true;
             } else {
-                if (self.headers_owned) if (self.headers) |h| self.allocator.free(h);
+                if (self.allocated_headers) |h| {
+                    self.allocator.free(h);
+                    self.allocated_headers = null;
+                }
                 self.headers = null;
-                self.headers_owned = false;
             }
         }
     }
@@ -532,6 +540,19 @@ test "otlp config from env headers" {
 
         try std.testing.expectError(ConfigError.InvalidHeadersSyntax, ConfigOptions.init(allocator, &map));
     }
+
+    // Caller overriding headers with a literal string does not leak or cause invalid free
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_HEADERS", "env=test");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        config.headers = "override=literal";
+        try std.testing.expectEqualStrings("override=literal", config.headers.?);
+    }
 }
 
 test "otlp config from env timeout" {
@@ -573,31 +594,64 @@ test "otlp config from env timeout" {
         try std.testing.expectEqual(0, config.timeout_sec);
     }
 
-    // Invalid non-integer timeout returns ConfigError.InvalidTimeout
+    // Empty timeout string is ignored and preserves default (10s)
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
+    }
+
+    // Invalid non-integer timeout is ignored and preserves default (10s)
     {
         var map = EnvMap.init(allocator);
         defer map.deinit();
         try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "not_a_number");
 
-        try std.testing.expectError(ConfigError.InvalidTimeout, ConfigOptions.init(allocator, &map));
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
     }
 
-    // Negative timeout returns ConfigError.InvalidTimeout
+    // Negative timeout is ignored and preserves default (10s)
     {
         var map = EnvMap.init(allocator);
         defer map.deinit();
         try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "-500");
 
-        try std.testing.expectError(ConfigError.InvalidTimeout, ConfigOptions.init(allocator, &map));
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
     }
 
-    // Timeout exceeding max_timeout_sec returns TimeoutSecTooBig
+    // Timeout exceeding max_timeout_sec is ignored and preserves default (10s)
     {
         var map = EnvMap.init(allocator);
         defer map.deinit();
         try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "700000");
 
-        try std.testing.expectError(ConfigError.TimeoutSecTooBig, ConfigOptions.init(allocator, &map));
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
+    }
+
+    // u64 max value does not overflow and is ignored
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "18446744073709551615");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
     }
 }
 
@@ -628,23 +682,48 @@ test "otlp config from env insecure" {
         try std.testing.expectEqual(@as(?bool, false), config.insecure);
     }
 
-    // Invalid boolean string returns ConfigError.InvalidInsecure
+    // Empty string behaves as unset
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_INSECURE", "");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(@as(?bool, null), config.insecure);
+    }
+
+    // Invalid boolean string falls back to false
     {
         var map = EnvMap.init(allocator);
         defer map.deinit();
         try map.put("OTEL_EXPORTER_OTLP_INSECURE", "maybe");
 
-        try std.testing.expectError(ConfigError.InvalidInsecure, ConfigOptions.init(allocator, &map));
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(@as(?bool, false), config.insecure);
     }
 
-    // Insecure true conflicting with HTTPS endpoint returns ConfigError.ConflictingOptions
+    // Explicit endpoint scheme takes precedence in gRPC rather than failing config init
     {
         var map = EnvMap.init(allocator);
         defer map.deinit();
-        try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com:4318");
+        try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com:4317");
+        try map.put("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "metrics.example.com:4317");
         try map.put("OTEL_EXPORTER_OTLP_INSECURE", "true");
 
-        try std.testing.expectError(ConfigError.ConflictingOptions, ConfigOptions.init(allocator, &map));
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        // Explicit scheme wins for traces
+        const traces = try config.grpcEndpointForSignal(.traces);
+        try std.testing.expectEqual(@as(?bool, false), traces.insecure);
+
+        // Scheme-less endpoint honors insecure setting
+        const metrics = try config.grpcEndpointForSignal(.metrics);
+        try std.testing.expectEqual(@as(?bool, true), metrics.insecure);
     }
 }
 
@@ -920,6 +999,9 @@ const HTTPClient = struct {
     // is on ConnectTcpOptions and is never forwarded to the connect call,
     // so the deadline has to be imposed from outside.
     fn fetchBounded(self: *Self, opts: http.Client.FetchOptions) !http.Client.FetchResult {
+        if (self.config.timeout_sec == 0) {
+            return self.client.fetch(opts);
+        }
         return clock.callTimeout(
             self.client.io,
             self.config.timeout_sec * std.time.ms_per_s,

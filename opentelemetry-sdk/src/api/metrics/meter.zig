@@ -99,6 +99,7 @@ pub const MeterProvider = struct {
         for (self.readers.items, 0..) |r, i| {
             if (r == reader) {
                 _ = self.readers.swapRemove(i);
+                reader.meterProvider = null;
                 break;
             }
         }
@@ -112,15 +113,22 @@ pub const MeterProvider = struct {
         }
 
         self.mx.lockUncancelable(self.io);
-        defer self.mx.unlock(self.io);
+        const readers = try self.allocator.dupe(*MetricReader, self.readers.items);
+        self.mx.unlock(self.io);
+        defer self.allocator.free(readers);
 
-        for (self.readers.items) |reader| {
-            try reader.forceFlush();
+        var first_error: ?anyerror = null;
+        for (readers) |reader| {
+            reader.forceFlush() catch |err| {
+                if (first_error == null) first_error = err;
+            };
         }
+        if (first_error) |err| return err;
     }
 
-    /// Delete the meter provider, flushing and shutting down all registered MetricReaders,
-    /// and free up the memory allocated for it as well as its owned Meters.
+    /// Flush and shut down all registered MetricReaders.
+    /// Idempotent: subsequent calls return immediately.
+    /// To free provider memory and meters, call deinit().
     /// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#meterprovider-shutdown
     pub fn shutdown(self: *Self) void {
         if (self.is_shutdown.swap(true, .acq_rel)) {
@@ -128,14 +136,27 @@ pub const MeterProvider = struct {
         }
 
         self.mx.lockUncancelable(self.io);
-
-        // Shut down all registered metric readers
-        while (self.readers.items.len > 0) {
-            const reader = self.readers.items[0];
+        const readers = self.allocator.dupe(*MetricReader, self.readers.items) catch {
+            for (self.readers.items) |reader| {
+                reader.shutdown();
+            }
             self.mx.unlock(self.io);
+            return;
+        };
+        self.mx.unlock(self.io);
+        defer self.allocator.free(readers);
+
+        for (readers) |reader| {
             reader.shutdown();
-            self.mx.lockUncancelable(self.io);
         }
+    }
+
+    /// Shutdown the provider, if it is still running, and free it along with its meters.
+    pub fn deinit(self: *Self) void {
+        self.shutdown();
+
+        self.mx.lockUncancelable(self.io);
+
         self.readers.deinit(self.allocator);
 
         var meters = self.meters.valueIterator();
@@ -149,7 +170,6 @@ pub const MeterProvider = struct {
             resource_attributes.freeResource(self.allocator, res);
         }
 
-        // Unlock before destroying the struct
         self.mx.unlock(self.io);
         self.allocator.destroy(self);
     }
@@ -396,7 +416,7 @@ pub const Meter = struct {
 test "default meter provider can be fetched" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
 }
@@ -404,7 +424,7 @@ test "default meter provider can be fetched" {
 test "custom meter provider can be created" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
 }
@@ -419,7 +439,7 @@ test "meter provider with config from environment" {
 
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Verify config was loaded with defaults
     try std.testing.expectEqual(@as(u64, 60000), mp.config.?.metrics_config.export_interval_ms);
@@ -433,7 +453,7 @@ test "meter can be created from custom provider" {
     const meter_version = "my-meter";
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version });
 
@@ -449,7 +469,7 @@ test "meter can be created from default provider with schema url and attributes"
 
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const val: []const u8 = "value";
     const attributes = try Attributes.from(mp.allocator, .{ "key", val });
@@ -464,7 +484,7 @@ test "meter can be created from default provider with schema url and attributes"
 test "meter register instrument twice with same name fails" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
 
@@ -478,7 +498,7 @@ test "meter register instrument twice with same name fails" {
 test "meter register instrument" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
 
@@ -506,10 +526,11 @@ test "meter register instrument" {
 test "meter provider adds metric reader" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
     const mr = try MetricReader.init(std.testing.allocator, io, metric_exporter);
+    defer mr.deinit();
     try mp.addReader(mr);
 
     std.debug.assert(mp.readers.items.len == 1);
@@ -518,13 +539,15 @@ test "meter provider adds metric reader" {
 test "meter provider adds multiple metric readers" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     var noop1 = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter1 = try MetricExporter.new(std.testing.allocator, io, &noop1);
     const mr1 = try MetricReader.init(std.testing.allocator, io, metric_exporter1);
+    defer mr1.deinit();
     var noop2 = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter2 = try MetricExporter.new(std.testing.allocator, io, &noop2);
     const mr2 = try MetricReader.init(std.testing.allocator, io, metric_exporter2);
+    defer mr2.deinit();
     try mp.addReader(mr1);
     try mp.addReader(mr2);
 
@@ -534,14 +557,15 @@ test "meter provider adds multiple metric readers" {
 test "metric reader cannot be registered with multiple providers" {
     const io = std.testing.io;
     const mp1 = try MeterProvider.init(std.testing.allocator, io);
-    defer mp1.shutdown();
+    defer mp1.deinit();
 
     const mp2 = try MeterProvider.init(std.testing.allocator, io);
-    defer mp2.shutdown();
+    defer mp2.deinit();
 
     var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
     const mr = try MetricReader.init(std.testing.allocator, io, metric_exporter);
+    defer mr.deinit();
 
     try mp1.addReader(mr);
     const err = mp2.addReader(mr);
@@ -551,11 +575,12 @@ test "metric reader cannot be registered with multiple providers" {
 test "metric reader cannot be registered twice on same meter provider" {
     const io = std.testing.io;
     const mp1 = try MeterProvider.init(std.testing.allocator, io);
-    defer mp1.shutdown();
+    defer mp1.deinit();
 
     var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
     const mr = try MetricReader.init(std.testing.allocator, io, metric_exporter);
+    defer mr.deinit();
 
     try mp1.addReader(mr);
     const err = mp1.addReader(mr);
@@ -570,9 +595,11 @@ test "meter provider shutdown shuts down registered readers and flushes metrics"
     defer inMem.deinit();
 
     var mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
 
     const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
     const reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.deinit();
     try mp.addReader(reader);
 
     const meter = try mp.getMeter(.{ .name = "shutdown-flush-test" });
@@ -594,6 +621,17 @@ test "meter provider shutdown shuts down registered readers and flushes metrics"
     try std.testing.expectEqual(@as(usize, 1), exported.len);
 }
 
+test "meter provider shutdown is idempotent" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    mp.shutdown();
+    mp.shutdown();
+}
+
 test "meter provider forceFlush flushes all registered readers" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -602,10 +640,11 @@ test "meter provider forceFlush flushes all registered readers" {
     defer inMem.deinit();
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
     const reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.deinit();
     try mp.addReader(reader);
 
     const meter = try mp.getMeter(.{ .name = "forceflush-test" });
@@ -629,7 +668,7 @@ test "meter provider forceFlush flushes all registered readers" {
 test "meter provider end to end" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "service.company.com" });
 
@@ -660,7 +699,7 @@ test "meter provider with arena allocator" {
 
     const io = std.testing.io;
     const mp = try MeterProvider.init(arena.allocator(), io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "service.company.com" });
 
@@ -879,7 +918,7 @@ pub const AggregatedMetrics = struct {
 test "aggregated metrics deduplicated from meter without attributes" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
     var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
     try counter.add(1, .{});
@@ -904,7 +943,7 @@ test "aggregated metrics deduplicated from meter without attributes" {
 test "aggregated metrics deduplicated from meter with attributes" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meterVal: []const u8 = "meter_val";
     const meter = try mp.getMeter(.{
@@ -945,7 +984,7 @@ test "aggregated metrics deduplicated from meter with attributes" {
 test "aggregated metrics fetch to owned slice" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
     var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
@@ -971,7 +1010,7 @@ test "aggregated metrics fetch to owned slice" {
 test "fetch validates exponential histogram max_size" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test" });
     var histogram = try meter.createHistogram(f64, .{ .name = "test_histogram" });
@@ -1019,7 +1058,7 @@ test "fetch validates exponential histogram max_size" {
 test "fetch records histogram sum only for instruments without negative values" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     try mp.addView(.{
         .instrument_selector = .{ .name = "test-updown" },
@@ -1059,7 +1098,7 @@ test "fetch records histogram sum only for instruments without negative values" 
 test "fetch frees accumulated results on validation failure" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test" });
     const histogram = try meter.createHistogram(f64, .{ .name = "test_histogram" });
@@ -1096,7 +1135,7 @@ test "fetch frees accumulated results on validation failure" {
 test "aggregated metrics do not duplicate data points" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
     var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
@@ -1127,7 +1166,7 @@ test "aggregated metrics do not duplicate data points" {
 test "aggregated metrics have timestamps" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
     var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
@@ -1152,7 +1191,7 @@ test "aggregated metrics have timestamps" {
 test "aggregated metrics with custom views" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
     var counter = try meter.createCounter(u64, .{ .name = "test_counter" });
@@ -1189,7 +1228,7 @@ test "aggregated metrics with custom views" {
 test "meter provider validates exponential histogram view max_size" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const view_max_size_0 = view.View{
         .instrument_selector = .{ .kind = .Histogram },
@@ -1237,7 +1276,7 @@ test "meter provider validates exponential histogram view max_size" {
 test "view associated with meter provider" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Create a view that matches histograms and uses explicit bucket aggregation
     const histogram_view = view.View{
@@ -1296,7 +1335,7 @@ test "view associated with meter provider" {
 test "view is additive processing with conflicts" {
     const io = std.testing.io;
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
     var histogram = try meter.createHistogram(f64, .{ .name = "test_histogram" });

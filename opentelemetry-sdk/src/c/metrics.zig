@@ -237,7 +237,7 @@ pub fn meterProviderInit() callconv(.c) ?*OtelMeterProvider {
 pub fn meterProviderShutdown(provider: ?*OtelMeterProvider) callconv(.c) void {
     if (provider) |p| {
         const handle: *MeterProviderHandle = @ptrCast(@alignCast(p));
-        handle.provider.shutdown();
+        handle.provider.deinit();
         handle.threaded.deinit();
         handle.allocator.destroy(handle.threaded);
         handle.allocator.destroy(handle);
@@ -706,7 +706,7 @@ pub fn metricReaderForceFlush(reader: ?*OtelMetricReader) callconv(.c) OtelStatu
 pub fn metricReaderShutdown(reader: ?*OtelMetricReader) callconv(.c) void {
     if (reader) |r| {
         const handle: *MetricReaderHandle = @ptrCast(@alignCast(r));
-        handle.reader.shutdown();
+        handle.reader.deinit();
         if (handle.exporter) |exp_handle| {
             switch (exp_handle.inner) {
                 .stdout => |s| s.deinit(),

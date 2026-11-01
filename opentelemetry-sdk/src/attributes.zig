@@ -229,6 +229,38 @@ pub const Attributes = struct {
         return attrs;
     }
 
+    /// Creates a slice of attributes from a tuple of key-value pairs using the provided buffer.
+    /// Does not allocate heap memory.
+    pub fn fromBuffer(buffer: []Attribute, keyValues: anytype) ?[]Attribute {
+        const ArgsType = @TypeOf(keyValues);
+        const args_type_info = @typeInfo(ArgsType);
+        if (args_type_info != .@"struct") {
+            @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
+        }
+        const field_names = args_type_info.@"struct".field_names;
+        if (field_names.len == 0) {
+            return null;
+        }
+        if (field_names.len % 2 != 0) {
+            @compileError("expected an even number of arguments");
+        }
+        std.debug.assert(buffer.len >= field_names.len / 2);
+
+        var key: []const u8 = undefined;
+        comptime var i = 1;
+        inline for (field_names) |name| {
+            const e = @field(keyValues, name);
+            if (i % 2 == 0) {
+                const keyVal = keyValue(@TypeOf(e)){ .key = key, .value = e };
+                buffer[i / 2 - 1] = keyVal.resolve();
+            } else {
+                key = e;
+            }
+            i += 1;
+        }
+        return buffer[0 .. field_names.len / 2];
+    }
+
     /// Copy the attributes into a new slice allocated using the provided allocator.
     pub fn dupe(self: Self, allocator: std.mem.Allocator) !?[]Attribute {
         if (self.attributes) |attrs| {

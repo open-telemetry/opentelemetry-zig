@@ -125,6 +125,7 @@ pub const MeterProvider = struct {
             .instruments = .empty,
             .allocator = self.allocator,
             .io = self.io,
+            .cardinality_limit = if (self.config) |c| c.metrics_config.cardinality_limit else 2000,
         };
 
         const meter = try self.meters.getOrPutValue(self.allocator, scope, i);
@@ -176,6 +177,7 @@ pub const Meter = struct {
     instruments: std.StringHashMapUnmanaged(*Instrument),
     allocator: std.mem.Allocator,
     io: std.Io,
+    cardinality_limit: usize = 2000,
 
     mx: std.Io.Mutex = std.Io.Mutex.init,
 
@@ -189,6 +191,7 @@ pub const Meter = struct {
             self.allocator.destroy(i);
             return err;
         };
+        c.cardinality_limit = self.cardinality_limit;
         errdefer i.deinit();
         try self.registerInstrument(i);
 
@@ -203,6 +206,7 @@ pub const Meter = struct {
             self.allocator.destroy(i);
             return err;
         };
+        c.cardinality_limit = self.cardinality_limit;
         errdefer i.deinit();
         try self.registerInstrument(i);
 
@@ -918,10 +922,15 @@ test "fetch records histogram sum only for instruments without negative values" 
     try std.testing.expectEqual(2, result.len);
     for (result) |m| {
         const dp = m.data.histogram[0].value;
-        try std.testing.expectEqual(2, dp.count);
         switch (m.instrumentKind) {
-            .Histogram => try std.testing.expectEqual(10, dp.sum),
-            .UpDownCounter => try std.testing.expectEqual(null, dp.sum),
+            .Histogram => {
+                try std.testing.expectEqual(2, dp.count);
+                try std.testing.expectEqual(10, dp.sum);
+            },
+            .UpDownCounter => {
+                try std.testing.expectEqual(1, dp.count);
+                try std.testing.expectEqual(null, dp.sum);
+            },
             else => return error.UnexpectedInstrument,
         }
     }

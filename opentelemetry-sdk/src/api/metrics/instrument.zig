@@ -252,7 +252,8 @@ pub const InstrumentOptions = struct {
     advisory: ?[]Attribute = null,
 };
 
-/// A Counter is a monotonically increasing value used to record cumulative events.
+/// A Counter is a value used to record cumulative events (monotonic or bidirectional for UpDownCounter).
+/// Aggregates measurements in place by attribute set to avoid unbounded memory growth.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#counter
 pub fn Counter(comptime T: type) type {
     return struct {
@@ -261,14 +262,20 @@ pub fn Counter(comptime T: type) type {
         io: std.Io,
         lock: std.Io.Mutex,
 
-        /// Record data points for the counter.
-        /// The list of measurements will be used when reading the data during a collection cycle.
-        /// The list is cleared after each collection cycle.
-        data_points: std.ArrayListUnmanaged(DataPoint(T)),
+        /// Aggregated measurement values keyed by distinct attribute sets.
+        /// Aggregates in place at record time so memory remains bounded by attribute cardinality.
+        points: std.ArrayHashMapUnmanaged(
+            Attributes,
+            T,
+            Attributes.ArrayHashContext,
+            true,
+        ),
+
+        cardinality_limit: usize = 2000,
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
-                .data_points = .empty,
+                .points = .empty,
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
@@ -276,19 +283,25 @@ pub fn Counter(comptime T: type) type {
         }
 
         fn deinit(self: *Self) void {
-            for (self.data_points.items) |*m| {
-                m.deinit(self.allocator);
+            for (self.points.keys()) |key| {
+                if (key.attributes) |attrs| {
+                    self.allocator.free(attrs);
+                }
             }
-            self.data_points.deinit(self.allocator);
+            self.points.deinit(self.allocator);
         }
 
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: T, attributes: anytype) !void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            const dp = try DataPoint(T).new(self.allocator, delta, attributes);
-            try self.data_points.append(self.allocator, dp);
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
+            }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.addWithSlice(delta, attrs);
         }
 
         /// Add the given delta to the counter with a pre-built attribute slice.
@@ -297,36 +310,59 @@ pub fn Counter(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            const dp = DataPoint(T){
-                .value = delta,
-                .attributes = if (attributes) |attrs|
-                    try self.allocator.dupe(Attribute, attrs)
-                else
-                    null,
-            };
-            try self.data_points.append(self.allocator, dp);
+            const key = Attributes.with(attributes);
+            if (self.points.getPtr(key)) |val_ptr| {
+                val_ptr.* += delta;
+                return;
+            }
+
+            if (self.points.count() >= self.cardinality_limit) {
+                log.warn("cardinality limit {d} reached; dropping new attribute set", .{self.cardinality_limit});
+                return;
+            }
+
+            const owned_attrs = if (attributes) |attrs|
+                try self.allocator.dupe(Attribute, attrs)
+            else
+                null;
+            errdefer if (owned_attrs) |a| self.allocator.free(a);
+
+            try self.points.put(self.allocator, Attributes.with(owned_attrs), delta);
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
-            // We have to clear up the data points after we return a copy of them.
-            // this resets the state of the instrument, allowing to record more datapoints
-            // until the next collection cycle.
+
+            // Clean up owned attribute keys and clear map retaining capacity
+            // so subsequent collection intervals reuse the allocated hash map buffers.
             defer {
-                for (self.data_points.items) |*m| {
-                    m.deinit(self.allocator);
+                for (self.points.keys()) |key| {
+                    if (key.attributes) |attrs| {
+                        self.allocator.free(attrs);
+                    }
                 }
-                self.data_points.clearRetainingCapacity();
+                self.points.clearRetainingCapacity();
             }
+
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    var data = try allocator.alloc(DataPoint(i64), self.data_points.items.len);
-                    for (self.data_points.items, 0..) |m, idx| {
+                    const count = self.points.count();
+                    var data = try allocator.alloc(DataPoint(i64), count);
+                    var success_count: usize = 0;
+                    errdefer {
+                        for (data[0..success_count]) |*dp| {
+                            if (dp.attributes) |attrs| allocator.free(attrs);
+                        }
+                        allocator.free(data);
+                    }
+
+                    for (self.points.keys(), self.points.values(), 0..) |key, val, idx| {
                         data[idx] = .{
-                            .value = @intCast(m.value),
-                            .attributes = try Attributes.with(m.attributes).dupe(allocator),
+                            .value = @intCast(val),
+                            .attributes = try key.dupe(allocator),
                         };
+                        success_count += 1;
                     }
                     return .{ .int = data };
                 },
@@ -544,7 +580,8 @@ test "meter can create counter instrument and record increase without attributes
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
     try counter.add(10, .{});
-    std.debug.assert(counter.data_points.items.len == 1);
+    std.debug.assert(counter.points.count() == 1);
+    try std.testing.expectEqual(10, counter.points.values()[0]);
 }
 
 test "meter can create counter instrument and record increase with attributes" {
@@ -561,16 +598,17 @@ test "meter can create counter instrument and record increase with attributes" {
     try counter.add(100, .{});
     try counter.add(1000, .{});
 
-    std.debug.assert(counter.data_points.items.len == 2);
-    std.debug.assert(counter.data_points.items[0].value == 100);
-    std.debug.assert(counter.data_points.items[1].value == 1000);
+    // Identical attributes aggregate in place at record time
+    std.debug.assert(counter.points.count() == 1);
+    std.debug.assert(counter.points.values()[0] == 1100);
 
     const val1: []const u8 = "some-value";
     const val2: []const u8 = "another-value";
 
     try counter.add(2, .{ "some-key", val1, "another-key", val2 });
-    std.debug.assert(counter.data_points.items.len == 3);
-    std.debug.assert(counter.data_points.items[2].value == 2);
+    // Distinct attributes create a new series
+    std.debug.assert(counter.points.count() == 2);
+    std.debug.assert(counter.points.values()[1] == 2);
 }
 
 test "histogram records value without explicit buckets" {
@@ -729,19 +767,14 @@ test "upDownCounter instrument records and stores value" {
     try counter.add(10, .{});
     try counter.add(-5, .{});
     try counter.add(-4, .{});
-    std.debug.assert(counter.data_points.items.len == 3);
-
-    // Validate the number stored is correct.
-    // Empty attributes produce a null key.
-    var summed: i32 = 0;
-    for (counter.data_points.items) |m| {
-        summed += m.value;
-    }
-    std.debug.assert(summed == 1);
+    // Aggregates in place for the same attribute set
+    std.debug.assert(counter.points.count() == 1);
+    try std.testing.expectEqual(1, counter.points.values()[0]);
 
     try counter.add(1, .{ "some-key", @as(i64, 42) });
 
-    std.debug.assert(counter.data_points.items.len == 4);
+    std.debug.assert(counter.points.count() == 2);
+    try std.testing.expectEqual(1, counter.points.values()[1]);
 }
 
 test "instrument in meter and instrument in data are the same" {
@@ -768,8 +801,8 @@ test "instrument in meter and instrument in data are the same" {
     if (meter.instruments.get(id)) |instrument| {
         std.debug.assert(instrument.kind == Kind.Counter);
 
-        const counter_value = instrument.data.Counter_u64.data_points.pop() orelse unreachable;
-        try std.testing.expectEqual(100, counter_value.value);
+        const counter_value = instrument.data.Counter_u64.points.get(Attributes.with(null)) orelse unreachable;
+        try std.testing.expectEqual(100, counter_value);
     } else {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.scope.name });
     }
@@ -929,8 +962,62 @@ test "instrument cleans up internal state when datapoints are fetched" {
         }
         std.testing.allocator.free(fetched.int);
     }
-    // Assert that we have 1 data point: the first added by the test thread.
-    try std.testing.expectEqual(0, c.data_points.items.len);
+    // Assert that the map was cleared after fetching
+    try std.testing.expectEqual(0, c.points.count());
+}
+
+test "counter aggregates measurements in place without growing memory" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{ .name = "bench-meter" });
+    var counter = try meter.createCounter(u64, .{ .name = "bench-counter" });
+
+    // Repeated measurements with the same attribute set must aggregate in place
+    // without creating new entries or leaking memory.
+    const route: []const u8 = "/api/v1/resource";
+    for (0..10_000) |_| {
+        try counter.add(1, .{ "http.route", route, "http.status_code", @as(i64, 200) });
+    }
+
+    try std.testing.expectEqual(1, counter.points.count());
+    try std.testing.expectEqual(10_000, counter.points.values()[0]);
+
+    const fetched = try counter.measurementsData(std.testing.allocator);
+    defer {
+        for (fetched.int) |*m| {
+            m.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(fetched.int);
+    }
+
+    try std.testing.expectEqual(1, fetched.int.len);
+    try std.testing.expectEqual(10_000, fetched.int[0].value);
+    try std.testing.expectEqual(0, counter.points.count());
+}
+
+test "counter enforces cardinality limit" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.shutdown();
+
+    const meter = try mp.getMeter(.{ .name = "cardinality-meter" });
+    var counter = try meter.createCounter(u64, .{ .name = "cardinality-counter" });
+    counter.cardinality_limit = 3;
+
+    try counter.add(1, .{ "id", @as(i64, 1) });
+    try counter.add(2, .{ "id", @as(i64, 2) });
+    try counter.add(3, .{ "id", @as(i64, 3) });
+    try std.testing.expectEqual(3, counter.points.count());
+
+    // 4th distinct attribute set should be dropped due to cardinality limit
+    try counter.add(4, .{ "id", @as(i64, 4) });
+    try std.testing.expectEqual(3, counter.points.count());
+
+    // Existing attribute sets can still be updated
+    try counter.add(10, .{ "id", @as(i64, 1) });
+    try std.testing.expectEqual(11, counter.points.values()[0]);
 }
 
 const MetricObserveError = AsyncInstrument.MetricObserveError;

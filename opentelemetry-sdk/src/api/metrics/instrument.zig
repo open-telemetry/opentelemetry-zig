@@ -7,6 +7,8 @@ const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
 const DataPoint = @import("measurement.zig").DataPoint;
 const HistogramDataPoint = @import("measurement.zig").HistogramDataPoint;
+const aggregation = @import("../../sdk/metrics/aggregation.zig");
+const ExponentialHistogramDataPoint = aggregation.ExponentialHistogramDataPoint;
 
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 
@@ -534,10 +536,63 @@ pub fn Counter(comptime T: type) type {
 }
 
 /// A Histogram is used to sample observations and count them in pre-defined buckets.
+/// Aggregates measurements in place by attribute set to avoid unbounded memory growth.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#histogram
 pub fn Histogram(comptime T: type) type {
+    comptime {
+        switch (@typeInfo(T)) {
+            .int, .float => {},
+            else => @compileError("Histogram only supports integer and floating-point types, found " ++ @typeName(T)),
+        }
+    }
+
     return struct {
         const Self = @This();
+
+        fn toF64(value: T) f64 {
+            return switch (@typeInfo(T)) {
+                .int => @as(f64, @floatFromInt(value)),
+                .float => @as(f64, @floatCast(value)),
+                else => @compileError("Histogram only supports integer and floating-point types, found " ++ @typeName(T)),
+            };
+        }
+
+        pub const Mode = enum {
+            explicit,
+            exponential,
+        };
+
+        pub const ExplicitState = struct {
+            data: DataPoint(HistogramDataPoint),
+            bucket_exemplars: []?exemplar.Exemplar,
+
+            fn deinit(self: *ExplicitState, allocator: std.mem.Allocator) void {
+                self.data.deinit(allocator);
+                for (self.bucket_exemplars) |*slot| {
+                    if (slot.*) |*sample| sample.deinit(allocator);
+                }
+                allocator.free(self.bucket_exemplars);
+            }
+        };
+
+        pub const ExponentialState = struct {
+            state: aggregation.ExponentialHistogramState,
+            attributes: ?[]Attribute = null,
+            attributes_owned: bool = false,
+            exemplar_candidate: ?exemplar.Exemplar = null,
+
+            fn deinit(self: *ExponentialState, allocator: std.mem.Allocator) void {
+                self.state.deinit(allocator);
+                if (self.attributes) |attrs| {
+                    if (self.attributes_owned) for (attrs) |attr| {
+                        allocator.free(attr.key);
+                        if (attr.value == .string) allocator.free(attr.value.string);
+                    };
+                    allocator.free(attrs);
+                }
+                if (self.exemplar_candidate) |*sample| sample.deinit(allocator);
+            }
+        };
 
         allocator: std.mem.Allocator,
         io: std.Io,
@@ -545,9 +600,43 @@ pub fn Histogram(comptime T: type) type {
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
         collection_start_ns: u64 = 0,
 
+        pre_aggregate: bool = false,
+        mode: Mode = .explicit,
+        cardinality_limit: usize = 2000,
+
         /// Keeps track of the raw recorded values for each set of attributes.
-        /// The measurements are cleared after each collection cycle.
+        /// Used when pre_aggregate is false (e.g. standalone instruments or custom pipelines).
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
+
+        // Explicit bucket configuration
+        buckets: []const f64 = spec.default_histogram_explicit_bucket_boundaries,
+        record_min_max: bool = true,
+        record_sum: bool = true,
+
+        /// Aggregated explicit bucket measurement values keyed by distinct attribute sets.
+        explicit_points: std.ArrayHashMapUnmanaged(
+            Attributes,
+            ExplicitState,
+            Attributes.ArrayHashContext,
+            true,
+        ),
+
+        // Exponential bucket configuration
+        max_scale: i32 = 20,
+        max_size: u32 = 1024,
+
+        /// Aggregated exponential bucket measurement values keyed by distinct attribute sets.
+        exponential_points: std.ArrayHashMapUnmanaged(
+            Attributes,
+            ExponentialState,
+            Attributes.ArrayHashContext,
+            true,
+        ),
+
+        const overflow_attrs = [_]Attribute{
+            .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
+        };
+        const overflow_key = Attributes.with(@constCast(&overflow_attrs));
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
@@ -556,26 +645,175 @@ pub fn Histogram(comptime T: type) type {
                 .lock = std.Io.Mutex.init,
                 .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
                 .data_points = .empty,
+                .explicit_points = .empty,
+                .exponential_points = .empty,
+                .pre_aggregate = false,
             };
         }
 
         fn deinit(self: *Self) void {
-            // Cleanup the arraylist or measures and their attributes.
             for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
             self.data_points.deinit(self.allocator);
+
+            for (self.explicit_points.values()) |*val| {
+                val.deinit(self.allocator);
+            }
+            self.explicit_points.deinit(self.allocator);
+
+            for (self.exponential_points.values()) |*val| {
+                val.deinit(self.allocator);
+            }
+            self.exponential_points.deinit(self.allocator);
+        }
+
+        fn updateExplicitPoint(self: *Self, state: *ExplicitState, f64_val: f64, candidate: *?exemplar.Exemplar) void {
+            const dp = &state.data;
+            if (self.record_sum) {
+                dp.value.sum = (dp.value.sum orelse 0) + f64_val;
+            }
+            dp.value.count += 1;
+            if (self.record_min_max) {
+                dp.value.min = if (dp.value.min) |curr| @min(curr, f64_val) else f64_val;
+                dp.value.max = if (dp.value.max) |curr| @max(curr, f64_val) else f64_val;
+            }
+            var bucket_index = self.buckets.len;
+            for (self.buckets, 0..) |boundary, i| {
+                if (f64_val <= boundary) {
+                    bucket_index = i;
+                    break;
+                }
+            }
+            dp.value.bucket_counts[bucket_index] += 1;
+            if (candidate.*) |sample| {
+                if (state.bucket_exemplars[bucket_index]) |*prev| prev.deinit(self.allocator);
+                state.bucket_exemplars[bucket_index] = sample;
+                candidate.* = null;
+            }
+        }
+
+        fn insertExplicitPoint(self: *Self, attributes: ?[]const Attribute, f64_val: f64, candidate: *?exemplar.Exemplar) !void {
+            var bucket_counts: ?[]u64 = try self.allocator.alloc(u64, self.buckets.len + 1);
+            defer if (bucket_counts) |b| self.allocator.free(b);
+            @memset(bucket_counts.?, 0);
+
+            var bucket_exemplars: ?[]?exemplar.Exemplar = try self.allocator.alloc(?exemplar.Exemplar, self.buckets.len + 1);
+            defer if (bucket_exemplars) |slots| {
+                for (slots) |*slot| {
+                    if (slot.*) |*sample| sample.deinit(self.allocator);
+                }
+                self.allocator.free(slots);
+            };
+            @memset(bucket_exemplars.?, null);
+
+            var bucket_index = self.buckets.len;
+            for (self.buckets, 0..) |boundary, i| {
+                if (f64_val <= boundary) {
+                    bucket_index = i;
+                    break;
+                }
+            }
+            bucket_counts.?[bucket_index] = 1;
+
+            var owned_attrs = if (attributes) |attrs|
+                try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
+            else
+                null;
+            defer if (owned_attrs) |attrs| {
+                for (attrs) |attr| {
+                    self.allocator.free(attr.key);
+                    if (attr.value == .string) self.allocator.free(attr.value.string);
+                }
+                self.allocator.free(attrs);
+            };
+
+            if (candidate.*) |sample| {
+                bucket_exemplars.?[bucket_index] = sample;
+                candidate.* = null;
+            }
+
+            var state = ExplicitState{
+                .data = DataPoint(HistogramDataPoint){
+                    .value = HistogramDataPoint{
+                        .explicit_bounds = self.buckets,
+                        .bucket_counts = bucket_counts.?,
+                        .sum = if (self.record_sum) f64_val else null,
+                        .count = 1,
+                        .min = if (self.record_min_max) f64_val else null,
+                        .max = if (self.record_min_max) f64_val else null,
+                    },
+                    .attributes = owned_attrs,
+                    .attributes_owned = (owned_attrs != null),
+                },
+                .bucket_exemplars = bucket_exemplars.?,
+            };
+            bucket_counts = null;
+            bucket_exemplars = null;
+            owned_attrs = null;
+
+            var state_stored = false;
+            defer if (!state_stored) state.deinit(self.allocator);
+
+            try self.explicit_points.put(self.allocator, Attributes.with(state.data.attributes), state);
+            state_stored = true;
+        }
+
+        fn insertExponentialPoint(self: *Self, attributes: ?[]const Attribute, f64_val: f64, candidate: *?exemplar.Exemplar) !void {
+            var exp_state: ?aggregation.ExponentialHistogramState = aggregation.ExponentialHistogramState.init(self.allocator, self.max_scale);
+            defer if (exp_state) |*s| s.deinit(self.allocator);
+            try exp_state.?.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
+
+            var owned_attrs = if (attributes) |attrs|
+                try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
+            else
+                null;
+            defer if (owned_attrs) |attrs| {
+                for (attrs) |attr| {
+                    self.allocator.free(attr.key);
+                    if (attr.value == .string) self.allocator.free(attr.value.string);
+                }
+                self.allocator.free(attrs);
+            };
+
+            var state = ExponentialState{
+                .state = exp_state.?,
+                .attributes = owned_attrs,
+                .attributes_owned = (owned_attrs != null),
+                .exemplar_candidate = candidate.*,
+            };
+            exp_state = null;
+            owned_attrs = null;
+            candidate.* = null;
+
+            var state_stored = false;
+            defer if (!state_stored) state.deinit(self.allocator);
+
+            try self.exponential_points.put(self.allocator, Attributes.with(state.attributes), state);
+            state_stored = true;
         }
 
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
+            if (self.pre_aggregate) {
+                const ArgsType = @TypeOf(attributes);
+                const args_type_info = @typeInfo(ArgsType);
+                if (args_type_info != .@"struct") {
+                    @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
+                }
+                const count = args_type_info.@"struct".field_names.len / 2;
+                var stack_buf: [count]Attribute = undefined;
+                const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+                return self.recordWithSlice(value, attrs);
+            } else {
+                self.lock.lockUncancelable(self.io);
+                defer self.lock.unlock(self.io);
 
-            var dp = try DataPoint(T).new(self.allocator, value, attributes);
-            errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-            try self.data_points.append(self.allocator, dp);
+                var dp = try DataPoint(T).new(self.allocator, value, attributes);
+                errdefer dp.deinit(self.allocator);
+                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                try self.data_points.append(self.allocator, dp);
+            }
         }
 
         /// Record a value with a pre-built attribute slice.
@@ -584,43 +822,289 @@ pub fn Histogram(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            var dp = DataPoint(T){
-                .value = value,
-                .attributes = if (attributes) |attrs|
-                    try self.allocator.dupe(Attribute, attrs)
-                else
-                    null,
-            };
-            errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-            try self.data_points.append(self.allocator, dp);
+            if (!self.pre_aggregate) {
+                var dp = DataPoint(T){
+                    .value = value,
+                    .attributes = if (attributes) |attrs|
+                        try self.allocator.dupe(Attribute, attrs)
+                    else
+                        null,
+                };
+                errdefer dp.deinit(self.allocator);
+                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                try self.data_points.append(self.allocator, dp);
+                return;
+            }
+
+            const f64_val = toF64(value);
+
+            var candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, value, attributes, self.exemplar_filter);
+            defer if (candidate) |*s| s.deinit(self.allocator);
+
+            const key = Attributes.with(attributes);
+
+            switch (self.mode) {
+                .explicit => {
+                    // An existing time-series matching this attribute set is always updated in place
+                    // regardless of cardinality limits, because the limit restricts the number of distinct
+                    // series, not the number of measurements per series.
+                    if (self.explicit_points.getPtr(key)) |state_ptr| {
+                        self.updateExplicitPoint(state_ptr, f64_val, &candidate);
+                        return;
+                    }
+
+                    // For new attribute sets, check whether the cardinality limit has been reached.
+                    // When at capacity, divert all excess series into the reserved overflow series.
+                    if (self.cardinality_limit > 0 and self.explicit_points.count() >= self.cardinality_limit - 1) {
+                        if (self.explicit_points.getPtr(overflow_key)) |overflow_ptr| {
+                            self.updateExplicitPoint(overflow_ptr, f64_val, &candidate);
+                            return;
+                        }
+
+                        log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                        try self.insertExplicitPoint(&overflow_attrs, f64_val, &candidate);
+                        return;
+                    }
+
+                    try self.insertExplicitPoint(attributes, f64_val, &candidate);
+                },
+                .exponential => {
+                    // An existing time-series matching this attribute set is always updated in place
+                    // regardless of cardinality limits, because the limit restricts the number of distinct
+                    // series, not the number of measurements per series.
+                    if (self.exponential_points.getPtr(key)) |state_ptr| {
+                        try state_ptr.state.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
+                        if (candidate) |sample| {
+                            if (state_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                            state_ptr.exemplar_candidate = sample;
+                            candidate = null;
+                        }
+                        return;
+                    }
+
+                    // For new attribute sets, check whether the cardinality limit has been reached.
+                    // When at capacity, divert all excess series into the reserved overflow series.
+                    if (self.cardinality_limit > 0 and self.exponential_points.count() >= self.cardinality_limit - 1) {
+                        if (self.exponential_points.getPtr(overflow_key)) |overflow_ptr| {
+                            try overflow_ptr.state.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
+                            if (candidate) |sample| {
+                                if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                                overflow_ptr.exemplar_candidate = sample;
+                                candidate = null;
+                            }
+                            return;
+                        }
+
+                        log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                        try self.insertExponentialPoint(&overflow_attrs, f64_val, &candidate);
+                        return;
+                    }
+
+                    try self.insertExponentialPoint(attributes, f64_val, &candidate);
+                },
+            }
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            // We have to clear up the data points after we return a copy of them.
-            // This resets the collected measurements, allowing to record more datapoints
-            // until the next collection cycle.
-            defer {
-                for (self.data_points.items) |*dp| {
-                    dp.deinit(self.allocator);
+            const has_explicit = self.explicit_points.count() > 0;
+            const has_exponential = self.exponential_points.count() > 0;
+            const has_raw = self.data_points.items.len > 0;
+
+            if (has_raw and has_explicit) {
+                for (self.data_points.items) |*raw_dp| {
+                    const f64_val = toF64(raw_dp.value);
+                    var cand = raw_dp.exemplar_candidate;
+                    raw_dp.exemplar_candidate = null;
+                    defer if (cand) |*s| s.deinit(self.allocator);
+                    const key = Attributes.with(raw_dp.attributes);
+                    if (self.explicit_points.getPtr(key)) |state_ptr| {
+                        self.updateExplicitPoint(state_ptr, f64_val, &cand);
+                    } else {
+                        self.insertExplicitPoint(raw_dp.attributes, f64_val, &cand) catch break;
+                    }
                 }
+                for (self.data_points.items) |*m| m.deinit(self.allocator);
+                self.data_points.clearRetainingCapacity();
+            } else if (has_raw and has_exponential) {
+                for (self.data_points.items) |*raw_dp| {
+                    const f64_val = toF64(raw_dp.value);
+                    var cand = raw_dp.exemplar_candidate;
+                    raw_dp.exemplar_candidate = null;
+                    defer if (cand) |*s| s.deinit(self.allocator);
+                    const key = Attributes.with(raw_dp.attributes);
+                    if (self.exponential_points.getPtr(key)) |state_ptr| {
+                        state_ptr.state.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum) catch break;
+                        if (cand) |sample| {
+                            if (state_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                            state_ptr.exemplar_candidate = sample;
+                            cand = null;
+                        }
+                    } else {
+                        self.insertExponentialPoint(raw_dp.attributes, f64_val, &cand) catch break;
+                    }
+                }
+                for (self.data_points.items) |*m| m.deinit(self.allocator);
                 self.data_points.clearRetainingCapacity();
             }
 
-            // Return raw data points without aggregation
-            // Aggregation will be performed later in AggregateMetrics.fetch()
-            switch (T) {
-                u16, u32, u64, i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-                },
-                f32, f64 => {
-                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-                },
-                // inner types are filtered before this point
-                else => unreachable,
+            if (!has_explicit and !has_exponential) {
+                defer {
+                    for (self.data_points.items) |*m| {
+                        m.deinit(self.allocator);
+                    }
+                    self.data_points.clearRetainingCapacity();
+                }
+                switch (@typeInfo(T)) {
+                    .int => {
+                        return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
+                    },
+                    .float => {
+                        return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
+                    },
+                    else => @compileError("Histogram only supports integer and floating-point types, found " ++ @typeName(T)),
+                }
+            }
+
+            if (has_explicit) {
+                var total_points: usize = 0;
+                for (self.explicit_points.values()) |*val| {
+                    var ex_count: usize = 0;
+                    for (val.bucket_exemplars) |slot| {
+                        if (slot != null) ex_count += 1;
+                    }
+                    total_points += if (ex_count > 1) ex_count else 1;
+                }
+
+                var data = try allocator.alloc(DataPoint(HistogramDataPoint), total_points);
+                var success_count: usize = 0;
+                errdefer {
+                    for (data[0..success_count]) |*dp| {
+                        dp.deinit(allocator);
+                    }
+                    allocator.free(data);
+                }
+
+                var out_idx: usize = 0;
+                for (self.explicit_points.values()) |*val| {
+                    const bucket_counts_copy = try allocator.dupe(u64, val.data.value.bucket_counts);
+
+                    var main_dp = DataPoint(HistogramDataPoint){
+                        .value = .{
+                            .explicit_bounds = val.data.value.explicit_bounds,
+                            .bucket_counts = bucket_counts_copy,
+                            .sum = val.data.value.sum,
+                            .count = val.data.value.count,
+                            .min = val.data.value.min,
+                            .max = val.data.value.max,
+                        },
+                    };
+                    errdefer main_dp.deinit(allocator);
+
+                    main_dp.attributes = if (val.data.attributes) |attrs| try exemplar.Exemplar.copyAttributes(allocator, attrs) else null;
+                    main_dp.attributes_owned = (val.data.attributes != null);
+
+                    var first_idx: ?usize = null;
+                    for (val.bucket_exemplars, 0..) |slot, b_i| {
+                        if (slot) |s| {
+                            main_dp.exemplar_candidate = try s.deepCopy(allocator);
+                            first_idx = b_i;
+                            break;
+                        }
+                    }
+
+                    data[out_idx] = main_dp;
+                    out_idx += 1;
+                    success_count += 1;
+
+                    if (first_idx) |f_i| {
+                        for (val.bucket_exemplars[f_i + 1 ..]) |slot| {
+                            if (slot) |s| {
+                                const zero_counts = try allocator.alloc(u64, val.data.value.bucket_counts.len);
+                                @memset(zero_counts, 0);
+
+                                var extra_dp = DataPoint(HistogramDataPoint){
+                                    .value = .{
+                                        .explicit_bounds = val.data.value.explicit_bounds,
+                                        .bucket_counts = zero_counts,
+                                        .sum = null,
+                                        .count = 0,
+                                        .min = null,
+                                        .max = null,
+                                    },
+                                };
+                                errdefer extra_dp.deinit(allocator);
+
+                                extra_dp.attributes = if (val.data.attributes) |attrs| try exemplar.Exemplar.copyAttributes(allocator, attrs) else null;
+                                extra_dp.attributes_owned = (val.data.attributes != null);
+
+                                extra_dp.exemplar_candidate = try s.deepCopy(allocator);
+
+                                data[out_idx] = extra_dp;
+                                out_idx += 1;
+                                success_count += 1;
+                            }
+                        }
+                    }
+                }
+
+                if (data.len > 0) {
+                    const collection_time: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
+                    for (data) |*point| point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };
+                    self.collection_start_ns = collection_time;
+                }
+
+                for (self.explicit_points.values()) |*val| {
+                    val.deinit(self.allocator);
+                }
+                self.explicit_points.clearRetainingCapacity();
+
+                return .{ .histogram = data };
+            } else {
+                const count = self.exponential_points.count();
+                var data = try allocator.alloc(DataPoint(ExponentialHistogramDataPoint), count);
+                var success_count: usize = 0;
+                errdefer {
+                    for (data[0..success_count]) |*dp| {
+                        dp.deinit(allocator);
+                    }
+                    allocator.free(data);
+                }
+
+                for (self.exponential_points.values(), 0..) |*val, idx| {
+                    var point = DataPoint(ExponentialHistogramDataPoint){
+                        .value = try val.state.toDataPoint(allocator),
+                    };
+                    errdefer point.deinit(allocator);
+
+                    point.attributes = if (val.attributes) |attrs|
+                        try exemplar.Exemplar.copyAttributes(allocator, attrs)
+                    else
+                        null;
+                    point.attributes_owned = (val.attributes != null);
+
+                    if (val.exemplar_candidate) |sample| {
+                        point.exemplar_candidate = try sample.deepCopy(allocator);
+                    }
+
+                    data[idx] = point;
+                    success_count += 1;
+                }
+
+                if (data.len > 0) {
+                    const collection_time: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
+                    for (data) |*point| point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };
+                    self.collection_start_ns = collection_time;
+                }
+
+                for (self.exponential_points.values()) |*val| {
+                    val.deinit(self.allocator);
+                }
+                self.exponential_points.clearRetainingCapacity();
+
+                return .{ .exponential_histogram = data };
             }
         }
     };
@@ -765,21 +1249,21 @@ test "histogram records value without explicit buckets" {
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    // After recording, we get raw measurements data (int/double values, not pre-aggregated histogram)
+    // Aggregates in place at record time: single attribute set yields 1 HistogramDataPoint
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.int) |*dp| {
+        for (measurements.histogram) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.int);
+        std.testing.allocator.free(measurements.histogram);
     }
 
-    // We should have 3 raw data points corresponding to the 3 recorded values
-    try std.testing.expectEqual(3, measurements.int.len);
-    // Verify the raw values are stored correctly
-    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
-    try std.testing.expectEqual(@as(i64, 5), measurements.int[1].value);
-    try std.testing.expectEqual(@as(i64, 15), measurements.int[2].value);
+    try std.testing.expectEqual(1, measurements.histogram.len);
+    const dp = measurements.histogram[0].value;
+    try std.testing.expectEqual(3, dp.count);
+    try std.testing.expectEqual(21, dp.sum.?);
+    try std.testing.expectEqual(1, dp.min.?);
+    try std.testing.expectEqual(15, dp.max.?);
 }
 
 test "histogram records value with explicit buckets" {
@@ -788,28 +1272,33 @@ test "histogram records value with explicit buckets" {
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
+    histogram.buckets = &[_]f64{ 2.0, 10.0 };
 
     try histogram.record(1, .{});
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    try std.testing.expectEqual(3, histogram.data_points.items.len);
+    try std.testing.expectEqual(1, histogram.explicit_points.count());
 
-    // After recording, we get raw measurements data (int values, not pre-aggregated histogram)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.int) |*dp| {
+        for (measurements.histogram) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.int);
+        std.testing.allocator.free(measurements.histogram);
     }
 
-    // We should have 3 raw data points corresponding to the 3 recorded values
-    try std.testing.expectEqual(3, measurements.int.len);
-    // Verify the raw values are stored correctly
-    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
-    try std.testing.expectEqual(@as(i64, 5), measurements.int[1].value);
-    try std.testing.expectEqual(@as(i64, 15), measurements.int[2].value);
+    try std.testing.expectEqual(1, measurements.histogram.len);
+    const dp = measurements.histogram[0].value;
+    try std.testing.expectEqual(3, dp.count);
+    try std.testing.expectEqual(21, dp.sum.?);
+    try std.testing.expectEqual(1, dp.min.?);
+    try std.testing.expectEqual(15, dp.max.?);
+    // Buckets: <= 2.0 (1), <= 10.0 (1), > 10.0 (1)
+    try std.testing.expectEqual(3, dp.bucket_counts.len);
+    try std.testing.expectEqual(1, dp.bucket_counts[0]);
+    try std.testing.expectEqual(1, dp.bucket_counts[1]);
+    try std.testing.expectEqual(1, dp.bucket_counts[2]);
 }
 
 test "histogram keeps track of bucket counts by attribute" {
@@ -823,23 +1312,17 @@ test "histogram keeps track of bucket counts by attribute" {
     try histogram.record(1, .{ "some-key", val });
     try histogram.record(1000, .{ "other-key", val });
 
-    try std.testing.expectEqual(2, histogram.data_points.items.len);
+    try std.testing.expectEqual(2, histogram.explicit_points.count());
 
-    // After recording, we get raw measurements data (not aggregated histogram data)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.int) |*dp| {
+        for (measurements.histogram) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.int);
+        std.testing.allocator.free(measurements.histogram);
     }
 
-    // Now we get raw integer data points instead of histogram buckets
-    try std.testing.expectEqual(2, measurements.int.len);
-
-    // Check that the raw values are preserved
-    try std.testing.expectEqual(@as(i64, 1), measurements.int[0].value);
-    try std.testing.expectEqual(@as(i64, 1000), measurements.int[1].value);
+    try std.testing.expectEqual(2, measurements.histogram.len);
 }
 
 test "histogram keeps track of count, sum and min/max by attribute" {
@@ -854,37 +1337,112 @@ test "histogram keeps track of count, sum and min/max by attribute" {
     try histogram.record(5, .{ "key", val });
     try histogram.record(15, .{ "key", val });
 
-    std.debug.assert(histogram.data_points.items.len == 3);
+    std.debug.assert(histogram.explicit_points.count() == 2);
 
-    // After recording, we get raw measurements data (not aggregated histogram data)
     const measurements = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (measurements.int) |*dp| {
+        for (measurements.histogram) |*dp| {
             dp.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(measurements.int);
+        std.testing.allocator.free(measurements.histogram);
     }
 
-    // We get raw integer data points, grouped by attributes
-    try std.testing.expectEqual(3, measurements.int.len);
+    // 2 attribute sets: empty attributes and {"key": "some-val"}
+    try std.testing.expectEqual(2, measurements.histogram.len);
 
-    // Check that the raw values are preserved (order may vary by attribute hash)
-    var found_1 = false;
-    var found_5 = false;
-    var found_15 = false;
+    var found_empty = false;
+    var found_key = false;
 
-    for (measurements.int) |dp| {
-        switch (dp.value) {
-            1 => found_1 = true,
-            5 => found_5 = true,
-            15 => found_15 = true,
-            else => unreachable,
+    for (measurements.histogram) |dp| {
+        if (dp.attributes == null) {
+            found_empty = true;
+            try std.testing.expectEqual(1, dp.value.count);
+            try std.testing.expectEqual(1, dp.value.sum.?);
+            try std.testing.expectEqual(1, dp.value.min.?);
+            try std.testing.expectEqual(1, dp.value.max.?);
+        } else {
+            found_key = true;
+            try std.testing.expectEqual(2, dp.value.count);
+            try std.testing.expectEqual(20, dp.value.sum.?);
+            try std.testing.expectEqual(5, dp.value.min.?);
+            try std.testing.expectEqual(15, dp.value.max.?);
         }
     }
 
-    try std.testing.expect(found_1);
-    try std.testing.expect(found_5);
-    try std.testing.expect(found_15);
+    try std.testing.expect(found_empty);
+    try std.testing.expect(found_key);
+}
+
+test "histogram aggregates measurements in place without growing memory" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(f64, .{ .name = "latency" });
+
+    const val: []const u8 = "127.0.0.1";
+    for (0..10_000) |i| {
+        try histogram.record(@floatFromInt(i % 100), .{ "server.address", val });
+    }
+
+    // Must be exactly 1 series in memory despite 10,000 recordings
+    try std.testing.expectEqual(1, histogram.explicit_points.count());
+
+    const measurements = try histogram.measurementsData(std.testing.allocator);
+    defer {
+        for (measurements.histogram) |*dp| {
+            dp.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(measurements.histogram);
+    }
+
+    try std.testing.expectEqual(1, measurements.histogram.len);
+    try std.testing.expectEqual(10_000, measurements.histogram[0].value.count);
+}
+
+test "histogram enforces cardinality limit" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(u32, .{ .name = "cardinality-test" });
+    histogram.cardinality_limit = 2;
+
+    try histogram.record(1, .{ "attr", @as([]const u8, "a") });
+    try histogram.record(2, .{ "attr", @as([]const u8, "b") });
+    try histogram.record(3, .{ "attr", @as([]const u8, "c") }); // dropped
+
+    try std.testing.expectEqual(2, histogram.explicit_points.count());
+}
+
+test "histogram exponential bucket mode aggregates in place" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var histogram = try meter.createHistogram(f64, .{ .name = "exp-test" });
+    histogram.mode = .exponential;
+    histogram.max_scale = 10;
+    histogram.max_size = 4;
+
+    try histogram.record(1.0, .{});
+    try histogram.record(2.0, .{});
+    try histogram.record(4.0, .{});
+
+    try std.testing.expectEqual(1, histogram.exponential_points.count());
+
+    const measurements = try histogram.measurementsData(std.testing.allocator);
+    defer {
+        for (measurements.exponential_histogram) |*dp| {
+            dp.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(measurements.exponential_histogram);
+    }
+
+    try std.testing.expectEqual(1, measurements.exponential_histogram.len);
+    const dp = measurements.exponential_histogram[0].value;
+    try std.testing.expectEqual(3, dp.count);
+    try std.testing.expectEqual(7.0, dp.sum.?);
 }
 
 test "gauge instrument records value without attributes" {
@@ -1069,18 +1627,15 @@ fn testHistogramCollect(histogram: *Histogram(u64)) !void {
 
     const fetched = try histogram.measurementsData(std.testing.allocator);
     defer {
-        for (fetched.int) |*m| {
+        for (fetched.histogram) |*m| {
             m.deinit(std.testing.allocator);
         }
-        std.testing.allocator.free(fetched.int);
+        std.testing.allocator.free(fetched.histogram);
     }
-    // Assert that we have 2 raw data points (since both recordings have same attributes but are separate records)
-    try std.testing.expectEqual(2, fetched.int.len);
-
-    // Check that we have the raw values recorded
-    const values = [_]i64{ fetched.int[0].value, fetched.int[1].value };
-    try std.testing.expect(std.mem.containsAtLeast(i64, &values, 1, &[_]i64{1}));
-    try std.testing.expect(std.mem.containsAtLeast(i64, &values, 1, &[_]i64{20}));
+    // Both recordings have the same attribute set, aggregating into 1 HistogramDataPoint
+    try std.testing.expectEqual(1, fetched.histogram.len);
+    try std.testing.expectEqual(2, fetched.histogram[0].value.count);
+    try std.testing.expectEqual(21, fetched.histogram[0].value.sum.?);
 }
 
 test "instrument cleans up internal state when datapoints are fetched" {
@@ -1422,4 +1977,101 @@ test "switching back to Sum does not invent exemplars for filtered measurements"
     defer data.deinit(std.testing.allocator);
     try std.testing.expectEqual(1, data.int.len);
     try std.testing.expect(data.int[0].exemplar_candidate == null);
+}
+
+test "histogram cardinality limit creates overflow series and aggregates excess measurements" {
+    const io = std.testing.io;
+    var h = Histogram(f64).init(std.testing.allocator, io);
+    defer h.deinit();
+    h.pre_aggregate = true;
+    h.cardinality_limit = 3; // Allows 2 regular series + 1 overflow series
+
+    try h.record(10.0, .{ "status", @as([]const u8, "200") });
+    try h.record(20.0, .{ "status", @as([]const u8, "200") });
+    try h.record(30.0, .{ "status", @as([]const u8, "404") });
+
+    // 3rd distinct series reaches limit - 1, creating the overflow series
+    try h.record(40.0, .{ "status", @as([]const u8, "500") });
+    // 4th distinct series aggregates into the overflow series
+    try h.record(50.0, .{ "status", @as([]const u8, "502") });
+
+    try std.testing.expectEqual(3, h.explicit_points.count());
+
+    var data = try h.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(3, data.histogram.len);
+    var found_overflow = false;
+    for (data.histogram) |point| {
+        if (point.attributes) |attrs| {
+            for (attrs) |attr| {
+                if (std.mem.eql(u8, attr.key, "otel.metric.overflow")) {
+                    found_overflow = true;
+                    try std.testing.expect(attr.value.bool);
+                    try std.testing.expectEqual(2, point.value.count);
+                    try std.testing.expectEqual(90.0, point.value.sum.?);
+                }
+            }
+        }
+    }
+    try std.testing.expect(found_overflow);
+}
+
+test "histogram explicit buckets retain candidates per bucket" {
+    const io = std.testing.io;
+    var h = Histogram(f64).init(std.testing.allocator, io);
+    defer h.deinit();
+    h.pre_aggregate = true;
+    h.exemplar_filter = .always_on;
+
+    // Record value in bucket 0 (<= 0)
+    try h.record(-5.0, .{ "status", @as([]const u8, "200") });
+    // Record value in bucket with boundary 10
+    try h.record(7.0, .{ "status", @as([]const u8, "200") });
+
+    var data = try h.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+
+    // 2 bucket exemplars emitted for reservoir attachment
+    try std.testing.expectEqual(2, data.histogram.len);
+    try std.testing.expect(data.histogram[0].exemplar_candidate != null);
+    try std.testing.expect(data.histogram[1].exemplar_candidate != null);
+}
+
+test "exponential histogram retains exemplar candidate" {
+    const io = std.testing.io;
+    var h = Histogram(f64).init(std.testing.allocator, io);
+    defer h.deinit();
+    h.pre_aggregate = true;
+    h.mode = .exponential;
+    h.exemplar_filter = .always_on;
+
+    try h.record(12.5, .{ "route", @as([]const u8, "/api") });
+
+    var data = try h.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+
+    try std.testing.expectEqual(1, data.exponential_histogram.len);
+    try std.testing.expect(data.exponential_histogram[0].exemplar_candidate != null);
+    try std.testing.expectEqual(12.5, data.exponential_histogram[0].exemplar_candidate.?.value.double);
+}
+
+fn testHistogramAllocationFailures(allocator: std.mem.Allocator) !void {
+    const io = std.testing.io;
+    var h = Histogram(f64).init(allocator, io);
+    defer h.deinit();
+    h.pre_aggregate = true;
+    h.cardinality_limit = 2;
+
+    try h.record(10.0, .{ "status", @as([]const u8, "200") });
+    try h.record(5.0, .{ "status", @as([]const u8, "200") });
+    try h.record(20.0, .{ "status", @as([]const u8, "404") });
+    try h.record(30.0, .{ "status", @as([]const u8, "500") });
+
+    var data = try h.measurementsData(allocator);
+    defer data.deinit(allocator);
+}
+
+test "histogram in-place aggregation handles allocation failures without leaks or double-frees" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testHistogramAllocationFailures, .{});
 }

@@ -195,113 +195,7 @@ fn processCumulativeDataPoints(
                     }
                 },
                 ExponentialHistogramDataPoint => {
-                    const stored = &gop.value_ptr.value;
-                    const new_count = try std.math.add(u64, stored.count, dp.value.count);
-                    const new_zero_count = try std.math.add(u64, stored.zero_count, dp.value.zero_count);
-
-                    if (stored.scale > dp.value.scale) {
-                        const new_positive_buckets = try bucketScaleConverter(
-                            map.allocator,
-                            stored.positive_offset,
-                            stored.positive_bucket_counts,
-                            stored.scale - dp.value.scale,
-                        );
-                        errdefer {
-                            map.allocator.free(new_positive_buckets.bucket_counts);
-                        }
-
-                        const new_negative_buckets = try bucketScaleConverter(
-                            map.allocator,
-                            stored.negative_offset,
-                            stored.negative_bucket_counts,
-                            stored.scale - dp.value.scale,
-                        );
-                        errdefer {
-                            map.allocator.free(new_negative_buckets.bucket_counts);
-                        }
-
-                        map.allocator.free(stored.positive_bucket_counts);
-                        map.allocator.free(stored.negative_bucket_counts);
-
-                        stored.positive_bucket_counts = new_positive_buckets.bucket_counts;
-                        stored.negative_bucket_counts = new_negative_buckets.bucket_counts;
-                        stored.positive_offset = new_positive_buckets.offset;
-                        stored.negative_offset = new_negative_buckets.offset;
-                        stored.scale = dp.value.scale;
-                    } else if (dp.value.scale > stored.scale) {
-                        const new_positive_buckets = try bucketScaleConverter(
-                            map.allocator,
-                            dp.value.positive_offset,
-                            dp.value.positive_bucket_counts,
-                            dp.value.scale - stored.scale,
-                        );
-                        errdefer {
-                            map.allocator.free(new_positive_buckets.bucket_counts);
-                        }
-
-                        const new_negative_buckets = try bucketScaleConverter(
-                            map.allocator,
-                            dp.value.negative_offset,
-                            dp.value.negative_bucket_counts,
-                            dp.value.scale - stored.scale,
-                        );
-                        errdefer {
-                            map.allocator.free(new_negative_buckets.bucket_counts);
-                        }
-
-                        map.allocator.free(dp.value.positive_bucket_counts);
-                        map.allocator.free(dp.value.negative_bucket_counts);
-
-                        dp.value.positive_bucket_counts = new_positive_buckets.bucket_counts;
-                        dp.value.negative_bucket_counts = new_negative_buckets.bucket_counts;
-                        dp.value.positive_offset = new_positive_buckets.offset;
-                        dp.value.negative_offset = new_negative_buckets.offset;
-                        dp.value.scale = stored.scale;
-                    }
-
-                    // TODO: Decide how to enforce max_size when merging cumulative buckets
-                    const positive_buckets = try bucketAggregation(
-                        map.allocator,
-                        stored.positive_offset,
-                        stored.positive_bucket_counts,
-                        dp.value.positive_offset,
-                        dp.value.positive_bucket_counts,
-                    );
-                    errdefer map.allocator.free(positive_buckets.bucket_counts);
-
-                    const negative_buckets = try bucketAggregation(
-                        map.allocator,
-                        stored.negative_offset,
-                        stored.negative_bucket_counts,
-                        dp.value.negative_offset,
-                        dp.value.negative_bucket_counts,
-                    );
-                    errdefer map.allocator.free(negative_buckets.bucket_counts);
-
-                    map.allocator.free(stored.positive_bucket_counts);
-                    map.allocator.free(stored.negative_bucket_counts);
-
-                    stored.count = new_count;
-                    stored.zero_count = new_zero_count;
-                    stored.positive_offset = positive_buckets.offset;
-                    stored.negative_offset = negative_buckets.offset;
-                    stored.positive_bucket_counts = positive_buckets.bucket_counts;
-                    stored.negative_bucket_counts = negative_buckets.bucket_counts;
-
-                    stored.sum = if (stored.sum != null and dp.value.sum != null)
-                        stored.sum.? + dp.value.sum.?
-                    else
-                        null;
-
-                    stored.min = if (stored.min != null and dp.value.min != null)
-                        @min(stored.min.?, dp.value.min.?)
-                    else
-                        null;
-
-                    stored.max = if (stored.max != null and dp.value.max != null)
-                        @max(stored.max.?, dp.value.max.?)
-                    else
-                        null;
+                    try mergeExponentialDataPointValues(map.allocator, &gop.value_ptr.value, dp.value, true);
                 },
                 i64, f64 => {
                     // After a reset the sequence restarts at the previous collection, the last time the old total was valid.
@@ -383,7 +277,7 @@ fn processCumulativeDataPoints(
     }
 }
 
-fn bucketScaleConverter(
+pub fn bucketScaleConverter(
     allocator: std.mem.Allocator,
     offset: i32,
     bucket_counts: []const u64,
@@ -412,7 +306,7 @@ fn bucketScaleConverter(
     return .{ .offset = new_offset, .bucket_counts = new_bucket_counts };
 }
 
-fn bucketAggregation(
+pub fn bucketAggregation(
     allocator: std.mem.Allocator,
     stored_offset: i32,
     stored_bucket_counts: []const u64,
@@ -462,6 +356,118 @@ fn bucketAggregation(
     }
 
     return .{ .offset = new_offset, .bucket_counts = new_bucket_counts };
+}
+
+pub fn mergeExponentialDataPointValues(
+    allocator: std.mem.Allocator,
+    stored: *ExponentialHistogramDataPoint,
+    incoming: ExponentialHistogramDataPoint,
+    record_sum: bool,
+) !void {
+    const new_count = try std.math.add(u64, stored.count, incoming.count);
+    const new_zero_count = try std.math.add(u64, stored.zero_count, incoming.zero_count);
+
+    var inc_pos_offset = incoming.positive_offset;
+    var inc_pos_counts = incoming.positive_bucket_counts;
+    var inc_neg_offset = incoming.negative_offset;
+    var inc_neg_counts = incoming.negative_bucket_counts;
+    var inc_temp_pos: ?[]u64 = null;
+    defer if (inc_temp_pos) |b| allocator.free(b);
+    var inc_temp_neg: ?[]u64 = null;
+    defer if (inc_temp_neg) |b| allocator.free(b);
+
+    if (stored.scale > incoming.scale) {
+        const new_positive_buckets = try bucketScaleConverter(
+            allocator,
+            stored.positive_offset,
+            stored.positive_bucket_counts,
+            stored.scale - incoming.scale,
+        );
+        errdefer allocator.free(new_positive_buckets.bucket_counts);
+
+        const new_negative_buckets = try bucketScaleConverter(
+            allocator,
+            stored.negative_offset,
+            stored.negative_bucket_counts,
+            stored.scale - incoming.scale,
+        );
+        errdefer allocator.free(new_negative_buckets.bucket_counts);
+
+        allocator.free(stored.positive_bucket_counts);
+        allocator.free(stored.negative_bucket_counts);
+
+        stored.positive_bucket_counts = new_positive_buckets.bucket_counts;
+        stored.negative_bucket_counts = new_negative_buckets.bucket_counts;
+        stored.positive_offset = new_positive_buckets.offset;
+        stored.negative_offset = new_negative_buckets.offset;
+        stored.scale = incoming.scale;
+    } else if (incoming.scale > stored.scale) {
+        const new_positive_buckets = try bucketScaleConverter(
+            allocator,
+            incoming.positive_offset,
+            incoming.positive_bucket_counts,
+            incoming.scale - stored.scale,
+        );
+        inc_temp_pos = new_positive_buckets.bucket_counts;
+        inc_pos_offset = new_positive_buckets.offset;
+        inc_pos_counts = new_positive_buckets.bucket_counts;
+
+        const new_negative_buckets = try bucketScaleConverter(
+            allocator,
+            incoming.negative_offset,
+            incoming.negative_bucket_counts,
+            incoming.scale - stored.scale,
+        );
+        inc_temp_neg = new_negative_buckets.bucket_counts;
+        inc_neg_offset = new_negative_buckets.offset;
+        inc_neg_counts = new_negative_buckets.bucket_counts;
+    }
+
+    const positive_buckets = try bucketAggregation(
+        allocator,
+        stored.positive_offset,
+        stored.positive_bucket_counts,
+        inc_pos_offset,
+        inc_pos_counts,
+    );
+    errdefer allocator.free(positive_buckets.bucket_counts);
+
+    const negative_buckets = try bucketAggregation(
+        allocator,
+        stored.negative_offset,
+        stored.negative_bucket_counts,
+        inc_neg_offset,
+        inc_neg_counts,
+    );
+    errdefer allocator.free(negative_buckets.bucket_counts);
+
+    allocator.free(stored.positive_bucket_counts);
+    allocator.free(stored.negative_bucket_counts);
+
+    stored.count = new_count;
+    stored.zero_count = new_zero_count;
+    stored.positive_offset = positive_buckets.offset;
+    stored.negative_offset = negative_buckets.offset;
+    stored.positive_bucket_counts = positive_buckets.bucket_counts;
+    stored.negative_bucket_counts = negative_buckets.bucket_counts;
+
+    if (record_sum) {
+        stored.sum = if (stored.sum != null and incoming.sum != null)
+            stored.sum.? + incoming.sum.?
+        else if (stored.sum != null)
+            stored.sum
+        else
+            incoming.sum;
+    } else {
+        stored.sum = null;
+    }
+
+    if (incoming.min) |m| {
+        stored.min = if (stored.min) |s_min| @min(s_min, m) else m;
+    }
+    if (incoming.max) |m| {
+        stored.max = if (stored.max) |s_max| @max(s_max, m) else m;
+    }
 }
 
 fn processDeltaDataPoints(

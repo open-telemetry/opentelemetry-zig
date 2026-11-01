@@ -107,7 +107,7 @@ pub const MeterProvider = struct {
             }
         }
 
-        self.syncCounterAggregations();
+        self.syncInstrumentAggregations();
     }
 
     /// Immediately export all metrics that have not yet been exported across all registered MetricReaders.
@@ -222,7 +222,7 @@ pub const MeterProvider = struct {
         m.meterProvider = self;
         try self.readers.append(self.allocator, m);
 
-        self.syncCounterAggregations();
+        self.syncInstrumentAggregations();
     }
 
     /// Register a view with this meter provider
@@ -238,10 +238,10 @@ pub const MeterProvider = struct {
 
         try self.views.append(self.allocator, new_view);
 
-        self.syncCounterAggregations();
+        self.syncInstrumentAggregations();
     }
 
-    fn syncCounterAggregations(self: *Self) void {
+    fn syncInstrumentAggregations(self: *Self) void {
         var meter_iter = self.meters.valueIterator();
         while (meter_iter.next()) |meter| {
             meter.mx.lockUncancelable(meter.io);
@@ -259,6 +259,49 @@ pub const MeterProvider = struct {
                     => |c| {
                         const is_sum = resolvesToSumOnlyUnlocked(self, instr.*, &meter.scope);
                         c.setPreSum(is_sum);
+                    },
+                    inline .Histogram_u16,
+                    .Histogram_u32,
+                    .Histogram_u64,
+                    .Histogram_i16,
+                    .Histogram_i32,
+                    .Histogram_i64,
+                    .Histogram_f32,
+                    .Histogram_f64,
+                    => |h| {
+                        const maybe_agg = effectiveHistogramAggregationUnlocked(self, instr.*, &meter.scope);
+                        h.lock.lockUncancelable(h.io);
+                        defer h.lock.unlock(h.io);
+                        if (maybe_agg) |agg| {
+                            if (h.explicit_points.count() == 0 and h.exponential_points.count() == 0) {
+                                switch (agg) {
+                                    .ExplicitBucketHistogram => |conf| {
+                                        h.buckets = conf.buckets;
+                                        h.mode = .explicit;
+                                        h.record_min_max = conf.record_min_max;
+                                    },
+                                    .ExponentialBucketHistogram => |conf| {
+                                        h.max_scale = conf.max_scale;
+                                        h.max_size = conf.max_size;
+                                        h.mode = .exponential;
+                                        h.record_min_max = conf.record_min_max;
+                                    },
+                                    else => unreachable,
+                                }
+                                h.pre_aggregate = (h.data_points.items.len == 0);
+                            } else {
+                                const matches = switch (agg) {
+                                    .ExplicitBucketHistogram => |conf| h.mode == .explicit and std.mem.eql(f64, h.buckets, conf.buckets),
+                                    .ExponentialBucketHistogram => |conf| h.mode == .exponential and h.max_scale == conf.max_scale and h.max_size == conf.max_size,
+                                    else => false,
+                                };
+                                if (!matches) {
+                                    h.pre_aggregate = false;
+                                }
+                            }
+                        } else {
+                            h.pre_aggregate = false;
+                        }
                     },
                     else => {},
                 }
@@ -294,6 +337,56 @@ fn resolvesToSumOnlyUnlocked(p: *const MeterProvider, instr: *const Instrument, 
     }
 
     return true;
+}
+
+fn resolvesToSumOnly(provider: ?*MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
+    const p = provider orelse return true;
+    p.mx.lockUncancelable(p.io);
+    defer p.mx.unlock(p.io);
+    return resolvesToSumOnlyUnlocked(p, instr, scope);
+}
+
+fn histogramAggregationsEqual(a: view.Aggregation, b: view.Aggregation) bool {
+    const a_type = a.getType();
+    const b_type = b.getType();
+    if (a_type != b_type) return false;
+    switch (a) {
+        .ExplicitBucketHistogram => |a_conf| {
+            const b_conf = b.ExplicitBucketHistogram;
+            if (a_conf.record_min_max != b_conf.record_min_max) return false;
+            return std.mem.eql(f64, a_conf.buckets, b_conf.buckets);
+        },
+        .ExponentialBucketHistogram => |a_conf| {
+            const b_conf = b.ExponentialBucketHistogram;
+            if (a_conf.record_min_max != b_conf.record_min_max) return false;
+            return a_conf.max_scale == b_conf.max_scale and a_conf.max_size == b_conf.max_size;
+        },
+        else => return false,
+    }
+}
+
+fn effectiveHistogramAggregationUnlocked(p: *const MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) ?view.Aggregation {
+    if (p.readers.items.len > 0) {
+        const first_agg = view.aggregationForViews(p.views.items, instr, scope, p.readers.items[0].aggregation);
+        const first_type = first_agg.getType();
+        if (first_type != .ExplicitBucketHistogram and first_type != .ExponentialBucketHistogram) {
+            return null;
+        }
+        for (p.readers.items[1..]) |r| {
+            const agg = view.aggregationForViews(p.views.items, instr, scope, r.aggregation);
+            if (!histogramAggregationsEqual(first_agg, agg)) {
+                return null;
+            }
+        }
+        return first_agg;
+    } else {
+        const agg = view.aggregationForViews(p.views.items, instr, scope, view.DefaultAggregation);
+        const agg_type = agg.getType();
+        if (agg_type == .ExplicitBucketHistogram or agg_type == .ExponentialBucketHistogram) {
+            return agg;
+        }
+        return null;
+    }
 }
 
 /// Meter is a named instance that is used to record measurements.
@@ -371,8 +464,38 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        h.cardinality_limit = self.cardinality_limit;
         h.exemplar_filter = self.exemplar_filter;
-        try self.registerInstrument(i);
+
+        if (self.provider) |p| {
+            p.mx.lockUncancelable(p.io);
+            defer p.mx.unlock(p.io);
+
+            const maybe_agg = effectiveHistogramAggregationUnlocked(p, i, &self.scope);
+            if (maybe_agg) |agg| {
+                switch (agg) {
+                    .ExplicitBucketHistogram => |conf| {
+                        h.buckets = conf.buckets;
+                        h.mode = .explicit;
+                        h.record_min_max = conf.record_min_max;
+                    },
+                    .ExponentialBucketHistogram => |conf| {
+                        h.max_scale = conf.max_scale;
+                        h.max_size = conf.max_size;
+                        h.mode = .exponential;
+                        h.record_min_max = conf.record_min_max;
+                    },
+                    else => unreachable,
+                }
+                h.pre_aggregate = true;
+            } else {
+                h.pre_aggregate = false;
+            }
+            try self.registerInstrument(i);
+        } else {
+            h.pre_aggregate = false;
+            try self.registerInstrument(i);
+        }
 
         return h;
     }
@@ -851,6 +974,85 @@ pub const AggregatedMetrics = struct {
         return allocator.dupe(DataPoint(T), deduped.values());
     }
 
+    fn mergeHistogram(data_points: []DataPoint(HistogramDataPoint), collection_timestamps: Timestamps, record_sum: bool, allocator: std.mem.Allocator) ![]DataPoint(HistogramDataPoint) {
+        var deduped = std.ArrayHashMapUnmanaged(
+            Attributes,
+            DataPoint(HistogramDataPoint),
+            Attributes.ArrayHashContext,
+            true,
+        ).empty;
+        defer deduped.deinit(allocator);
+        errdefer for (deduped.values()) |*point| point.deinit(allocator);
+
+        for (data_points) |dp| {
+            const key = Attributes.with(dp.attributes);
+            const gop = try deduped.getOrPut(allocator, key);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = dp.deepCopy(allocator) catch |err| {
+                    _ = deduped.swapRemove(key);
+                    return err;
+                };
+                if (!record_sum) gop.value_ptr.value.sum = null;
+            } else {
+                const existing = &gop.value_ptr.value;
+                existing.count += dp.value.count;
+                if (record_sum) {
+                    if (dp.value.sum) |s| {
+                        existing.sum = if (existing.sum) |curr| curr + s else s;
+                    }
+                } else {
+                    existing.sum = null;
+                }
+                if (dp.value.min) |m| {
+                    existing.min = if (existing.min) |curr| @min(curr, m) else m;
+                }
+                if (dp.value.max) |m| {
+                    existing.max = if (existing.max) |curr| @max(curr, m) else m;
+                }
+                for (existing.bucket_counts, dp.value.bucket_counts) |*b, add_b| {
+                    b.* += add_b;
+                }
+                if (dp.exemplar_candidate) |sample| {
+                    if (gop.value_ptr.exemplar_candidate) |*prev| prev.deinit(allocator);
+                    gop.value_ptr.exemplar_candidate = try sample.deepCopy(allocator);
+                }
+            }
+            gop.value_ptr.timestamps = collection_timestamps;
+        }
+        return allocator.dupe(DataPoint(HistogramDataPoint), deduped.values());
+    }
+
+    fn mergeExponentialHistogram(data_points: []DataPoint(ExponentialHistogramDataPoint), collection_timestamps: Timestamps, record_sum: bool, allocator: std.mem.Allocator) ![]DataPoint(ExponentialHistogramDataPoint) {
+        var deduped = std.ArrayHashMapUnmanaged(
+            Attributes,
+            DataPoint(ExponentialHistogramDataPoint),
+            Attributes.ArrayHashContext,
+            true,
+        ).empty;
+        defer deduped.deinit(allocator);
+        errdefer for (deduped.values()) |*point| point.deinit(allocator);
+
+        for (data_points) |dp| {
+            const key = Attributes.with(dp.attributes);
+            const gop = try deduped.getOrPut(allocator, key);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = dp.deepCopy(allocator) catch |err| {
+                    _ = deduped.swapRemove(key);
+                    return err;
+                };
+                if (!record_sum) gop.value_ptr.value.sum = null;
+            } else {
+                try metrics_temporality.mergeExponentialDataPointValues(allocator, &gop.value_ptr.value, dp.value, record_sum);
+                if (dp.exemplar_candidate) |sample| {
+                    if (gop.value_ptr.exemplar_candidate) |*prev| prev.deinit(allocator);
+                    gop.value_ptr.exemplar_candidate = try sample.deepCopy(allocator);
+                }
+            }
+            gop.value_ptr.timestamps = collection_timestamps;
+        }
+        return allocator.dupe(DataPoint(ExponentialHistogramDataPoint), deduped.values());
+    }
+
     const ExemplarContext = struct {
         meter: *Meter,
         instrument_id: usize,
@@ -917,16 +1119,7 @@ pub const AggregatedMetrics = struct {
                     }
                     break :blk MeasurementsData{ .histogram = aggregated };
                 },
-                .histogram => blk: {
-                    // Legacy support - if somehow we still get pre-aggregated histogram data, just pass it through
-                    const ret = try allocator.alloc(DataPoint(HistogramDataPoint), data_points.histogram.len);
-                    for (data_points.histogram, 0..) |dp, i| {
-                        var d = try dp.deepCopy(allocator);
-                        d.timestamps = collection_timestamps;
-                        ret[i] = d;
-                    }
-                    break :blk MeasurementsData{ .histogram = ret };
-                },
+                .histogram => MeasurementsData{ .histogram = try mergeHistogram(data_points.histogram, collection_timestamps, record_sum, allocator) },
             },
             .ExponentialBucketHistogram => switch (data_points) {
                 .histogram => null,
@@ -946,16 +1139,7 @@ pub const AggregatedMetrics = struct {
                     }
                     break :blk MeasurementsData{ .exponential_histogram = aggregated };
                 },
-                .exponential_histogram => blk: {
-                    // Legacy support - if somehow we still get pre-aggregated exponential histogram data, just pass it through
-                    const ret = try allocator.alloc(DataPoint(ExponentialHistogramDataPoint), data_points.exponential_histogram.len);
-                    for (data_points.exponential_histogram, 0..) |dp, i| {
-                        var d = try dp.deepCopy(allocator);
-                        d.timestamps = collection_timestamps;
-                        ret[i] = d;
-                    }
-                    break :blk MeasurementsData{ .exponential_histogram = ret };
-                },
+                .exponential_histogram => MeasurementsData{ .exponential_histogram = try mergeExponentialHistogram(data_points.exponential_histogram, collection_timestamps, record_sum, allocator) },
             },
         };
         const result = aggregated orelse return null;
@@ -965,7 +1149,7 @@ pub const AggregatedMetrics = struct {
         }
         // Buffered ownership survives changes to the filters before collection.
         switch (data_points) {
-            inline .int, .double => |raw| {
+            inline .int, .double, .histogram, .exponential_histogram => |raw| {
                 var captured = false;
                 for (raw) |point| if (point.attributes_owned or point.exemplar_candidate != null) {
                     captured = true;
@@ -979,7 +1163,6 @@ pub const AggregatedMetrics = struct {
                     },
                 };
             },
-            .histogram, .exponential_histogram => {},
         }
         if (exemplar_context) |ctx| {
             const options: exemplar.ReservoirOptions = switch (aggregation_type) {
@@ -1004,10 +1187,9 @@ pub const AggregatedMetrics = struct {
                 },
             };
             switch (data_points) {
-                inline .int, .double => |raw| switch (result) {
+                inline .int, .double, .histogram, .exponential_histogram => |raw| switch (result) {
                     inline else => |points| try ctx.meter.exemplar_sampler.attach(allocator, ctx.meter.io, stream, options, ctx.factory, raw, points),
                 },
-                .histogram, .exponential_histogram => {},
             }
         }
         return result;
@@ -1200,6 +1382,10 @@ test "fetch validates exponential histogram max_size" {
 
     const meter = try mp.getMeter(.{ .name = "test" });
     var histogram = try meter.createHistogram(f64, .{ .name = "test_histogram" });
+    histogram.mode = .exponential;
+    histogram.max_scale = 10;
+    histogram.max_size = 2;
+    histogram.record_min_max = false;
     try histogram.record(1.0, .{});
     try histogram.record(2.0, .{});
 

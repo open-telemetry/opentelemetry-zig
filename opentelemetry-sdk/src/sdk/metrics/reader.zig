@@ -467,6 +467,76 @@ test "metric reader applies view aggregation over the exporter default" {
     try std.testing.expectEqual(10, dp.max);
 }
 
+test "metric reader histogram export with stack-allocated attributes survives frame exit" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    const me = try MetricExporter.InMemory(allocator, io, null, null);
+    defer me.in_memory.deinit();
+
+    const reader = try MetricReader.init(allocator, io, me.exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "stack-test-meter" });
+    const hist = try meter.createHistogram(f64, .{ .name = "http.server.duration" });
+
+    const Helper = struct {
+        fn recordInFrame(h: anytype) !void {
+            const route: []const u8 = "/api/v1/users";
+            const method: []const u8 = "GET";
+            // Attributes are passed as a tuple/struct, which populates stack_buf via Attributes.fromBuffer
+            try h.record(15.5, .{ "http.route", route, "http.method", method });
+        }
+
+        fn clobberStack() void {
+            var junk: [1024]u8 = undefined;
+            @memset(&junk, 0xEE);
+            std.mem.doNotOptimizeAway(&junk);
+        }
+    };
+
+    try Helper.recordInFrame(hist);
+    Helper.clobberStack();
+
+    try reader.collect();
+
+    const data = try me.in_memory.fetch(allocator);
+    defer {
+        for (data) |*d| d.deinit(allocator);
+        allocator.free(data);
+    }
+
+    try std.testing.expectEqual(1, data.len);
+    const metric_data = data[0].data.histogram;
+    try std.testing.expectEqual(1, metric_data.len);
+
+    const exported_point = metric_data[0];
+    try std.testing.expect(exported_point.attributes != null);
+    const attrs = exported_point.attributes.?;
+    try std.testing.expectEqual(2, attrs.len);
+
+    var found_route = false;
+    var found_method = false;
+    for (attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "http.route")) {
+            found_route = true;
+            try std.testing.expectEqualStrings("/api/v1/users", attr.value.string);
+        } else if (std.mem.eql(u8, attr.key, "http.method")) {
+            found_method = true;
+            try std.testing.expectEqualStrings("GET", attr.value.string);
+        }
+    }
+    try std.testing.expect(found_route);
+    try std.testing.expect(found_method);
+
+    try std.testing.expectEqual(1, exported_point.value.count);
+    try std.testing.expectEqual(15.5, exported_point.value.sum.?);
+}
+
 test "metric reader exports last value views as gauges" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;

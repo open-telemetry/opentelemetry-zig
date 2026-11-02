@@ -98,6 +98,7 @@ pub fn ObservableInstrument(K: Kind) type {
                 callbacks: std.ArrayList(ObserveMeasures) = .empty,
                 context: ObservedContext,
                 exemplar_filter: ExemplarFilter = .trace_based,
+                collection_start_ns: u64 = 0,
 
                 pub fn init(allocator: std.mem.Allocator, io: std.Io, ctx: ?ObservedContext) Self {
                     return Self{
@@ -105,6 +106,7 @@ pub fn ObservableInstrument(K: Kind) type {
                         .io = io,
                         .callbacks = .empty,
                         .context = ctx orelse .{},
+                        .collection_start_ns = @intCast(clock.nanoTimestamp()),
                     };
                 }
 
@@ -187,9 +189,10 @@ pub fn ObservableInstrument(K: Kind) type {
                         const collection_time: u64 = @intCast(clock.nanoTimestamp());
                         switch (uniqueData) {
                             inline else => |points| for (points) |*point| {
-                                point.timestamps = .{ .time_ns = collection_time };
+                                point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };
                             },
                         }
+                        self.collection_start_ns = collection_time;
                         return uniqueData;
                     }
                     return null; // No callbacks registered, nothing to observe.
@@ -503,7 +506,12 @@ test "exemplar observable collection timestamps precede the next observation" {
         defer second.deinit(std.testing.allocator);
         try std.testing.expect(first.int[0].timestamps != null);
         const end = first.int[0].timestamps.?.time_ns;
-        for (first.int) |point| try std.testing.expectEqual(end, point.timestamps.?.time_ns);
+        for (first.int) |point| {
+            try std.testing.expectEqual(end, point.timestamps.?.time_ns);
+            try std.testing.expect(point.timestamps.?.start_time_ns != null);
+            try std.testing.expect(point.timestamps.?.start_time_ns.? <= point.exemplar_candidate.?.time_ns);
+            try std.testing.expect(point.exemplar_candidate.?.time_ns <= end);
+        }
         for (second.int) |point| try std.testing.expect(end <= point.exemplar_candidate.?.time_ns);
     }
 }

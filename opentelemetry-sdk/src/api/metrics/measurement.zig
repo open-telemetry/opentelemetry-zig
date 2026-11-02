@@ -361,10 +361,9 @@ pub const HistogramDataPoint = struct {
 
 test "exemplar datapoint copies own their samples" {
     const allocator = std.testing.allocator;
-    const exemplar = @import("../../sdk/metrics/exemplar.zig");
     const attrs = [_]Attribute{.{ .key = "request", .value = .{ .string = "first" } }};
-    var point = DataPoint(i64){ .value = 7, .exemplar_candidate = (try exemplar.Exemplar.capture(i64, allocator, 7, &attrs, .always_on)).? };
-    point.exemplars = try allocator.alloc(exemplar.Exemplar, 1);
+    var point = DataPoint(i64){ .value = 7, .exemplar_candidate = (try Exemplar.capture(i64, allocator, 7, &attrs, .always_on)).? };
+    point.exemplars = try allocator.alloc(Exemplar, 1);
     point.exemplars[0] = try point.exemplar_candidate.?.deepCopy(allocator);
     var copy = try point.deepCopy(allocator);
     defer copy.deinit(allocator);
@@ -378,13 +377,12 @@ test "exemplar datapoint copying cleans up allocation failures" {
 }
 
 fn exemplarPointCopyFailure(allocator: std.mem.Allocator) !void {
-    const exemplar = @import("../../sdk/metrics/exemplar.zig");
     var point = DataPoint(i64){ .value = 7 };
     defer point.deinit(allocator);
-    point.exemplars = try allocator.alloc(exemplar.Exemplar, 1);
+    point.exemplars = try allocator.alloc(Exemplar, 1);
     point.exemplars[0] = .{ .value = .{ .int = 7 }, .time_ns = 123 };
     const attrs = [_]Attribute{.{ .key = "request", .value = .{ .string = "first" } }};
-    point.exemplar_candidate = (try exemplar.Exemplar.capture(i64, allocator, 7, &attrs, .always_on)).?;
+    point.exemplar_candidate = (try Exemplar.capture(i64, allocator, 7, &attrs, .always_on)).?;
     var copy = try point.deepCopy(allocator);
     defer copy.deinit(allocator);
 }

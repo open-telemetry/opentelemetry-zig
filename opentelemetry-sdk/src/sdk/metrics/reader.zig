@@ -32,6 +32,7 @@ const ExporterIface = exporter.ExporterImpl;
 const ExportResult = exporter.ExportResult;
 const Temporality = @import("temporality.zig");
 const clock = @import("clock");
+const Exemplar = @import("exemplar.zig").Exemplar;
 const HistogramDataPoint = @import("../../api/metrics/measurement.zig").HistogramDataPoint;
 const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
 
@@ -227,7 +228,7 @@ pub const MetricReader = struct {
             var dp = try entry.value_ptr.deepCopy(self.allocator);
             errdefer dp.deinit(self.allocator);
             dp.attributes = if (entry.key_ptr.datapoint_attributes) |attrs|
-                try @import("exemplar.zig").Exemplar.copyAttributes(self.allocator, attrs)
+                try Exemplar.copyAttributes(self.allocator, attrs)
             else
                 null;
             dp.attributes_owned = true;
@@ -532,7 +533,9 @@ test "metric reader correctness exporting cumulative temporality" {
 
     // Generate data
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
+    const before_creation: u64 = @intCast(clock.nanoTimestamp());
     var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
+    const after_creation: u64 = @intCast(clock.nanoTimestamp());
     try counter.add(1, .{});
     try counter.add(2, .{});
 
@@ -548,6 +551,8 @@ test "metric reader correctness exporting cumulative temporality" {
     }
 
     try std.testing.expectEqual(3, result[0].data.int[0].value);
+    const initial_start = result[0].data.int[0].timestamps.?.start_time_ns.?;
+    try std.testing.expect(initial_start >= before_creation and initial_start <= after_creation);
 
     try counter.add(1, .{});
     try counter.add(2, .{});
@@ -566,7 +571,7 @@ test "metric reader correctness exporting cumulative temporality" {
     // Assert value is actually summed up with .Cumulative
     try std.testing.expectEqual(6, result2[0].data.int[0].value);
     // and that timestamp is preserved in a long-running series
-    try std.testing.expectEqual(result[0].data.int[0].timestamps.?.time_ns, result2[0].data.int[0].timestamps.?.start_time_ns);
+    try std.testing.expectEqual(result[0].data.int[0].timestamps.?.start_time_ns, result2[0].data.int[0].timestamps.?.start_time_ns);
 }
 
 test "metric reader cumulative histogram across collection" {
@@ -584,7 +589,9 @@ test "metric reader cumulative histogram across collection" {
         defer reader.shutdown();
         try mp.addReader(reader);
         const meter = try mp.getMeter(.{ .name = "test" });
+        const before_creation: u64 = @intCast(clock.nanoTimestamp());
         const histogram = try meter.createHistogram(T, .{ .name = "test-histogram" });
+        const after_creation: u64 = @intCast(clock.nanoTimestamp());
         const first: T = if (T == f64) 0.25 else 1;
         const second: T = if (T == f64) 0.5 else 6;
         var start_time: ?u64 = null;
@@ -619,7 +626,8 @@ test "metric reader cumulative histogram across collection" {
             const timestamps = dp.timestamps.?;
             if (cycle == 0) {
                 start_time = timestamps.start_time_ns;
-                try std.testing.expectEqual(timestamps.time_ns, start_time);
+                try std.testing.expect(start_time != null);
+                try std.testing.expect(start_time.? >= before_creation and start_time.? <= after_creation);
             }
             try std.testing.expectEqual(start_time, timestamps.start_time_ns);
             try std.testing.expect(timestamps.time_ns >= before and timestamps.time_ns <= after);
@@ -860,7 +868,9 @@ test "metric reader cumulative exponential histogram across collection" {
         const histogram_name = "test-exponential-histogram";
         const meter = try mp.getMeter(.{ .name = "test" });
         try mp.addReader(reader);
+        const before_creation: u64 = @intCast(clock.nanoTimestamp());
         const exponential_histogram = try meter.createHistogram(T, .{ .name = histogram_name });
+        const after_creation: u64 = @intCast(clock.nanoTimestamp());
         const first = switch (T) {
             f64 => -1.5,
             i64 => -3,
@@ -917,7 +927,8 @@ test "metric reader cumulative exponential histogram across collection" {
             const timestamps = dp[0].timestamps.?;
             if (cycle == 0) {
                 start_time = timestamps.start_time_ns;
-                try std.testing.expectEqual(timestamps.time_ns, start_time);
+                try std.testing.expect(start_time != null);
+                try std.testing.expect(start_time.? >= before_creation and start_time.? <= after_creation);
             }
             try std.testing.expectEqual(start_time, timestamps.start_time_ns);
             try std.testing.expect(timestamps.time_ns >= before and timestamps.time_ns <= after);

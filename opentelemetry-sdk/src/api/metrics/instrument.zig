@@ -14,6 +14,9 @@ const MeasurementsData = @import("measurement.zig").MeasurementsData;
 const exemplar = @import("../../sdk/metrics/exemplar.zig");
 
 const AsyncInstrument = @import("async_instrument.zig");
+const trace_api = @import("../trace.zig");
+const context_api = @import("../context.zig");
+const MeterProvider = @import("meter.zig").MeterProvider;
 
 pub const Kind = enum {
     // Synchronous instruments
@@ -256,7 +259,7 @@ pub const InstrumentOptions = struct {
 
 /// A Counter is a monotonically increasing value used to record cumulative events.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#counter
-fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: std.mem.Allocator, points: []const DataPoint(From)) ![]DataPoint(To) {
+fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: std.mem.Allocator, points: []const DataPoint(From), collection_start_ns: *u64) ![]DataPoint(To) {
     const copied = try allocator.alloc(DataPoint(To), points.len);
     var initialized: usize = 0;
     errdefer {
@@ -282,7 +285,8 @@ fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: std.m
     // Callers hold the recording lock, so the next batch starts after this cut.
     if (copied.len > 0) {
         const collection_time: u64 = @intCast(clock.nanoTimestamp());
-        for (copied) |*point| point.timestamps = .{ .time_ns = collection_time };
+        for (copied) |*point| point.timestamps = .{ .start_time_ns = collection_start_ns.*, .time_ns = collection_time };
+        collection_start_ns.* = collection_time;
     }
     return copied;
 }
@@ -294,6 +298,7 @@ pub fn Counter(comptime T: type) type {
         io: std.Io,
         lock: std.Io.Mutex,
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
+        collection_start_ns: u64 = 0,
 
         /// Record data points for the counter.
         /// The list of measurements will be used when reading the data during a collection cycle.
@@ -306,6 +311,7 @@ pub fn Counter(comptime T: type) type {
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
+                .collection_start_ns = @intCast(clock.nanoTimestamp()),
             };
         }
 
@@ -359,7 +365,7 @@ pub fn Counter(comptime T: type) type {
             }
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items) };
+                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items, &self.collection_start_ns) };
                 },
                 else => unreachable,
             }
@@ -377,6 +383,7 @@ pub fn Histogram(comptime T: type) type {
         io: std.Io,
         lock: std.Io.Mutex,
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
+        collection_start_ns: u64 = 0,
 
         /// Keeps track of the raw recorded values for each set of attributes.
         /// The measurements are cleared after each collection cycle.
@@ -387,6 +394,7 @@ pub fn Histogram(comptime T: type) type {
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
+                .collection_start_ns = @intCast(clock.nanoTimestamp()),
                 .data_points = .empty,
             };
         }
@@ -446,10 +454,10 @@ pub fn Histogram(comptime T: type) type {
             // Aggregation will be performed later in AggregateMetrics.fetch()
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items) };
+                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items, &self.collection_start_ns) };
                 },
                 f32, f64 => {
-                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.data_points.items) };
+                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.data_points.items, &self.collection_start_ns) };
                 },
                 // inner types are filtered before this point
                 else => unreachable,
@@ -466,6 +474,7 @@ pub fn Gauge(comptime T: type) type {
         io: std.Io,
         lock: std.Io.Mutex,
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
+        collection_start_ns: u64 = 0,
 
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
@@ -475,6 +484,7 @@ pub fn Gauge(comptime T: type) type {
                 .io = io,
                 .data_points = .empty,
                 .lock = std.Io.Mutex.init,
+                .collection_start_ns = @intCast(clock.nanoTimestamp()),
             };
         }
 
@@ -527,18 +537,16 @@ pub fn Gauge(comptime T: type) type {
 
             switch (T) {
                 i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items) };
+                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items, &self.collection_start_ns) };
                 },
                 f32, f64 => {
-                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.data_points.items) };
+                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.data_points.items, &self.collection_start_ns) };
                 },
                 else => unreachable,
             }
         }
     };
 }
-
-const MeterProvider = @import("meter.zig").MeterProvider;
 
 test "counter with unsupported type does not leak" {
     const io = std.testing.io;
@@ -1005,8 +1013,6 @@ test "exemplar recording snapshots caller attributes before draining" {
 
 test "exemplar recording keeps sampled span IDs after context ends" {
     const allocator = std.testing.allocator;
-    const trace_api = @import("../trace.zig");
-    const context_api = @import("../context.zig");
     const instr = try Instrument.new(.Histogram, .{ .name = "exemplar-histogram" }, allocator);
     defer instr.deinit();
     const histogram = try instr.histogram(std.testing.io, f64);

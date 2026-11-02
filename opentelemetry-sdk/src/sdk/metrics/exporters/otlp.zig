@@ -1,6 +1,9 @@
 //! OTLP exporter for metrics.
 
 const std = @import("std");
+const Configuration = @import("../../config.zig").Configuration;
+const meter_api = @import("../../../api/metrics/meter.zig");
+const Exemplar = @import("../exemplar.zig").Exemplar;
 const clock = @import("clock");
 
 const log = std.log.scoped(.otlp_exporter);
@@ -344,8 +347,6 @@ fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []D
 
 test "exemplar/otlp recording pipeline" {
     const allocator = std.testing.allocator;
-    const Configuration = @import("../../config.zig").Configuration;
-    const meter_api = @import("../../../api/metrics/meter.zig");
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("OTEL_METRICS_EXEMPLAR_FILTER", "always_on");
@@ -657,7 +658,6 @@ test "exporters/otlp resource conversion without a resource" {
 const ExemplarFixtureKind = enum { integer, double, histogram, exponential };
 
 fn exemplarProtobufFixture(allocator: std.mem.Allocator, kind: ExemplarFixtureKind) !pbmetrics.Metric {
-    const Exemplar = @import("../exemplar.zig").Exemplar;
     var filtered = [_]Attribute{.{ .key = "request_id", .value = .{ .string = "abc" } }};
     var retained = [_]Attribute{.{ .key = "region", .value = .{ .string = "west" } }};
     var samples = [_]Exemplar{.{

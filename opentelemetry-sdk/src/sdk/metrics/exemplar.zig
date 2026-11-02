@@ -3,7 +3,9 @@
 
 const std = @import("std");
 
-const Attribute = @import("../../attributes.zig").Attribute;
+const attribute_types = @import("../../attributes.zig");
+const Attribute = attribute_types.Attribute;
+const Attributes = attribute_types.Attributes;
 const trace = @import("../../api/trace.zig");
 const context = @import("../../api/context.zig");
 const clock = @import("clock");
@@ -112,10 +114,16 @@ fn containsKey(attributes: []const Attribute, key: []const u8) bool {
 /// the factory allocator. Methods must be safe for concurrent calls. A successful
 /// collect transfers ownership and resets the collection; reset discards pending
 /// samples without allocating, including after a failed collection.
-pub const ExemplarReservoir = struct {
-    context: *anyopaque,
-    vtable: *const VTable,
+pub const ExemplarReservoir = union(enum) {
+    fixed_size: *BuiltinReservoir,
+    aligned: *BuiltinReservoir,
+    custom: Custom,
 
+    /// User extensions remain open-ended; built-ins use direct method calls.
+    pub const Custom = struct {
+        context: *anyopaque,
+        vtable: *const VTable,
+    };
     pub const VTable = struct {
         offer: *const fn (*anyopaque, *const Exemplar) anyerror!void,
         collect: *const fn (*anyopaque) anyerror![]Exemplar,
@@ -124,22 +132,39 @@ pub const ExemplarReservoir = struct {
     };
 
     pub fn offer(self: ExemplarReservoir, sample: *const Exemplar) !void {
-        return self.vtable.offer(self.context, sample);
+        return switch (self) {
+            .fixed_size => |state| state.offer(false, sample),
+            .aligned => |state| state.offer(true, sample),
+            .custom => |state| state.vtable.offer(state.context, sample),
+        };
     }
     pub fn collect(self: ExemplarReservoir) ![]Exemplar {
-        return self.vtable.collect(self.context);
+        return switch (self) {
+            .fixed_size, .aligned => |state| state.collect(),
+            .custom => |state| state.vtable.collect(state.context),
+        };
     }
     pub fn reset(self: ExemplarReservoir) void {
-        self.vtable.reset(self.context);
+        switch (self) {
+            .fixed_size, .aligned => |state| state.reset(),
+            .custom => |state| state.vtable.reset(state.context),
+        }
     }
     pub fn deinit(self: ExemplarReservoir) void {
-        self.vtable.deinit(self.context);
+        switch (self) {
+            .fixed_size, .aligned => |state| state.deinit(),
+            .custom => |state| state.vtable.deinit(state.context),
+        }
     }
 };
 
 pub const ReservoirOptions = union(enum) {
     fixed_size: usize,
     aligned: []const f64,
+
+    pub fn create(self: ReservoirOptions, allocator: std.mem.Allocator, io: std.Io) !ExemplarReservoir {
+        return BuiltinReservoir.init(allocator, io, self);
+    }
 };
 
 pub const ReservoirFactory = *const fn (std.mem.Allocator, std.Io, ReservoirOptions) anyerror!ExemplarReservoir;
@@ -183,19 +208,17 @@ const BuiltinReservoir = struct {
         var seed: u64 = undefined;
         io.random(std.mem.asBytes(&seed));
         state.* = .{ .allocator = allocator, .io = io, .slots = slots, .bounds = bounds, .prng = std.Random.DefaultPrng.init(seed) };
-        return .{ .context = state, .vtable = &.{
-            .offer = offer,
-            .collect = collect,
-            .reset = reset,
-            .deinit = deinit,
-        } };
+        return switch (options) {
+            .fixed_size => .{ .fixed_size = state },
+            .aligned => .{ .aligned = state },
+        };
     }
 
-    fn offer(ptr: *anyopaque, sample: *const Exemplar) !void {
-        const self: *BuiltinReservoir = @ptrCast(@alignCast(ptr));
+    fn offer(self: *BuiltinReservoir, comptime aligned: bool, sample: *const Exemplar) !void {
         self.lock.lockUncancelable(self.io);
         defer self.lock.unlock(self.io);
-        const index = if (self.bounds) |bounds| blk: {
+        const index = if (aligned) blk: {
+            const bounds = self.bounds.?;
             const value = switch (sample.value) {
                 .int => |v| @as(f64, @floatFromInt(v)),
                 .double => |v| v,
@@ -215,8 +238,7 @@ const BuiltinReservoir = struct {
         self.slots[index] = copy;
     }
 
-    fn collect(ptr: *anyopaque) ![]Exemplar {
-        const self: *BuiltinReservoir = @ptrCast(@alignCast(ptr));
+    fn collect(self: *BuiltinReservoir) ![]Exemplar {
         self.lock.lockUncancelable(self.io);
         defer self.lock.unlock(self.io);
         var count: usize = 0;
@@ -236,8 +258,7 @@ const BuiltinReservoir = struct {
         return collected;
     }
 
-    fn reset(ptr: *anyopaque) void {
-        const self: *BuiltinReservoir = @ptrCast(@alignCast(ptr));
+    fn reset(self: *BuiltinReservoir) void {
         self.lock.lockUncancelable(self.io);
         defer self.lock.unlock(self.io);
         self.clear();
@@ -251,8 +272,7 @@ const BuiltinReservoir = struct {
         self.seen = 0;
     }
 
-    fn deinit(ptr: *anyopaque) void {
-        const self: *BuiltinReservoir = @ptrCast(@alignCast(ptr));
+    fn deinit(self: *BuiltinReservoir) void {
         self.lock.lockUncancelable(self.io);
         self.clear();
         self.allocator.free(self.slots);
@@ -368,7 +388,7 @@ pub const Sampler = struct {
         const reservoir = if (key.factory) |factory|
             try factory(allocator, io, key.options)
         else
-            try BuiltinReservoir.init(allocator, io, key.options);
+            try key.options.create(allocator, io);
         errdefer reservoir.deinit();
         try self.reservoirs.putNoClobber(allocator, key, reservoir);
         return self.reservoirs.getPtr(lookup).?;
@@ -405,9 +425,6 @@ pub const Sampler = struct {
                 .attributes = output[index].attributes,
             });
             try reservoir.offer(&sample);
-            if (output[index].timestamps) |*timestamps| {
-                timestamps.start_time_ns = @min(timestamps.start_time_ns orelse timestamps.time_ns, sample.time_ns);
-            }
         }
         for (output) |*point| {
             const reservoir = self.reservoirs.get(.{
@@ -493,7 +510,7 @@ test "exemplar fixed reservoir owns samples and resets after collection" {
     const allocator = std.testing.allocator;
     var reservoir = try SimpleFixedSizeExemplarReservoir.init(allocator, std.testing.io, 1);
     defer reservoir.deinit();
-    const attrs = [_]@import("../../attributes.zig").Attribute{
+    const attrs = [_]Attribute{
         .{ .key = "route", .value = .{ .string = "/one" } },
     };
     var sample = Exemplar{ .value = .{ .int = 7 }, .time_ns = 123, .filtered_attributes = try Exemplar.copyAttributes(allocator, &attrs) };
@@ -530,7 +547,7 @@ test "exemplar fixed reservoir uniformly samples across a collection" {
     const allocator = std.testing.allocator;
     var reservoir = try SimpleFixedSizeExemplarReservoir.init(allocator, std.testing.io, 1);
     defer reservoir.deinit();
-    const state: *BuiltinReservoir = @ptrCast(@alignCast(reservoir.context));
+    const state = reservoir.fixed_size;
     state.prng = std.Random.DefaultPrng.init(123);
     var counts: [4]usize = @splat(0);
     for (0..1000) |_| {
@@ -559,7 +576,7 @@ test "exemplar copying and sampling clean up allocation failures" {
 }
 
 fn exemplarAllocationFailure(allocator: std.mem.Allocator) !void {
-    const attrs = [_]@import("../../attributes.zig").Attribute{
+    const attrs = [_]Attribute{
         .{ .key = "route", .value = .{ .string = "/one" } },
     };
     var sample = (try Exemplar.capture(i64, allocator, 7, &attrs, .always_on)).?;
@@ -604,7 +621,7 @@ test "exemplar sampler preserves custom reservoirs per series across collections
         try std.testing.expectEqual(@as(usize, 1), output[0].exemplars.len);
         try std.testing.expectEqual(@as(i64, 7), output[0].exemplars[0].value.int);
         try std.testing.expectEqual(@as(i64, 9), output[1].exemplars[0].value.int);
-        try std.testing.expectEqual(@as(u64, 100), output[0].timestamps.?.start_time_ns.?);
+        try std.testing.expectEqual(@as(?u64, null), output[0].timestamps.?.start_time_ns);
     }
     try std.testing.expectEqual(@as(usize, 2), Factory.calls);
 }
@@ -628,11 +645,10 @@ test "exemplar owned attributes preserve timeseries identity" {
     var attrs = [_]Attribute{.{ .key = "region", .value = .{ .string = "west" } }};
     var copied = Exemplar{ .value = .{ .int = 1 }, .time_ns = 1, .filtered_attributes = try Exemplar.copyAttributes(allocator, &attrs) };
     defer copied.deinit(allocator);
-    const Attributes = @import("../../attributes.zig").Attributes;
     try std.testing.expect((Attributes.HashContext{}).eql(Attributes.with(&attrs), Attributes.with(copied.filtered_attributes)));
 }
 
-test "exemplar sampling keeps the first recording time when a later sample wins" {
+test "exemplar sampling leaves collection boundaries unchanged when a later sample wins" {
     const allocator = std.testing.allocator;
     const Factory = struct {
         fn last(a: std.mem.Allocator, io: std.Io, _: ReservoirOptions) !ExemplarReservoir {
@@ -649,7 +665,7 @@ test "exemplar sampling keeps the first recording time when a later sample wins"
     defer Exemplar.deinitList(allocator, output[0].exemplars);
     try sampler.attach(allocator, std.testing.io, .{ .instrument_id = 1 }, .{ .fixed_size = 1 }, Factory.last, &raw, &output);
     try std.testing.expectEqual(@as(i64, 2), output[0].exemplars[0].value.int);
-    try std.testing.expectEqual(@as(u64, 100), output[0].timestamps.?.start_time_ns.?);
+    try std.testing.expectEqual(@as(?u64, null), output[0].timestamps.?.start_time_ns);
 }
 
 test "exemplar filters require a valid sampled context only for trace based sampling" {
@@ -724,4 +740,88 @@ test "exemplar sampler retains NaN attribute series and signed zero identity" {
     const ctx = AttributeSetContext{};
     try std.testing.expect(ctx.eql(&positive, &negative));
     try std.testing.expectEqual(ctx.hash(&positive), ctx.hash(&negative));
+}
+
+test "exemplar custom extension keeps offer collect reset and ownership hooks" {
+    const Custom = struct {
+        const Self = @This();
+        allocator: std.mem.Allocator,
+        inner: ExemplarReservoir,
+        offers: usize = 0,
+        reset_calls: usize = 0,
+        fail_collect: bool = false,
+        fn create(a: std.mem.Allocator, io: std.Io, options: ReservoirOptions) !ExemplarReservoir {
+            const inner = try options.create(a, io);
+            const self = a.create(Self) catch |err| {
+                inner.deinit();
+                return err;
+            };
+            self.* = .{ .allocator = a, .inner = inner };
+            return .{ .custom = .{ .context = self, .vtable = &.{ .offer = offer, .collect = collect, .reset = reset, .deinit = deinit } } };
+        }
+        fn allocationFailure(a: std.mem.Allocator) !void {
+            var sampler: Sampler = .{};
+            defer sampler.deinit(a);
+            const raw = [_]SamplerTestPoint{.{ .exemplar_candidate = .{ .value = .{ .int = 7 }, .time_ns = 100 } }};
+            var output = [_]SamplerTestPoint{.{}};
+            defer Exemplar.deinitList(a, output[0].exemplars);
+            try sampler.attach(a, std.testing.io, .{ .instrument_id = 1 }, .{ .fixed_size = 1 }, create, &raw, &output);
+        }
+        fn offer(ptr: *anyopaque, sample: *const Exemplar) !void {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            self.offers += 1;
+            try self.inner.offer(sample);
+        }
+        fn collect(ptr: *anyopaque) ![]Exemplar {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            if (self.fail_collect) return error.TestCollectionFailed;
+            return self.inner.collect();
+        }
+        fn reset(ptr: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            self.reset_calls += 1;
+            self.inner.reset();
+        }
+        fn deinit(ptr: *anyopaque) void {
+            const self: *Self = @ptrCast(@alignCast(ptr));
+            self.inner.deinit();
+            self.allocator.destroy(self);
+        }
+    };
+    const allocator = std.testing.allocator;
+    const reservoir = try Custom.create(allocator, std.testing.io, .{ .fixed_size = 1 });
+    const state: *Custom = @ptrCast(@alignCast(reservoir.custom.context));
+    defer reservoir.deinit();
+    const sample = Exemplar{ .value = .{ .int = 7 }, .time_ns = 100 };
+    try reservoir.offer(&sample);
+    const collected = try reservoir.collect();
+    defer Exemplar.deinitList(allocator, collected);
+    try std.testing.expectEqual(@as(usize, 1), collected.len);
+    try std.testing.expectEqual(@as(i64, 7), collected[0].value.int);
+    try reservoir.offer(&sample);
+    reservoir.reset();
+    const empty = try reservoir.collect();
+    defer Exemplar.deinitList(allocator, empty);
+    try std.testing.expectEqual(@as(usize, 0), empty.len);
+    try std.testing.expectEqual(@as(usize, 2), state.offers);
+    try std.testing.expectEqual(@as(usize, 1), state.reset_calls);
+    try std.testing.checkAllAllocationFailures(allocator, Custom.allocationFailure, .{});
+    var sampler: Sampler = .{};
+    defer sampler.deinit(allocator);
+    const raw = [_]SamplerTestPoint{.{ .exemplar_candidate = sample }};
+    var output = [_]SamplerTestPoint{.{}};
+    defer Exemplar.deinitList(allocator, output[0].exemplars);
+    try sampler.attach(allocator, std.testing.io, .{ .instrument_id = 1 }, .{ .fixed_size = 1 }, Custom.create, &raw, &output);
+    var entries = sampler.reservoirs.valueIterator();
+    const cached: *Custom = @ptrCast(@alignCast(entries.next().?.custom.context));
+    cached.fail_collect = true;
+    try std.testing.expectError(error.TestCollectionFailed, sampler.attach(allocator, std.testing.io, .{ .instrument_id = 1 }, .{ .fixed_size = 1 }, Custom.create, &raw, &output));
+    try std.testing.expectEqual(@as(usize, 1), cached.reset_calls);
+    cached.fail_collect = false;
+    const discarded = try cached.inner.collect();
+    defer Exemplar.deinitList(allocator, discarded);
+    try std.testing.expectEqual(@as(usize, 0), discarded.len);
+    try sampler.attach(allocator, std.testing.io, .{ .instrument_id = 1 }, .{ .fixed_size = 1 }, Custom.create, &raw, &output);
+    try std.testing.expectEqual(@as(usize, 1), sampler.reservoirs.count());
+    try std.testing.expectEqual(@as(usize, 1), output[0].exemplars.len);
 }

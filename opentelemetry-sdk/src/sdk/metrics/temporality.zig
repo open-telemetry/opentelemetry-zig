@@ -993,7 +993,7 @@ test "exemplar temporal aggregation preserves established collection bounds" {
             .data = .{ .int = &points },
         };
         if (cumulative) try processCumulativeDataPoints(i64, &temporal.ints, &measurement, &points, 1) else try processDeltaDataPoints(i64, &temporal.ints, &measurement, &points, 1);
-        var samples = [_]@import("exemplar.zig").Exemplar{.{ .value = .{ .int = 1 }, .time_ns = 190 }};
+        var samples = [_]Exemplar{.{ .value = .{ .int = 1 }, .time_ns = 190 }};
         points[0] = .{ .value = 1, .timestamps = .{ .start_time_ns = 190, .time_ns = 300 }, .exemplars = &samples };
         if (cumulative) try processCumulativeDataPoints(i64, &temporal.ints, &measurement, &points, 1) else try processDeltaDataPoints(i64, &temporal.ints, &measurement, &points, 1);
         try std.testing.expectEqual(@as(u64, 200), points[0].timestamps.?.start_time_ns.?);

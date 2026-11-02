@@ -20,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
     const tracer = try traces.getTracer(.{ .name = "exemplar-demo" });
 
     const provider = try sdk.metrics.MeterProvider.init(allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     try provider.addView(.{
         .instrument_selector = .{ .name = "requests" },
         .aggregation = .Sum,
@@ -30,7 +30,7 @@ pub fn main(init: std.process.Init) !void {
     const exporter = try sdk.metrics.MetricExporter.InMemory(allocator, io, null, null);
     defer exporter.in_memory.deinit();
     const reader = try sdk.metrics.MetricReader.init(allocator, io, exporter.exporter);
-    defer reader.shutdown();
+    defer reader.deinit();
     try provider.addReader(reader);
     const meter = try provider.getMeter(.{ .name = "exemplar-demo" });
     const counter = try meter.createCounter(u64, .{ .name = "requests" });

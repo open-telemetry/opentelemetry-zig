@@ -354,7 +354,7 @@ test "exemplar/otlp recording pipeline" {
     defer cfg.deinit();
     Configuration.set(cfg);
     const provider = try meter_api.MeterProvider.init(allocator, std.testing.io);
-    defer provider.shutdown();
+    defer provider.deinit();
     try provider.addView(.{
         .instrument_selector = .{ .name = "requests" },
         .aggregation = .Sum,

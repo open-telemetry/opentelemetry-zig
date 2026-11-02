@@ -1,4 +1,4 @@
-//! Integration test for OTLP/gRPC logs export.
+//! Integration test for OTLP/gRPC export of metrics, traces and logs.
 //!
 //! Requires the SDK to be built with `-Dgrpc-provider=libgrpc`. With the
 //! default (`none`) provider this binary self-skips: it prints a warning and
@@ -11,8 +11,14 @@
 const std = @import("std");
 const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
+const metrics_sdk = sdk.metrics;
+const trace_sdk = sdk.trace;
+const trace_api = sdk.api.trace;
 const logs_sdk = sdk.logs;
 const common = @import("common");
+
+const scope_name = "integration-test-grpc";
+const routes = [_][]const u8{ "/api/users", "/api/orders", "/api/items" };
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -27,21 +33,11 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    var ctx = try common.setupTestContext(allocator, io, "logs-grpc");
+    var ctx = try common.setupTestContext(allocator, io, "grpc");
     defer common.cleanupTestContext(&ctx, io);
 
-    std.debug.print("Running logs gRPC integration test...\n", .{});
-    try testLogsOverGrpc(allocator, io, init.environ_map, ctx.tmp_dir);
-    std.debug.print("✓ Logs gRPC test passed\n\n", .{});
-}
-
-fn testLogsOverGrpc(
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    env_map: *const std.process.Environ.Map,
-    tmp_dir: std.Io.Dir,
-) !void {
-    var config = try sdk.otlp.ConfigOptions.init(allocator, env_map);
+    // One configuration shared by all signals, as in examples/grpc/all_signals.zig.
+    const config = try sdk.otlp.ConfigOptions.init(allocator, init.environ_map);
     defer config.deinit();
 
     // Talk to the collector's gRPC port, in plaintext. We deliberately leave
@@ -53,8 +49,173 @@ fn testLogsOverGrpc(
     config.endpoint = "localhost:" ++ common.COLLECTOR_GRPC_PORT;
     // Not checked by the collector: this only ensures headers don't break the export,
     // gRPC refusing uppercase metadata keys unless the transport lowercases them
-    config.headers = "X-Integration-Test=logs_grpc";
+    config.headers = "X-Integration-Test=grpc";
 
+    std.debug.print("Running metrics gRPC integration test...\n", .{});
+    try testMetricsOverGrpc(allocator, io, config, ctx.tmp_dir);
+    std.debug.print("✓ Metrics gRPC test passed\n\n", .{});
+
+    std.debug.print("Running traces gRPC integration test...\n", .{});
+    try testTracesOverGrpc(allocator, io, config, ctx.tmp_dir);
+    std.debug.print("✓ Traces gRPC test passed\n\n", .{});
+
+    std.debug.print("Running logs gRPC integration test...\n", .{});
+    try testLogsOverGrpc(allocator, io, config, ctx.tmp_dir);
+    std.debug.print("✓ Logs gRPC test passed\n\n", .{});
+}
+
+fn testMetricsOverGrpc(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config: *sdk.otlp.ConfigOptions,
+    tmp_dir: std.Io.Dir,
+) !void {
+    const mp = try metrics_sdk.MeterProvider.init(allocator, io);
+    defer mp.shutdown();
+
+    const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);
+    defer me.otlp.deinit();
+
+    const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
+    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.shutdown();
+    try mp.addReader(mr);
+
+    const meter = try mp.getMeter(.{ .name = scope_name, .version = "1.0.0" });
+    var req_count = try meter.createCounter(u64, .{
+        .name = "http.server.requests",
+        .description = "Total HTTP requests handled",
+    });
+    var req_duration = try meter.createHistogram(f64, .{
+        .name = "http.server.duration",
+        .description = "HTTP request duration",
+        .unit = "ms",
+    });
+
+    for (routes, 0..) |route, i| {
+        try req_count.add(1, .{ "http.route", route });
+        try req_duration.record(@floatFromInt(10 * (i + 1)), .{ "http.route", route });
+    }
+
+    try mr.collect();
+
+    clock.sleep(1 * std.time.ns_per_s);
+
+    std.debug.print("  Sent {d} requests worth of metrics over gRPC\n", .{routes.len});
+    std.debug.print("  Waiting for metrics JSON file...\n", .{});
+
+    const json_content = common.waitForFileContent(allocator, io, tmp_dir, "metrics.json", "http.server.requests", 15) catch |err| {
+        if (err == error.ExpectedContentNotFound) {
+            const stale_content = common.readJsonFile(allocator, io, tmp_dir, "metrics.json") catch {
+                std.debug.print("  ERROR: Could not read metrics.json\n", .{});
+                return error.MetricsNotReceivedByCollector;
+            };
+            defer allocator.free(stale_content);
+            std.debug.print("  ERROR: gRPC metrics JSON doesn't contain expected data\n", .{});
+            std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{stale_content[0..@min(stale_content.len, 500)]});
+            return error.MetricsNotReceivedByCollector;
+        }
+        return err;
+    };
+    defer allocator.free(json_content);
+
+    const has_counter = std.mem.indexOf(u8, json_content, "http.server.requests") != null;
+    const has_histogram = std.mem.indexOf(u8, json_content, "http.server.duration") != null;
+    const has_resource_metrics = std.mem.indexOf(u8, json_content, "resourceMetrics") != null or
+        std.mem.indexOf(u8, json_content, "resource_metrics") != null;
+    const has_scope_name = std.mem.indexOf(u8, json_content, scope_name) != null;
+
+    if (!has_counter or !has_histogram or !has_resource_metrics or !has_scope_name) {
+        std.debug.print("  ERROR: gRPC metrics JSON doesn't contain expected data\n", .{});
+        std.debug.print("  has_counter={}, has_histogram={}, has_resource_metrics={}, has_scope_name={}\n", .{
+            has_counter, has_histogram, has_resource_metrics, has_scope_name,
+        });
+        std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{json_content[0..@min(json_content.len, 500)]});
+        return error.MetricsNotReceivedByCollector;
+    }
+
+    std.debug.print("  ✓ gRPC metrics JSON validated - found counter and histogram\n", .{});
+}
+
+fn testTracesOverGrpc(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config: *sdk.otlp.ConfigOptions,
+    tmp_dir: std.Io.Dir,
+) !void {
+    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    const id_generator = trace_sdk.IDGenerator{
+        .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
+    };
+
+    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
+    defer tracer_provider.deinit();
+
+    var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);
+    defer otlp_exporter.deinit();
+
+    var simple_processor = trace_sdk.SimpleProcessor.init(
+        allocator,
+        io,
+        otlp_exporter.asSpanExporter(),
+    );
+    try tracer_provider.addSpanProcessor(simple_processor.asSpanProcessor());
+
+    const tracer = try tracer_provider.getTracer(.{ .name = scope_name, .version = "1.0.0" });
+
+    for (routes) |route| {
+        var span = try tracer.startSpan(allocator, route, .{ .kind = .Server });
+        defer span.deinit();
+        try span.setAttribute("http.route", .{ .string = route });
+        try span.setAttribute("transport", .{ .string = "grpc" });
+
+        span.setStatus(trace_api.Status.ok());
+        span.end(null);
+    }
+
+    clock.sleep(1 * std.time.ns_per_s);
+
+    std.debug.print("  Sent {d} spans over gRPC\n", .{routes.len});
+    std.debug.print("  Waiting for traces JSON file...\n", .{});
+
+    const json_content = common.waitForFileContent(allocator, io, tmp_dir, "traces.json", "/api/orders", 15) catch |err| {
+        if (err == error.ExpectedContentNotFound) {
+            const stale_content = common.readJsonFile(allocator, io, tmp_dir, "traces.json") catch {
+                std.debug.print("  ERROR: Could not read traces.json\n", .{});
+                return error.TracesNotReceivedByCollector;
+            };
+            defer allocator.free(stale_content);
+            std.debug.print("  ERROR: gRPC traces JSON doesn't contain expected data\n", .{});
+            std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{stale_content[0..@min(stale_content.len, 500)]});
+            return error.TracesNotReceivedByCollector;
+        }
+        return err;
+    };
+    defer allocator.free(json_content);
+
+    const has_span = std.mem.indexOf(u8, json_content, "/api/orders") != null;
+    const has_resource_spans = std.mem.indexOf(u8, json_content, "resourceSpans") != null or
+        std.mem.indexOf(u8, json_content, "resource_spans") != null;
+    const has_scope_name = std.mem.indexOf(u8, json_content, scope_name) != null;
+
+    if (!has_span or !has_resource_spans or !has_scope_name) {
+        std.debug.print("  ERROR: gRPC traces JSON doesn't contain expected data\n", .{});
+        std.debug.print("  has_span={}, has_resource_spans={}, has_scope_name={}\n", .{
+            has_span, has_resource_spans, has_scope_name,
+        });
+        std.debug.print("  JSON content sample (first 500 chars):\n{s}\n", .{json_content[0..@min(json_content.len, 500)]});
+        return error.TracesNotReceivedByCollector;
+    }
+
+    std.debug.print("  ✓ gRPC traces JSON validated - found expected spans\n", .{});
+}
+
+fn testLogsOverGrpc(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config: *sdk.otlp.ConfigOptions,
+    tmp_dir: std.Io.Dir,
+) !void {
     var otlp_exporter = try logs_sdk.OTLPExporter.init(allocator, io, config);
     defer otlp_exporter.deinit();
     const exporter = otlp_exporter.asLogRecordExporter();
@@ -73,11 +234,7 @@ fn testLogsOverGrpc(
 
     try provider.addLogRecordProcessor(processor);
 
-    const scope = sdk.scope.InstrumentationScope{
-        .name = "integration-test-grpc",
-        .version = "1.0.0",
-    };
-    const logger = try provider.getLogger(scope);
+    const logger = try provider.getLogger(.{ .name = scope_name, .version = "1.0.0" });
 
     const num_logs = 5;
     logger.emit(.trace, "gRPC trace log", .{ .severity_text = "TRACE" });
@@ -117,7 +274,7 @@ fn testLogsOverGrpc(
     const has_grpc_log = std.mem.indexOf(u8, json_content, "gRPC info log") != null;
     const has_resource_logs = std.mem.indexOf(u8, json_content, "resourceLogs") != null or
         std.mem.indexOf(u8, json_content, "resource_logs") != null;
-    const has_service_name = std.mem.indexOf(u8, json_content, "integration-test-grpc") != null;
+    const has_service_name = std.mem.indexOf(u8, json_content, service_name) != null;
     const has_transport_attr = std.mem.indexOf(u8, json_content, "grpc") != null;
 
     if (!has_grpc_log or !has_resource_logs or !has_service_name) {

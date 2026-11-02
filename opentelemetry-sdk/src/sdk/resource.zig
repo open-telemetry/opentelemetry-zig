@@ -40,7 +40,7 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
 }
 
 /// Decode a percent-encoded string according to RFC 3986.
-/// Decodes triplets like `%20` into their respective byte values.
+/// Decodes triplets like `%20` into their respective byte values using std.Uri.
 /// Literal `+` characters are preserved (not converted to space).
 /// Returns an allocated slice owned by the caller.
 pub fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
@@ -48,35 +48,16 @@ pub fn percentDecode(allocator: std.mem.Allocator, input: []const u8) ![]u8 {
         return allocator.dupe(u8, input);
     }
 
-    var result = try std.ArrayList(u8).initCapacity(allocator, input.len);
-    errdefer result.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < input.len) {
-        if (input[i] == '%') {
-            if (i + 2 >= input.len) {
-                return error.InvalidPercentEncoding;
-            }
-            const h1 = hexDigitValue(input[i + 1]) orelse return error.InvalidPercentEncoding;
-            const h2 = hexDigitValue(input[i + 2]) orelse return error.InvalidPercentEncoding;
-            result.appendAssumeCapacity((h1 << 4) | h2);
-            i += 3;
-        } else {
-            result.appendAssumeCapacity(input[i]);
-            i += 1;
-        }
+    var stack_buf: [256]u8 = undefined;
+    if (input.len <= stack_buf.len) {
+        const decoded = std.Uri.percentDecodeBackwards(&stack_buf, input);
+        return allocator.dupe(u8, decoded);
     }
 
-    return result.toOwnedSlice(allocator);
-}
-
-fn hexDigitValue(c: u8) ?u8 {
-    return switch (c) {
-        '0'...'9' => c - '0',
-        'a'...'f' => c - 'a' + 10,
-        'A'...'F' => c - 'A' + 10,
-        else => null,
-    };
+    const temp_buf = try allocator.alloc(u8, input.len);
+    defer allocator.free(temp_buf);
+    const decoded = std.Uri.percentDecodeBackwards(temp_buf, input);
+    return allocator.dupe(u8, decoded);
 }
 
 /// Parse resource attributes from comma-separated key=value pairs
@@ -106,13 +87,7 @@ fn parseResourceAttributes(
             continue;
         }
 
-        const key = percentDecode(allocator, entry.name) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.InvalidPercentEncoding => {
-                std.log.warn("Invalid percent-encoding in resource attribute key: {s}", .{entry.name});
-                continue;
-            },
-        };
+        const key = try percentDecode(allocator, entry.name);
         errdefer allocator.free(key);
 
         if (key.len == 0) {
@@ -121,14 +96,7 @@ fn parseResourceAttributes(
             continue;
         }
 
-        const value = percentDecode(allocator, raw_value) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            error.InvalidPercentEncoding => {
-                allocator.free(key);
-                std.log.warn("Invalid percent-encoding in resource attribute value: {s}={s}", .{ entry.name, raw_value });
-                continue;
-            },
-        };
+        const value = try percentDecode(allocator, raw_value);
         errdefer allocator.free(value);
 
         // Skip service.name if OTEL_SERVICE_NAME is set (it takes precedence)
@@ -530,10 +498,12 @@ test "percentDecode RFC 3986 decoding" {
         try std.testing.expectEqualStrings("1+1=2+and+spaces here", decoded);
     }
 
-    // Invalid percent encodings return error
-    try std.testing.expectError(error.InvalidPercentEncoding, percentDecode(allocator, "truncated%"));
-    try std.testing.expectError(error.InvalidPercentEncoding, percentDecode(allocator, "truncated%2"));
-    try std.testing.expectError(error.InvalidPercentEncoding, percentDecode(allocator, "invalid%ZZ"));
+    // Invalid or incomplete percent encodings are kept verbatim by std.Uri
+    {
+        const decoded = try percentDecode(allocator, "truncated%and%2plus%ZZ");
+        defer allocator.free(decoded);
+        try std.testing.expectEqualStrings("truncated%and%2plus%ZZ", decoded);
+    }
 }
 
 test "parseResourceAttributes percent-decodes keys and values" {
@@ -543,7 +513,7 @@ test "parseResourceAttributes percent-decodes keys and values" {
         .allocator = allocator,
         .sdk_disabled = false,
         .service_name = null,
-        .resource_attributes = "deployment.environment=prod%20east,custom%2Etag=val%2C1,equation=a%3Db,path=%2Fvar%2Flog,math=1+1",
+        .resource_attributes = "deployment.environment=prod%20east,custom%2Etag=val%2C1,equation=a%3Db,path=%2Fvar%2Flog,math=1+1,literal%2=kept",
         .log_level = .info,
         .trace_propagators = &.{},
         .trace_config = undefined,
@@ -554,7 +524,7 @@ test "parseResourceAttributes percent-decodes keys and values" {
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    try std.testing.expectEqual(@as(usize, 5), resource.len);
+    try std.testing.expectEqual(@as(usize, 6), resource.len);
     try std.testing.expectEqualStrings("deployment.environment", resource[0].key);
     try std.testing.expectEqualStrings("prod east", resource[0].value.string);
 
@@ -569,32 +539,9 @@ test "parseResourceAttributes percent-decodes keys and values" {
 
     try std.testing.expectEqualStrings("math", resource[4].key);
     try std.testing.expectEqualStrings("1+1", resource[4].value.string);
-}
 
-test "parseResourceAttributes handles invalid percent-encoding gracefully" {
-    const allocator = std.testing.allocator;
-
-    var config = Configuration{
-        .allocator = allocator,
-        .sdk_disabled = false,
-        .service_name = null,
-        .resource_attributes = "valid.key=valid%20value,bad.key%2=dropped,good.key=also%20good,bad.val=dropped%2Z",
-        .log_level = .info,
-        .trace_propagators = &.{},
-        .trace_config = undefined,
-        .metrics_config = undefined,
-        .logs_config = undefined,
-    };
-
-    const resource = try buildFromConfig(allocator, &config);
-    defer freeResource(allocator, resource);
-
-    // Only valid.key and good.key should be retained; invalid ones are dropped without leaking
-    try std.testing.expectEqual(@as(usize, 2), resource.len);
-    try std.testing.expectEqualStrings("valid.key", resource[0].key);
-    try std.testing.expectEqualStrings("valid value", resource[0].value.string);
-    try std.testing.expectEqualStrings("good.key", resource[1].key);
-    try std.testing.expectEqualStrings("also good", resource[1].value.string);
+    try std.testing.expectEqualStrings("literal%2", resource[5].key);
+    try std.testing.expectEqualStrings("kept", resource[5].value.string);
 }
 
 test "service.name percent-decoded from OTEL_RESOURCE_ATTRIBUTES in Configuration.init" {

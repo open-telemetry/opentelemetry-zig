@@ -371,11 +371,11 @@ fn serviceNameFromResourceAttributes(allocator: std.mem.Allocator, attrs: []cons
     var iter: CommaSeparatedAssignmentIterator = .init(attrs);
     while (iter.next()) |entry| {
         const raw_val = entry.value orelse continue;
-        const key = percentDecode(allocator, entry.name) catch continue;
+        const key = try percentDecode(allocator, entry.name);
         defer allocator.free(key);
         if (!std.mem.eql(u8, key, "service.name")) continue;
         // A bare `service.name` with no value does not count; keep looking.
-        return percentDecode(allocator, raw_val) catch null;
+        return try percentDecode(allocator, raw_val);
     }
     return null;
 }

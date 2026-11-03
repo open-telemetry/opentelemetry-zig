@@ -124,6 +124,8 @@ fn freeKeyAttributes(allocator: std.mem.Allocator, key: ScopedDataPoint) void {
         };
         allocator.free(attrs);
     }
+}
+
 /// Asynchronous instruments observe the current total instead of an increment.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#asynchronous-counter
 fn reportsTotals(measurements: *const Measurements) bool {

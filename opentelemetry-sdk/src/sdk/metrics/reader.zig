@@ -536,13 +536,13 @@ test "metric reader exports observable counter totals" {
 
     inline for (cases) |case| {
         const mp = try MeterProvider.init(allocator, io);
-        defer mp.shutdown();
+        defer mp.deinit();
 
         const me = try MetricExporter.InMemory(allocator, io, case[0], null);
         defer me.in_memory.deinit();
 
         const reader = try MetricReader.init(allocator, io, me.exporter);
-        defer reader.shutdown();
+        defer reader.deinit();
         try mp.addReader(reader);
 
         const meter = try mp.getMeter(.{ .name = "my-meter" });

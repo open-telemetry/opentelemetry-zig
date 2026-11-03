@@ -124,6 +124,20 @@ fn freeKeyAttributes(allocator: std.mem.Allocator, key: ScopedDataPoint) void {
         };
         allocator.free(attrs);
     }
+/// Asynchronous instruments observe the current total instead of an increment.
+/// See https://opentelemetry.io/docs/specs/otel/metrics/api/#asynchronous-counter
+fn reportsTotals(measurements: *const Measurements) bool {
+    if (measurements.isLastValue()) return false;
+    return switch (measurements.instrumentKind) {
+        .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => true,
+        .Counter, .UpDownCounter, .Histogram, .Gauge => false,
+    };
+}
+
+/// A monotonic total that drops was reset (e.g. the observed process restarted) and counts again from zero.
+/// See https://opentelemetry.io/docs/specs/otel/metrics/supplementary-guidelines/#asynchronous-example
+fn detectsResets(measurements: *const Measurements) bool {
+    return reportsTotals(measurements) and measurements.instrumentKind.isMonotonic();
 }
 
 fn processCumulativeDataPoints(
@@ -133,9 +147,10 @@ fn processCumulativeDataPoints(
     datapoints: [*]DataPoint(T),
     array_len: usize,
 ) !void {
-    // LastValue data must report the latest observation even under cumulative
-    // temporality, not a running total.
-    const keep_last_value = measurements.isLastValue();
+    // LastValue data and asynchronous totals must report the latest observation
+    // even under cumulative temporality, not a running total.
+    const keep_last_value = measurements.isLastValue() or reportsTotals(measurements);
+    const detect_reset = detectsResets(measurements);
     for (0..array_len) |idx| {
         var dp = &datapoints[idx];
         const identity = ScopedDataPoint{
@@ -152,6 +167,7 @@ fn processCumulativeDataPoints(
         const gop = try map.getOrPut(identity);
         if (gop.found_existing) {
             const existing_ts = gop.value_ptr.timestamps orelse return TemporalAggregationError.MissingTimestampStartTimeUnixNano;
+            var start_time_ns = existing_ts.start_time_ns;
             switch (T) {
                 HistogramDataPoint => {
                     const stored = &gop.value_ptr.value;
@@ -286,11 +302,13 @@ fn processCumulativeDataPoints(
                         null;
                 },
                 i64, f64 => {
+                    // After a reset the sequence restarts at the previous collection, the last time the old total was valid.
+                    if (detect_reset and dp.value < gop.value_ptr.value) start_time_ns = existing_ts.time_ns;
                     gop.value_ptr.value = if (keep_last_value) dp.value else gop.value_ptr.value + dp.value;
                 },
                 else => @compileError("unsupported cumulative data point type"),
             }
-            gop.value_ptr.timestamps = .{ .start_time_ns = existing_ts.start_time_ns, .time_ns = dp_time };
+            gop.value_ptr.timestamps = .{ .start_time_ns = start_time_ns, .time_ns = dp_time };
         } else {
             errdefer _ = map.remove(identity);
 
@@ -451,6 +469,9 @@ fn processDeltaDataPoints(
     datapoints: [*]DataPoint(T),
     array_len: usize,
 ) !void {
+    // Asynchronous totals become deltas by subtracting the previous observation.
+    const subtract_previous = reportsTotals(measurements);
+    const detect_reset = detectsResets(measurements);
     for (0..array_len) |idx| {
         var dp = &datapoints[idx];
         const identity = ScopedDataPoint{
@@ -462,12 +483,16 @@ fn processDeltaDataPoints(
 
         const incoming_ts = dp.timestamps orelse return TemporalAggregationError.MissingTimestampTimeUnixNano;
         const dp_time = incoming_ts.time_ns;
+        const observed = dp.value;
         var start_time: u64 = 0;
         const gop = try map.getOrPut(identity);
         if (gop.found_existing) {
             if (gop.value_ptr.timestamps) |existing_time| {
                 start_time = existing_time.time_ns;
             }
+            // After a reset the whole observation is new, so nothing is subtracted.
+            const reset = detect_reset and dp.value < gop.value_ptr.value;
+            if (subtract_previous and !reset) dp.value -= gop.value_ptr.value;
         } else {
             // The map outlives the measurements: their attributes are owned by the
             // exporter and freed after export, so the key must own its own copy.
@@ -480,7 +505,7 @@ fn processDeltaDataPoints(
         }
         dp.timestamps = .{ .start_time_ns = start_time, .time_ns = dp_time };
         // Update map with this latest datapoint
-        gop.value_ptr.value = dp.value;
+        gop.value_ptr.value = observed;
         gop.value_ptr.timestamps = dp.timestamps;
     }
 }

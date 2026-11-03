@@ -207,7 +207,7 @@ pub fn aggregateExponentialBucketHistogram(
 }
 
 // Internal state for building exponential histograms
-const ExponentialHistogramState = struct {
+pub const ExponentialHistogramState = struct {
     scale: i32,
     sum: ?f64,
     count: u64,
@@ -219,7 +219,7 @@ const ExponentialHistogramState = struct {
     negative_buckets: std.AutoArrayHashMapUnmanaged(i32, u64),
     const min_scale: i32 = -10;
 
-    fn init(allocator: std.mem.Allocator, scale: i32) ExponentialHistogramState {
+    pub fn init(allocator: std.mem.Allocator, scale: i32) ExponentialHistogramState {
         _ = allocator;
         return ExponentialHistogramState{
             .scale = scale,
@@ -233,12 +233,12 @@ const ExponentialHistogramState = struct {
         };
     }
 
-    fn deinit(self: *ExponentialHistogramState, allocator: std.mem.Allocator) void {
+    pub fn deinit(self: *ExponentialHistogramState, allocator: std.mem.Allocator) void {
         self.positive_buckets.deinit(allocator);
         self.negative_buckets.deinit(allocator);
     }
 
-    fn addValue(
+    pub fn addValue(
         self: *ExponentialHistogramState,
         allocator: std.mem.Allocator,
         value: f64,
@@ -298,7 +298,7 @@ const ExponentialHistogramState = struct {
         }
     }
 
-    fn toDataPoint(self: *ExponentialHistogramState, allocator: std.mem.Allocator) !ExponentialHistogramDataPoint {
+    pub fn toDataPoint(self: *ExponentialHistogramState, allocator: std.mem.Allocator) !ExponentialHistogramDataPoint {
         // Convert sparse bucket maps to dense arrays with offsets
         const positive_result = try bucketsToArrays(allocator, &self.positive_buckets);
         const negative_result = try bucketsToArrays(allocator, &self.negative_buckets);

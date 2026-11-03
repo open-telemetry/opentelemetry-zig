@@ -59,16 +59,15 @@ pub const AttributeValue = union(enum) {
             .bool => return if (self.bool) "0" else "1",
             .string => return self.string,
             .int => {
-                // Static buffer: safe as long as the slice is used before the next call.
                 const S = struct {
-                    var buf: [64]u8 = undefined;
+                    threadlocal var buf: [64]u8 = undefined;
                 };
                 const result = std.fmt.bufPrint(&S.buf, "{d}", .{self.int}) catch unreachable;
                 return S.buf[0..result.len];
             },
             .double => {
                 const S = struct {
-                    var buf: [64]u8 = undefined;
+                    threadlocal var buf: [64]u8 = undefined;
                 };
                 const result = std.fmt.bufPrint(&S.buf, "{d}", .{self.double}) catch unreachable;
                 return S.buf[0..result.len];
@@ -159,7 +158,15 @@ pub const Attributes = struct {
 
             for (to_sort) |attr| {
                 h.update(attr.key);
-                h.update(attr.value.toStringNoAlloc());
+                var num_buf: [64]u8 = undefined;
+                const val_str = switch (attr.value) {
+                    .bool => |b| if (b) "0" else "1",
+                    .string => |s| s,
+                    .int => |val| std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch unreachable,
+                    .double => |val| std.fmt.bufPrint(&num_buf, "{d}", .{val}) catch unreachable,
+                    .baggage => "<baggage>",
+                };
+                h.update(val_str);
             }
             return h.final();
         }
@@ -227,6 +234,38 @@ pub const Attributes = struct {
             i += 1;
         }
         return attrs;
+    }
+
+    /// Creates a slice of attributes from a tuple of key-value pairs using the provided buffer.
+    /// Does not allocate heap memory.
+    pub fn fromBuffer(buffer: []Attribute, keyValues: anytype) ?[]Attribute {
+        const ArgsType = @TypeOf(keyValues);
+        const args_type_info = @typeInfo(ArgsType);
+        if (args_type_info != .@"struct") {
+            @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
+        }
+        const field_names = args_type_info.@"struct".field_names;
+        if (field_names.len == 0) {
+            return null;
+        }
+        if (field_names.len % 2 != 0) {
+            @compileError("expected an even number of arguments");
+        }
+        std.debug.assert(buffer.len >= field_names.len / 2);
+
+        var key: []const u8 = undefined;
+        comptime var i = 1;
+        inline for (field_names) |name| {
+            const e = @field(keyValues, name);
+            if (i % 2 == 0) {
+                const keyVal = keyValue(@TypeOf(e)){ .key = key, .value = e };
+                buffer[i / 2 - 1] = keyVal.resolve();
+            } else {
+                key = e;
+            }
+            i += 1;
+        }
+        return buffer[0 .. field_names.len / 2];
     }
 
     /// Copy the attributes into a new slice allocated using the provided allocator.

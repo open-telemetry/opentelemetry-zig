@@ -365,7 +365,8 @@ pub const Tracer = struct {
             try span.setAttributes(attrs);
         }
 
-        // Add links if provided
+        // Add links if provided. The span allocates its own link array and attribute maps;
+        // attribute keys and string values are expected to outlive the span.
         if (options.links) |links| {
             for (links) |link| {
                 try span.addLinkFrom(link);

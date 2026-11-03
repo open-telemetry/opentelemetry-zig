@@ -304,6 +304,9 @@ pub const Span = struct {
         }
 
         /// Create a Link initialized with the given attributes slice.
+        ///
+        /// Attribute key and string value slices are stored by reference and are
+        /// expected to outlive the Link, consistent with Span.setAttribute.
         pub fn initWithAttributes(allocator: std.mem.Allocator, span_context: SpanContext, attrs: []const attribute.Attribute) !Link {
             var link = Link.init(allocator, span_context);
             errdefer link.deinit();
@@ -456,7 +459,11 @@ pub const Span = struct {
         try self.links.append(self.allocator, link);
     }
 
-    /// Add an existing Link to this Span, copying its attributes.
+    /// Add an existing Link to this Span, copying its attributes into this Span's allocator.
+    ///
+    /// The span allocates and owns its internal Link and attribute hash map, but the
+    /// attribute key and string value slices are stored by reference and are expected
+    /// to outlive the Span, consistent with Span.setAttribute and Span.addEvent.
     pub fn addLinkFrom(self: *Self, link: Link) !void {
         if (!self.is_recording) return;
 

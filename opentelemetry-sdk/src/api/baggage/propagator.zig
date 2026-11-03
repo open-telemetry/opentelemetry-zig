@@ -36,21 +36,10 @@ pub fn fields() []const []const u8 {
     return &.{baggage_header};
 }
 
-/// URL-encode a string according to RFC 3986.
-fn urlEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    for (input) |c| {
-        if (std.ascii.isAlphanumeric(c) or c == '-' or c == '_' or c == '.' or c == '~') {
-            try result.append(allocator, c);
-        } else {
-            try result.append(allocator, '%');
-            try result.print(allocator, "{X:0>2}", .{c});
-        }
-    }
-
-    return result.toOwnedSlice(allocator);
+/// Formats `raw` percent-encoded according to RFC 3986: everything but
+/// `ALPHA / DIGIT / "-" / "." / "_" / "~"` becomes an uppercase `%XX` escape.
+fn urlEncode(raw: []const u8) std.fmt.Alt(std.Uri.Component, std.Uri.Component.formatEscaped) {
+    return std.fmt.alt(std.Uri.Component{ .raw = raw }, .formatEscaped);
 }
 
 /// URL-decode `input`: `+` becomes a space and `%XX` escapes are decoded. A
@@ -117,20 +106,14 @@ fn formatBaggage(allocator: std.mem.Allocator, baggage: Baggage) ![]u8 {
         }
         first = false;
 
-        // Encode key and value
-        const encoded_key = try urlEncode(allocator, entry.key_ptr.*);
-        defer allocator.free(encoded_key);
-
-        const encoded_value = try urlEncode(allocator, entry.value_ptr.value);
-        defer allocator.free(encoded_value);
-
-        try header_value.print(allocator, "{s}={s}", .{ encoded_key, encoded_value });
+        try header_value.print(allocator, "{f}={f}", .{
+            urlEncode(entry.key_ptr.*),
+            urlEncode(entry.value_ptr.value),
+        });
 
         // Add metadata if present
         if (entry.value_ptr.metadata) |metadata| {
-            const encoded_metadata = try urlEncode(allocator, metadata);
-            defer allocator.free(encoded_metadata);
-            try header_value.print(allocator, ";{s}", .{encoded_metadata});
+            try header_value.print(allocator, ";{f}", .{urlEncode(metadata)});
         }
     }
 
@@ -283,17 +266,22 @@ pub fn injectIntoEnvironment(
 test "url encoding" {
     const allocator = std.testing.allocator;
 
-    const encoded = try urlEncode(allocator, "hello world");
+    const encoded = try std.fmt.allocPrint(allocator, "{f}", .{urlEncode("hello world")});
     defer allocator.free(encoded);
     try std.testing.expectEqualStrings("hello%20world", encoded);
 
-    const encoded2 = try urlEncode(allocator, "user@example.com");
+    const encoded2 = try std.fmt.allocPrint(allocator, "{f}", .{urlEncode("user@example.com")});
     defer allocator.free(encoded2);
     try std.testing.expectEqualStrings("user%40example.com", encoded2);
 
-    const encoded3 = try urlEncode(allocator, "safe-chars_123.~");
+    const encoded3 = try std.fmt.allocPrint(allocator, "{f}", .{urlEncode("safe-chars_123.~")});
     defer allocator.free(encoded3);
     try std.testing.expectEqualStrings("safe-chars_123.~", encoded3);
+
+    // `+` is not unreserved, so it is escaped rather than left to decode as a space.
+    const encoded4 = try std.fmt.allocPrint(allocator, "{f}", .{urlEncode("a+b")});
+    defer allocator.free(encoded4);
+    try std.testing.expectEqualStrings("a%2Bb", encoded4);
 }
 
 test "url decoding" {
@@ -330,7 +318,7 @@ test "url encode/decode round trip" {
     const allocator = std.testing.allocator;
 
     const original = "test=value;metadata,special@chars#here";
-    const encoded = try urlEncode(allocator, original);
+    const encoded = try std.fmt.allocPrint(allocator, "{f}", .{urlEncode(original)});
     defer allocator.free(encoded);
 
     const buffer = try allocator.alloc(u8, encoded.len);

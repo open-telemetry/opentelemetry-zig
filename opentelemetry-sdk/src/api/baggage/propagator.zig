@@ -53,33 +53,18 @@ fn urlEncode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     return result.toOwnedSlice(allocator);
 }
 
-/// URL-decode a string.
-fn urlDecode(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
-    var result: std.ArrayList(u8) = .empty;
-    errdefer result.deinit(allocator);
-
-    var i: usize = 0;
-    while (i < input.len) {
-        if (input[i] == '%' and i + 2 < input.len) {
-            const hex = input[i + 1 .. i + 3];
-            const byte = std.fmt.parseInt(u8, hex, 16) catch {
-                // Invalid encoding, keep the percent sign
-                try result.append(allocator, '%');
-                i += 1;
-                continue;
-            };
-            try result.append(allocator, byte);
-            i += 3;
-        } else if (input[i] == '+') {
-            try result.append(allocator, ' ');
-            i += 1;
-        } else {
-            try result.append(allocator, input[i]);
-            i += 1;
-        }
-    }
-
-    return result.toOwnedSlice(allocator);
+/// URL-decode `input`: `+` becomes a space and `%XX` escapes are decoded. A
+/// malformed escape is kept verbatim.
+///
+/// The input is left untouched; the result is written into `buffer`, which must
+/// hold at least `input.len` bytes (decoding never grows a string). The returned
+/// slice points into `buffer`.
+fn urlDecode(buffer: []u8, input: []const u8) []u8 {
+    const scratch = buffer[0..input.len];
+    @memcpy(scratch, input);
+    // Before decoding, or an encoded `%2B` would turn into a space as well.
+    std.mem.replaceScalar(u8, scratch, '+', ' ');
+    return std.Uri.percentDecodeInPlace(scratch);
 }
 
 /// Inject baggage into a carrier using the W3C Baggage format.
@@ -181,6 +166,11 @@ fn parseBaggageHeader(allocator: std.mem.Allocator, header_value: []const u8) !?
     var baggage = Baggage.init();
     errdefer baggage.deinit();
 
+    // The decoded key, value and metadata of one entry never take more room than
+    // the header does, so each entry can decode into the start of this buffer.
+    const scratch = try allocator.alloc(u8, header_value.len);
+    defer allocator.free(scratch);
+
     // A baggage header is a list of assignments whose values carry an optional
     // `;metadata` tail. Neither a key nor a value may hold a raw `,` or `;`.
     var entries: CommaSeparatedAssignmentIterator = .init(header_value);
@@ -193,20 +183,16 @@ fn parseBaggageHeader(allocator: std.mem.Allocator, header_value: []const u8) !?
         const encoded_value = std.mem.trim(u8, parts.first(), &std.ascii.whitespace);
         if (encoded_value.len == 0) continue;
 
-        // Decode key and value
-        const key = urlDecode(allocator, entry.name) catch continue;
-        defer allocator.free(key);
-
-        const value = urlDecode(allocator, encoded_value) catch continue;
-        defer allocator.free(value);
-
         // Get metadata if present, kept verbatim rather than parsed further
         const encoded_metadata = std.mem.trim(u8, parts.rest(), &std.ascii.whitespace);
+
+        // Decode key, value and metadata one after the other into the scratch buffer
+        const key = urlDecode(scratch, entry.name);
+        const value = urlDecode(scratch[entry.name.len..], encoded_value);
         const metadata = if (encoded_metadata.len > 0)
-            urlDecode(allocator, encoded_metadata) catch null
+            urlDecode(scratch[entry.name.len + encoded_value.len ..], encoded_metadata)
         else
             null;
-        defer if (metadata) |m| allocator.free(m);
 
         // Add to baggage
         baggage.setValue(allocator, key, value, metadata) catch continue;
@@ -311,19 +297,33 @@ test "url encoding" {
 }
 
 test "url decoding" {
-    const allocator = std.testing.allocator;
+    var buffer: [32]u8 = undefined;
 
-    const decoded = try urlDecode(allocator, "hello%20world");
-    defer allocator.free(decoded);
-    try std.testing.expectEqualStrings("hello world", decoded);
+    try std.testing.expectEqualStrings("hello world", urlDecode(&buffer, "hello%20world"));
+    try std.testing.expectEqualStrings("user@example.com", urlDecode(&buffer, "user%40example.com"));
+    try std.testing.expectEqualStrings("hello world", urlDecode(&buffer, "hello+world"));
+}
 
-    const decoded2 = try urlDecode(allocator, "user%40example.com");
-    defer allocator.free(decoded2);
-    try std.testing.expectEqualStrings("user@example.com", decoded2);
+test "url decoding turns a literal + into a space but keeps an encoded one" {
+    var buffer: [32]u8 = undefined;
 
-    const decoded3 = try urlDecode(allocator, "hello+world");
-    defer allocator.free(decoded3);
-    try std.testing.expectEqualStrings("hello world", decoded3);
+    try std.testing.expectEqualStrings("a+b c", urlDecode(&buffer, "a%2Bb+c"));
+}
+
+test "url decoding keeps malformed escapes verbatim" {
+    var buffer: [32]u8 = undefined;
+
+    try std.testing.expectEqualStrings("100%", urlDecode(&buffer, "100%"));
+    try std.testing.expectEqualStrings("truncated%2", urlDecode(&buffer, "truncated%2"));
+    try std.testing.expectEqualStrings("%ZZ ok", urlDecode(&buffer, "%ZZ+ok"));
+}
+
+test "url decoding leaves the input untouched" {
+    var input = "a+b%20c".*;
+    var buffer: [input.len]u8 = undefined;
+
+    try std.testing.expectEqualStrings("a b c", urlDecode(&buffer, &input));
+    try std.testing.expectEqualStrings("a+b%20c", &input);
 }
 
 test "url encode/decode round trip" {
@@ -333,10 +333,10 @@ test "url encode/decode round trip" {
     const encoded = try urlEncode(allocator, original);
     defer allocator.free(encoded);
 
-    const decoded = try urlDecode(allocator, encoded);
-    defer allocator.free(decoded);
+    const buffer = try allocator.alloc(u8, encoded.len);
+    defer allocator.free(buffer);
 
-    try std.testing.expectEqualStrings(original, decoded);
+    try std.testing.expectEqualStrings(original, urlDecode(buffer, encoded));
 }
 
 test "inject and extract simple baggage" {

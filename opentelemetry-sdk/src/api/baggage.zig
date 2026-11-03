@@ -37,9 +37,9 @@ pub const BaggageEntry = struct {
     value: []const u8,
     /// Optional metadata for this entry (opaque string).
     ///
-    /// Propagators forward it as is, neither encoding nor decoding it, so it must
-    /// already be valid header text: only `baggage-octet` characters and the `;`
-    /// that separates properties.
+    /// Propagators forward it as is, neither encoding nor decoding it, so the caller
+    /// percent-encodes whatever needs it (`%20` for a space in a property value). It
+    /// cannot hold a `,` or a control character, which would corrupt the header.
     metadata: ?[]const u8,
 
     /// Create a new baggage entry

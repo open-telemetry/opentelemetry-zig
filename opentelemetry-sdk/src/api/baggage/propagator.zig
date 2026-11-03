@@ -42,18 +42,15 @@ fn urlEncode(raw: []const u8) std.fmt.Alt(std.Uri.Component, std.Uri.Component.f
     return std.fmt.alt(std.Uri.Component{ .raw = raw }, .formatEscaped);
 }
 
-/// URL-decode `input`: `+` becomes a space and `%XX` escapes are decoded. A
-/// malformed escape is kept verbatim.
+/// Percent-decode `input` according to RFC 3986: `%XX` escapes are decoded and
+/// a malformed one is kept verbatim. A literal `+` stays a `+`: the W3C Baggage
+/// specification gives it no special meaning, and a space is encoded as `%20`.
 ///
 /// The input is left untouched; the result is written into `buffer`, which must
 /// hold at least `input.len` bytes (decoding never grows a string). The returned
 /// slice points into `buffer`.
 fn urlDecode(buffer: []u8, input: []const u8) []u8 {
-    const scratch = buffer[0..input.len];
-    @memcpy(scratch, input);
-    // Before decoding, or an encoded `%2B` would turn into a space as well.
-    std.mem.replaceScalar(u8, scratch, '+', ' ');
-    return std.Uri.percentDecodeInPlace(scratch);
+    return std.Uri.percentDecodeBackwards(buffer[0..input.len], input);
 }
 
 /// Inject baggage into a carrier using the W3C Baggage format.
@@ -278,7 +275,7 @@ test "url encoding" {
     defer allocator.free(encoded3);
     try std.testing.expectEqualStrings("safe-chars_123.~", encoded3);
 
-    // `+` is not unreserved, so it is escaped rather than left to decode as a space.
+    // Only unreserved characters are left as they are, so `+` is escaped too.
     const encoded4 = try std.fmt.allocPrint(allocator, "{f}", .{urlEncode("a+b")});
     defer allocator.free(encoded4);
     try std.testing.expectEqualStrings("a%2Bb", encoded4);
@@ -289,13 +286,13 @@ test "url decoding" {
 
     try std.testing.expectEqualStrings("hello world", urlDecode(&buffer, "hello%20world"));
     try std.testing.expectEqualStrings("user@example.com", urlDecode(&buffer, "user%40example.com"));
-    try std.testing.expectEqualStrings("hello world", urlDecode(&buffer, "hello+world"));
 }
 
-test "url decoding turns a literal + into a space but keeps an encoded one" {
+test "url decoding keeps a literal + as is" {
     var buffer: [32]u8 = undefined;
 
-    try std.testing.expectEqualStrings("a+b c", urlDecode(&buffer, "a%2Bb+c"));
+    try std.testing.expectEqualStrings("hello+world", urlDecode(&buffer, "hello+world"));
+    try std.testing.expectEqualStrings("a+b+c d", urlDecode(&buffer, "a%2Bb+c%20d"));
 }
 
 test "url decoding keeps malformed escapes verbatim" {
@@ -303,14 +300,14 @@ test "url decoding keeps malformed escapes verbatim" {
 
     try std.testing.expectEqualStrings("100%", urlDecode(&buffer, "100%"));
     try std.testing.expectEqualStrings("truncated%2", urlDecode(&buffer, "truncated%2"));
-    try std.testing.expectEqualStrings("%ZZ ok", urlDecode(&buffer, "%ZZ+ok"));
+    try std.testing.expectEqualStrings("%ZZ+ok", urlDecode(&buffer, "%ZZ+ok"));
 }
 
 test "url decoding leaves the input untouched" {
     var input = "a+b%20c".*;
     var buffer: [input.len]u8 = undefined;
 
-    try std.testing.expectEqualStrings("a b c", urlDecode(&buffer, &input));
+    try std.testing.expectEqualStrings("a+b c", urlDecode(&buffer, &input));
     try std.testing.expectEqualStrings("a+b%20c", &input);
 }
 
@@ -483,6 +480,22 @@ test "extract strips whitespace around separators" {
     const second = extracted.getValue("key2").?;
     try std.testing.expectEqualStrings("value2", second.value);
     try std.testing.expect(second.metadata == null);
+}
+
+test "extract keeps a literal '+' in values and does not turn it into a space" {
+    const allocator = std.testing.allocator;
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+
+    // '+' is a valid `baggage-octet`; only `%20` encodes a space.
+    try headers.put("baggage", "email=a+b@example.com,name=Jane%20Doe+Smith");
+
+    var extracted = (try extract(allocator, &headers, HttpGetter)).?;
+    defer extracted.deinit();
+
+    try std.testing.expectEqualStrings("a+b@example.com", extracted.getValue("email").?.value);
+    try std.testing.expectEqualStrings("Jane Doe+Smith", extracted.getValue("name").?.value);
 }
 
 test "extract keeps '=' inside values and metadata" {

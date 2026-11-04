@@ -10,7 +10,7 @@ The integration tests are split into separate test executables that can run in p
 - `metrics.zig` - Metrics export tests (uncompressed and gzip-compressed)
 - `traces.zig` - Traces export tests (uncompressed and gzip-compressed)
 - `logs.zig` - Logs export tests (uncompressed and gzip-compressed)
-- `logs_grpc.zig` - Logs export over OTLP/gRPC, which needs a gRPC backend compiled in (see below)
+- `logs_grpc.zig` - Metrics, traces and logs export over OTLP/gRPC, which needs a gRPC backend compiled in (see below)
 
 Each test executable runs independently with its own:
 - Unique Docker container (named `otel-test-{signal}-{timestamp}-{random}`)

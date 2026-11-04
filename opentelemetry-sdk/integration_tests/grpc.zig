@@ -6,7 +6,7 @@
 //! without forcing them to know about the gRPC backend.
 //!
 //! Run with:
-//!   zig build sdk-run-integration -Dgrpc-provider=libgrpc -Dintegration-filter=logs_grpc
+//!   zig build sdk-run-integration -Dgrpc-provider=libgrpc -Dintegration-filter=grpc
 
 const std = @import("std");
 const clock = @import("clock");
@@ -71,14 +71,14 @@ fn testMetricsOverGrpc(
     tmp_dir: std.Io.Dir,
 ) !void {
     const mp = try metrics_sdk.MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);
     defer me.otlp.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
-    defer mr.shutdown();
+    // mr.deinit() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.deinit();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = scope_name, .version = "1.0.0" });

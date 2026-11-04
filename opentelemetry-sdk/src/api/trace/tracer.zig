@@ -40,7 +40,11 @@ pub const TracerImpl = struct {
 
     /// StartOptions contains options for starting a new span
     pub const StartOptions = struct {
+        /// Explicit parent context. If null and root is false, defaults to
+        /// the currently active context (context.getCurrentContext()).
         parent_context: ?context.Context = null,
+        /// If true, explicitly creates a root span without a parent.
+        root: bool = false,
         kind: trace.SpanKind = .Internal,
         attributes: ?[]const attribute.Attribute = null,
         links: ?[]const trace.Link = null,

@@ -297,10 +297,15 @@ pub const Tracer = struct {
 
         // An invalid parent starts a new trace, otherwise the child would
         // inherit an all-zero trace ID.
-        if (options.parent_context) |parent_ctx| {
-            if (trace_api.extractSpanContext(parent_ctx)) |parent_sc| {
-                if (parent_sc.isValid()) parent_span_context = parent_sc;
-            }
+        // Spec: When starting a Span, if no explicit parent context is provided,
+        // the current active Context MUST be used as the parent unless root is true.
+        const parent_context = if (options.root)
+            context.Context.init()
+        else
+            options.parent_context orelse context.getCurrentContext();
+
+        if (trace_api.extractSpanContext(parent_context)) |parent_sc| {
+            if (parent_sc.isValid()) parent_span_context = parent_sc;
         }
         // The deserialized TraceState is only used to seed the span's own copy
         defer if (parent_span_context) |*parent_sc| parent_sc.trace_state.deinit();
@@ -378,7 +383,6 @@ pub const Tracer = struct {
 
         // Processors only see spans the sampler decided to record
         if (span.is_recording) {
-            const parent_context = options.parent_context orelse context.Context.init();
             self.provider.onSpanStart(&span, parent_context);
         }
 
@@ -586,6 +590,117 @@ test "Tracer records parent span ID" {
 
     try std.testing.expectEqual(parent.span_context.trace_id.value, child.span_context.trace_id.value);
     try std.testing.expectEqual(parent.span_context.span_id.value, child.parent_span_id.?.value);
+}
+
+test "Tracer inherits parent from current Context when parent_context is null" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    defer context.cleanup();
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.deinit();
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var parent = try tracer.startSpan(allocator, "parent", .{});
+    defer parent.deinit();
+
+    const parent_context = try trace_api.serializeSpanContext(allocator, parent.span_context);
+    const token = try context.attachContext(parent_context);
+    defer _ = context.detachContext(token) catch {};
+    defer trace_api.freeSerializedSpanContext(allocator, parent_context);
+
+    // parent_context defaults to null, root defaults to false: MUST inherit active context
+    var child = try tracer.startSpan(allocator, "child", .{});
+    defer child.deinit();
+
+    try std.testing.expectEqual(parent.span_context.trace_id.value, child.span_context.trace_id.value);
+    try std.testing.expectEqual(parent.span_context.span_id.value, child.parent_span_id.?.value);
+    try std.testing.expectEqual(parent.span_context.trace_flags.value, child.span_context.trace_flags.value);
+}
+
+test "Tracer.startSpan honors root: true even when a parent Context is active" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    defer context.cleanup();
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.deinit();
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var parent = try tracer.startSpan(allocator, "parent", .{});
+    defer parent.deinit();
+
+    const parent_context = try trace_api.serializeSpanContext(allocator, parent.span_context);
+    const token = try context.attachContext(parent_context);
+    defer _ = context.detachContext(token) catch {};
+    defer trace_api.freeSerializedSpanContext(allocator, parent_context);
+
+    var child = try tracer.startSpan(allocator, "child", .{ .root = true });
+    defer child.deinit();
+
+    try std.testing.expect(child.parent_span_id == null);
+    try std.testing.expect(!std.mem.eql(u8, &child.span_context.trace_id.value, &parent.span_context.trace_id.value));
+}
+
+test "Tracer passes resolved current Context to SpanProcessor.onStart" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    defer context.cleanup();
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    defer provider.deinit();
+
+    const ContextRecordingProcessor = struct {
+        received_context: ?context.Context = null,
+
+        pub fn onStart(ctx: *anyopaque, _: *trace_api.Span, parent_ctx: context.Context) void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.received_context = parent_ctx;
+        }
+        pub fn onEnd(_: *anyopaque, _: trace_api.Span) void {}
+        pub fn shutdown(_: *anyopaque) anyerror!void {}
+        pub fn forceFlush(_: *anyopaque) anyerror!void {}
+
+        pub fn asSpanProcessor(self: *@This()) SpanProcessor {
+            return SpanProcessor{
+                .ptr = self,
+                .vtable = &.{
+                    .onStartFn = onStart,
+                    .onEndFn = onEnd,
+                    .shutdownFn = shutdown,
+                    .forceFlushFn = forceFlush,
+                },
+            };
+        }
+    };
+
+    var recording_processor = ContextRecordingProcessor{};
+    try provider.addSpanProcessor(recording_processor.asSpanProcessor());
+
+    const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
+    var parent = try tracer.startSpan(allocator, "parent", .{});
+    defer parent.deinit();
+
+    const parent_context = try trace_api.serializeSpanContext(allocator, parent.span_context);
+    const token = try context.attachContext(parent_context);
+    defer _ = context.detachContext(token) catch {};
+    defer trace_api.freeSerializedSpanContext(allocator, parent_context);
+
+    var child = try tracer.startSpan(allocator, "child", .{});
+    defer child.deinit();
+
+    const extracted = trace_api.extractSpanContext(recording_processor.received_context.?).?;
+    try std.testing.expectEqual(parent.span_context.trace_id.value, extracted.trace_id.value);
+    try std.testing.expectEqual(parent.span_context.span_id.value, extracted.span_id.value);
 }
 
 // Mock processor

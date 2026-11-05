@@ -84,6 +84,10 @@ pub fn OTLPStubServer(comptime RequestType: type, signal: otlp.Signal) type {
                     const p = pb.collector_logs_v1.ExportLogsServiceResponse{};
                     try p.encode(&writer_ctx.writer, allocator);
                 },
+                .profiles => {
+                    const p = pb.collector_profiles_v1development.ExportProfilesServiceResponse{};
+                    try p.encode(&writer_ctx.writer, allocator);
+                },
             }
             try writer_ctx.writer.flush();
             return try writer_ctx.toOwnedSlice();
@@ -93,4 +97,5 @@ pub fn OTLPStubServer(comptime RequestType: type, signal: otlp.Signal) type {
 
 // Type aliases for convenience
 pub const MetricsStubServer = OTLPStubServer(pb.collector_metrics_v1.ExportMetricsServiceRequest, .metrics);
+pub const ProfilesStubServer = OTLPStubServer(pb.collector_profiles_v1development.ExportProfilesServiceRequest, .profiles);
 // For traces/logs, add similar aliases with appropriate protobuf types.

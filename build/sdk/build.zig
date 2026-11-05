@@ -207,7 +207,7 @@ fn addExamplesStep(
     const run_step = b.step("sdk-run-examples", "Run installed SDK examples from zig-out");
     const examples_filter = b.option([]const u8, "examples-filter", "Filter examples to build");
 
-    const examples_dirs: []const []const u8 = &.{ "metrics", "trace", "logs", "baggage", "propagation", "grpc" };
+    const examples_dirs: []const []const u8 = &.{ "metrics", "trace", "logs", "profiles", "baggage", "propagation", "grpc" };
     for (examples_dirs) |example_dir| {
         // The gRPC examples export over OTLP/gRPC on every run, which the noop
         // backend can only fail: build them for a real backend only.

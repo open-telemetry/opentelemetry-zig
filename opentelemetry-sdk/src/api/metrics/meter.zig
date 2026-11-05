@@ -106,6 +106,8 @@ pub const MeterProvider = struct {
                 break;
             }
         }
+
+        self.syncCounterAggregations();
     }
 
     /// Immediately export all metrics that have not yet been exported across all registered MetricReaders.
@@ -197,6 +199,8 @@ pub const MeterProvider = struct {
             .io = self.io,
             .exemplar_filter = if (self.sdk_disabled) .always_off else if (self.config) |cfg| cfg.metrics_config.exemplar_filter else .trace_based,
             .exemplar_sampler = .{ .allocator = self.allocator },
+            .provider = self,
+            .cardinality_limit = if (self.config) |cfg| cfg.metrics_config.cardinality_limit else 2000,
         };
 
         const meter = try self.meters.getOrPutValue(self.allocator, scope, i);
@@ -217,6 +221,8 @@ pub const MeterProvider = struct {
         }
         m.meterProvider = self;
         try self.readers.append(self.allocator, m);
+
+        self.syncCounterAggregations();
     }
 
     /// Register a view with this meter provider
@@ -231,6 +237,33 @@ pub const MeterProvider = struct {
         defer self.mx.unlock(self.io);
 
         try self.views.append(self.allocator, new_view);
+
+        self.syncCounterAggregations();
+    }
+
+    fn syncCounterAggregations(self: *Self) void {
+        var meter_iter = self.meters.valueIterator();
+        while (meter_iter.next()) |meter| {
+            meter.mx.lockUncancelable(meter.io);
+            defer meter.mx.unlock(meter.io);
+
+            var instr_iter = meter.instruments.valueIterator();
+            while (instr_iter.next()) |instr| {
+                switch (instr.*.data) {
+                    inline .Counter_u16,
+                    .Counter_u32,
+                    .Counter_u64,
+                    .UpDownCounter_i16,
+                    .UpDownCounter_i32,
+                    .UpDownCounter_i64,
+                    => |c| {
+                        const is_sum = resolvesToSumOnlyUnlocked(self, instr.*, &meter.scope);
+                        c.setPreSum(is_sum);
+                    },
+                    else => {},
+                }
+            }
+        }
     }
 
     /// Helper: Create a MetricReader configured with environment variable settings
@@ -249,6 +282,39 @@ pub const MeterProvider = struct {
     }
 };
 
+fn resolvesToSumOnlyUnlocked(p: *const MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
+    if (p.views.items.len > 0) {
+        var combined_config = view.CombinedViewConfig.init(instr.kind);
+        for (p.views.items) |*v| {
+            if (v.matches(instr, scope)) {
+                combined_config.applyView(v);
+            }
+        }
+        if (combined_config.aggregation) |agg| {
+            if (agg != .Sum) return false;
+        }
+    }
+
+    if (p.readers.items.len > 0) {
+        for (p.readers.items) |r| {
+            const agg = view.aggregationForViews(p.views.items, instr, scope, r.aggregation);
+            if (agg != .Sum) return false;
+        }
+    } else {
+        const agg = view.aggregationForViews(p.views.items, instr, scope, view.DefaultAggregation);
+        if (agg != .Sum) return false;
+    }
+
+    return true;
+}
+
+fn resolvesToSumOnly(provider: ?*MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
+    const p = provider orelse return true;
+    p.mx.lockUncancelable(p.io);
+    defer p.mx.unlock(p.io);
+    return resolvesToSumOnlyUnlocked(p, instr, scope);
+}
+
 /// Meter is a named instance that is used to record measurements.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#meter
 pub const Meter = struct {
@@ -258,6 +324,8 @@ pub const Meter = struct {
     io: std.Io,
     exemplar_filter: exemplar.ExemplarFilter = .trace_based,
     exemplar_sampler: exemplar.Sampler = .{},
+    provider: ?*MeterProvider = null,
+    cardinality_limit: usize = 2000,
 
     mx: std.Io.Mutex = std.Io.Mutex.init,
 
@@ -272,8 +340,18 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        c.cardinality_limit = self.cardinality_limit;
         c.exemplar_filter = self.exemplar_filter;
-        try self.registerInstrument(i);
+
+        if (self.provider) |p| {
+            p.mx.lockUncancelable(p.io);
+            defer p.mx.unlock(p.io);
+            c.pre_sum = resolvesToSumOnlyUnlocked(p, i, &self.scope);
+            try self.registerInstrument(i);
+        } else {
+            c.pre_sum = true;
+            try self.registerInstrument(i);
+        }
 
         return c;
     }
@@ -287,8 +365,18 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        c.cardinality_limit = self.cardinality_limit;
         c.exemplar_filter = self.exemplar_filter;
-        try self.registerInstrument(i);
+
+        if (self.provider) |p| {
+            p.mx.lockUncancelable(p.io);
+            defer p.mx.unlock(p.io);
+            c.pre_sum = resolvesToSumOnlyUnlocked(p, i, &self.scope);
+            try self.registerInstrument(i);
+        } else {
+            c.pre_sum = true;
+            try self.registerInstrument(i);
+        }
 
         return c;
     }

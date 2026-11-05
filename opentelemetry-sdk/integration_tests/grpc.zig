@@ -9,7 +9,6 @@
 //!   zig build sdk-run-integration -Dgrpc-provider=libgrpc -Dintegration-filter=grpc
 
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const trace_sdk = sdk.trace;
@@ -99,7 +98,7 @@ fn testMetricsOverGrpc(
 
     try mr.collect();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Sent {d} requests worth of metrics over gRPC\n", .{routes.len});
     std.debug.print("  Waiting for metrics JSON file...\n", .{});
@@ -143,7 +142,7 @@ fn testTracesOverGrpc(
     config: *sdk.otlp.ConfigOptions,
     tmp_dir: std.Io.Dir,
 ) !void {
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toMilliseconds()));
     const id_generator = trace_sdk.IDGenerator{
         .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
     };
@@ -173,7 +172,7 @@ fn testTracesOverGrpc(
         span.end(null);
     }
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Sent {d} spans over gRPC\n", .{routes.len});
     std.debug.print("  Waiting for traces JSON file...\n", .{});
@@ -251,7 +250,7 @@ fn testLogsOverGrpc(
 
     try provider.shutdown();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Sent {d} log records over gRPC\n", .{num_logs + 1});
     std.debug.print("  Waiting for logs JSON file...\n", .{});

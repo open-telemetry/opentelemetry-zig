@@ -4,7 +4,6 @@ const std = @import("std");
 const Configuration = @import("../../config.zig").Configuration;
 const meter_api = @import("../../../api/metrics/meter.zig");
 const Exemplar = @import("../exemplar.zig").Exemplar;
-const clock = @import("clock");
 
 const log = std.log.scoped(.otlp_exporter);
 
@@ -96,7 +95,7 @@ pub const OTLPExporter = struct {
                 log.err("failed to allocate memory for metrics: {s}", .{@errorName(err)});
                 return MetricReadError.OutOfMemory;
             };
-            metrics.appendAssumeCapacity(try toProtobufMetric(self.allocator, measurement, self.temporality));
+            metrics.appendAssumeCapacity(try toProtobufMetric(self.allocator, self.io, measurement, self.temporality));
 
             const attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.scope.attributes);
             scope_metrics[i] = pbmetrics.ScopeMetrics{
@@ -149,6 +148,7 @@ pub const OTLPExporter = struct {
 
 pub fn toProtobufMetric(
     allocator: std.mem.Allocator,
+    io: std.Io,
     measurements: Measurements,
     temporailty: view.TemporalitySelector,
 ) !pbmetrics.Metric {
@@ -167,7 +167,7 @@ pub fn toProtobufMetric(
     metric.data = switch (measurements.data) {
         inline .int, .double => |data_points, tag| blk: {
             const points = std.ArrayList(pbmetrics.NumberDataPoint).fromOwnedSlice(
-                try numberDataPoints(allocator, if (tag == .int) i64 else f64, data_points),
+                try numberDataPoints(allocator, io, if (tag == .int) i64 else f64, data_points),
             );
             break :blk if (measurements.isLastValue()) pbmetrics.Metric.data_union{
                 .gauge = pbmetrics.Gauge{ .data_points = points },
@@ -181,13 +181,13 @@ pub fn toProtobufMetric(
         },
         .histogram => |data_points| pbmetrics.Metric.data_union{
             .histogram = pbmetrics.Histogram{
-                .data_points = try histogramDataPoints(allocator, data_points),
+                .data_points = try histogramDataPoints(allocator, io, data_points),
                 .aggregation_temporality = temporailty(kind).toProto(),
             },
         },
         .exponential_histogram => |data_points| pbmetrics.Metric.data_union{
             .exponential_histogram = pbmetrics.ExponentialHistogram{
-                .data_points = try exponentialHistogramDataPoints(allocator, data_points),
+                .data_points = try exponentialHistogramDataPoints(allocator, io, data_points),
                 .aggregation_temporality = temporailty(kind).toProto(),
             },
         },
@@ -259,7 +259,7 @@ fn exemplarsToProtobuf(allocator: std.mem.Allocator, samples: []const metric_exe
 }
 
 // Caller owns the memory.
-fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points: []DataPoint(T)) ![]pbmetrics.NumberDataPoint {
+fn numberDataPoints(allocator: std.mem.Allocator, io: std.Io, comptime T: type, data_points: []DataPoint(T)) ![]pbmetrics.NumberDataPoint {
     const numbers = try allocator.alloc(pbmetrics.NumberDataPoint, data_points.len);
     var initialized: usize = 0;
     errdefer {
@@ -269,7 +269,7 @@ fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points:
     for (data_points, 0..) |dp, i| {
         var point = pbmetrics.NumberDataPoint{
             .start_time_unix_nano = if (dp.timestamps) |ts| ts.start_time_ns orelse 0 else 0,
-            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(clock.nanoTimestamp()),
+            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(std.Io.Clock.real.now(io).nanoseconds),
             .value = switch (T) {
                 i64 => .{ .as_int = dp.value },
                 f64 => .{ .as_double = dp.value },
@@ -285,7 +285,7 @@ fn numberDataPoints(allocator: std.mem.Allocator, comptime T: type, data_points:
     return numbers;
 }
 
-fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(HistogramPoint)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
+fn histogramDataPoints(allocator: std.mem.Allocator, io: std.Io, data_points: []DataPoint(HistogramPoint)) !std.ArrayList(pbmetrics.HistogramDataPoint) {
     var converted = try std.ArrayList(pbmetrics.HistogramDataPoint).initCapacity(allocator, data_points.len);
     errdefer {
         for (converted.items) |*point| point.deinit(allocator);
@@ -294,7 +294,7 @@ fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(Hi
     for (data_points) |dp| {
         var point = pbmetrics.HistogramDataPoint{
             .start_time_unix_nano = if (dp.timestamps) |ts| ts.start_time_ns orelse 0 else 0,
-            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(clock.nanoTimestamp()),
+            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(std.Io.Clock.real.now(io).nanoseconds),
             .count = dp.value.count,
             .sum = dp.value.sum,
             .min = dp.value.min,
@@ -310,7 +310,7 @@ fn histogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(Hi
     return converted;
 }
 
-fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []DataPoint(ExponentialHistogramPoint)) !std.ArrayList(pbmetrics.ExponentialHistogramDataPoint) {
+fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, io: std.Io, data_points: []DataPoint(ExponentialHistogramPoint)) !std.ArrayList(pbmetrics.ExponentialHistogramDataPoint) {
     var converted = try std.ArrayList(pbmetrics.ExponentialHistogramDataPoint).initCapacity(allocator, data_points.len);
     errdefer {
         for (converted.items) |*point| point.deinit(allocator);
@@ -319,7 +319,7 @@ fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []D
     for (data_points) |dp| {
         var point = pbmetrics.ExponentialHistogramDataPoint{
             .start_time_unix_nano = if (dp.timestamps) |ts| ts.start_time_ns orelse 0 else 0,
-            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(clock.nanoTimestamp()),
+            .time_unix_nano = if (dp.timestamps) |ts| ts.time_ns else @intCast(std.Io.Clock.real.now(io).nanoseconds),
             .count = dp.value.count,
             .sum = dp.value.sum,
             .scale = dp.value.scale,
@@ -347,6 +347,7 @@ fn exponentialHistogramDataPoints(allocator: std.mem.Allocator, data_points: []D
 
 test "exemplar/otlp recording pipeline" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     var env = std.process.Environ.Map.init(allocator);
     defer env.deinit();
     try env.put("OTEL_METRICS_EXEMPLAR_FILTER", "always_on");
@@ -365,20 +366,20 @@ test "exemplar/otlp recording pipeline" {
     const counter = try meter.createCounter(u64, .{ .name = "requests" });
     const region: []const u8 = "west";
     const request: []const u8 = "request-1";
-    const before: u64 = @intCast(clock.nanoTimestamp());
+    const before: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
     try counter.add(7, .{ "region", region, "request_id", request });
     var slice_attrs = [_]Attribute{
         .{ .key = "region", .value = .{ .string = region } },
         .{ .key = "request_id", .value = .{ .string = request } },
     };
     try counter.addWithSlice(7, &slice_attrs);
-    const after: u64 = @intCast(clock.nanoTimestamp());
+    const after: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
     const collected = try meter_api.AggregatedMetrics.fetch(allocator, meter, provider.views.items, null);
     defer {
         for (collected) |*m| m.deinit(allocator);
         allocator.free(collected);
     }
-    var metric = try toProtobufMetric(allocator, collected[0], view.DefaultTemporality);
+    var metric = try toProtobufMetric(allocator, std.testing.io, collected[0], view.DefaultTemporality);
     defer metric.deinit(allocator);
     const points = metric.data.?.sum.data_points.items;
     try std.testing.expectEqual(@as(usize, 1), points[0].exemplars.items.len);
@@ -407,7 +408,7 @@ test "exporters/otlp conversion for NumberDataPoint" {
         data_points[i] = try DataPoint(i64).new(allocator, @intCast(i), .{ "key", anyval });
     }
 
-    var metric = try toProtobufMetric(allocator, Measurements{
+    var metric = try toProtobufMetric(allocator, std.testing.io, Measurements{
         .scope = .{
             .name = "test-meter",
         },
@@ -458,7 +459,7 @@ test "exporters/otlp conversion for HistogramDataPoint" {
         }, .{ "key", anyval });
     }
 
-    var metric = try toProtobufMetric(allocator, Measurements{
+    var metric = try toProtobufMetric(allocator, std.testing.io, Measurements{
         .scope = .{
             .name = "test-meter",
         },
@@ -519,7 +520,7 @@ test "exporters/otlp conversion for ExponentialHistogramDataPoint" {
         }, .{ "key", anyval });
     }
 
-    var metric = try toProtobufMetric(allocator, Measurements{
+    var metric = try toProtobufMetric(allocator, std.testing.io, Measurements{
         .scope = .{
             .name = "test-meter",
         },
@@ -576,7 +577,7 @@ test "exporters/otlp metric type follows the aggregated data" {
         .bucket_counts = &bucket_counts,
         .explicit_bounds = &.{1.0},
     } }};
-    var counter_metric = try toProtobufMetric(allocator, .{
+    var counter_metric = try toProtobufMetric(allocator, std.testing.io, .{
         .scope = .{ .name = "test-meter" },
         .instrumentKind = .Counter,
         .instrumentOptions = .{ .name = "counter-as-histogram" },
@@ -589,7 +590,7 @@ test "exporters/otlp metric type follows the aggregated data" {
 
     // A view can aggregate a histogram into a sum.
     var sum_points = [_]DataPoint(i64){.{ .value = 42 }};
-    var histogram_metric = try toProtobufMetric(allocator, .{
+    var histogram_metric = try toProtobufMetric(allocator, std.testing.io, .{
         .scope = .{ .name = "test-meter" },
         .instrumentKind = .Histogram,
         .instrumentOptions = .{ .name = "histogram-as-sum" },
@@ -602,7 +603,7 @@ test "exporters/otlp metric type follows the aggregated data" {
 
     // Observable counters are monotonic sums.
     var observed_points = [_]DataPoint(i64){.{ .value = 7 }};
-    var observable_metric = try toProtobufMetric(allocator, .{
+    var observable_metric = try toProtobufMetric(allocator, std.testing.io, .{
         .scope = .{ .name = "test-meter" },
         .instrumentKind = .ObservableCounter,
         .instrumentOptions = .{ .name = "observable-counter" },
@@ -683,7 +684,7 @@ fn exemplarProtobufFixture(allocator: std.mem.Allocator, kind: ExemplarFixtureKi
         .timestamps = timestamps,
         .exemplars = &samples,
     }};
-    return toProtobufMetric(allocator, .{
+    return toProtobufMetric(allocator, std.testing.io, .{
         .scope = .{ .name = "exemplar-fixture" },
         .instrumentKind = switch (kind) {
             .integer => .Counter,

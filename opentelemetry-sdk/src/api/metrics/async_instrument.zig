@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 
 const Kind = @import("instrument.zig").Kind;
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
@@ -106,7 +105,7 @@ pub fn ObservableInstrument(K: Kind) type {
                         .io = io,
                         .callbacks = .empty,
                         .context = ctx orelse .{},
-                        .collection_start_ns = @intCast(clock.nanoTimestamp()),
+                        .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
                     };
                 }
 
@@ -165,7 +164,7 @@ pub fn ObservableInstrument(K: Kind) type {
                                     // A callback observes all its values at one logical instant.
                                     var observed_at: ?u64 = null;
                                     for (points) |*point| {
-                                        try point.captureExemplar(allocator, self.exemplar_filter);
+                                        try point.captureExemplar(allocator, self.io, self.exemplar_filter);
                                         if (point.exemplar_candidate) |*sample| {
                                             if (observed_at == null) observed_at = sample.time_ns;
                                             sample.time_ns = observed_at.?;
@@ -186,7 +185,7 @@ pub fn ObservableInstrument(K: Kind) type {
                         }
                         try uniqueData.dedupByAttributes(allocator);
                         // Observation and its collection cut share the same lock.
-                        const collection_time: u64 = @intCast(clock.nanoTimestamp());
+                        const collection_time: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
                         switch (uniqueData) {
                             inline else => |points| for (points) |*point| {
                                 point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };

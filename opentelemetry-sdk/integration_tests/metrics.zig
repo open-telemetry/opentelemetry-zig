@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const common = @import("common");
@@ -57,7 +56,7 @@ fn testMetrics(
 
     try mr.collect();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Successfully sent {d} metric data points\n", .{num_data_points});
     std.debug.print("  Waiting for metrics JSON file...\n", .{});
@@ -116,7 +115,7 @@ fn testMetricsWithCompression(
 
     try mr.collect();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Successfully sent {d} compressed metric data points\n", .{num_data_points});
     std.debug.print("  Waiting for metrics JSON file with compressed data...\n", .{});

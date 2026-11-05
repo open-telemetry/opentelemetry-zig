@@ -1108,11 +1108,12 @@ const HTTPClient = struct {
                     // This retry runs in a dedicated OS thread (see retryRequest spawn above).
                     // For Io.Evented users, the spawned thread still blocks the OS thread,
                     // which is less efficient than an evented delay but correct.
-                    clock.sleep(std.time.ns_per_ms * calculateDelayMillisec(
+                    std.Io.sleep(io, .fromNanoseconds(std.time.ns_per_ms * calculateDelayMillisec(
+                        io,
                         retry_config.base_delay_ms,
                         retry_config.max_delay_ms,
                         retry_count,
-                    ));
+                    )), .awake) catch {};
                     continue;
                 },
                 else => |status| {
@@ -1143,13 +1144,13 @@ const HTTPClient = struct {
     }
 };
 
-fn calculateDelayMillisec(base_delay_ms: u64, max_delay_ms: u64, attempt: u32) u64 {
+fn calculateDelayMillisec(io: std.Io, base_delay_ms: u64, max_delay_ms: u64, attempt: u32) u64 {
     // Exponential backoff with jitter: delay = min(max_delay, base * 2^attempt) + random(0, 10%)
     const delay: u64 = @min(
         max_delay_ms,
         base_delay_ms * std.math.pow(u64, 2, attempt),
     );
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toSeconds()));
     const jitter = prng.random().intRangeAtMost(u64, 0, @intCast(@divTrunc(delay, 10)));
     return delay + jitter;
 }
@@ -1295,8 +1296,8 @@ test "otlp exp backoff delay calculation" {
         .max_delay_ms = 30000,
     };
 
-    const first_backoff = calculateDelayMillisec(config.base_delay_ms, config.max_delay_ms, 1);
-    const second_backoff = calculateDelayMillisec(config.base_delay_ms, config.max_delay_ms, 2);
+    const first_backoff = calculateDelayMillisec(std.testing.io, config.base_delay_ms, config.max_delay_ms, 1);
+    const second_backoff = calculateDelayMillisec(std.testing.io, config.base_delay_ms, config.max_delay_ms, 2);
 
     try std.testing.expect(first_backoff >= 10 and first_backoff <= 12);
     try std.testing.expect(second_backoff >= 20 and second_backoff <= 23);

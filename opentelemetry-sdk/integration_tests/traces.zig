@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const trace_sdk = sdk.trace;
 const trace_api = sdk.api.trace;
@@ -32,7 +31,7 @@ fn testTraces(
 
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
 
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toMilliseconds()));
     const id_generator = trace_sdk.IDGenerator{
         .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
     };
@@ -74,14 +73,14 @@ fn testTraces(
         });
         defer span.deinit();
 
-        clock.sleep(10 * std.time.ns_per_ms);
+        std.Io.sleep(io, .fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
 
         span.setStatus(trace_api.Status.ok());
         span.end(null);
     }
 
     std.debug.print("  Waiting for collector to process and write traces...\n", .{});
-    clock.sleep(2 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(2 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Successfully sent {d} trace spans\n", .{num_spans});
     std.debug.print("  Waiting for traces JSON file...\n", .{});
@@ -117,7 +116,7 @@ fn testTracesWithCompression(
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
     config.compression = .gzip;
 
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toMilliseconds()));
     const id_generator = trace_sdk.IDGenerator{
         .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
     };
@@ -160,14 +159,14 @@ fn testTracesWithCompression(
         });
         defer span.deinit();
 
-        clock.sleep(10 * std.time.ns_per_ms);
+        std.Io.sleep(io, .fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
 
         span.setStatus(trace_api.Status.ok());
         span.end(null);
     }
 
     std.debug.print("  Waiting for collector to process compressed traces...\n", .{});
-    clock.sleep(2 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(2 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Successfully sent {d} compressed trace spans\n", .{num_spans});
     std.debug.print("  Waiting for traces JSON file with compressed data...\n", .{});

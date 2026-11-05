@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const MeterProvider = metrics_sdk.MeterProvider;
@@ -43,7 +42,7 @@ fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !
 
     std.log.info("✓ Prometheus exporter started on port {d}", .{port});
 
-    clock.sleep(500 * std.time.ns_per_ms);
+    std.Io.sleep(io, .fromNanoseconds(500 * std.time.ns_per_ms), .awake) catch {};
 
     const meter = try mp.getMeter(.{
         .name = "integration.test.prometheus",
@@ -102,7 +101,7 @@ fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !
     while (true) {
         const n = reader_stream.interface.readSliceShort(&buf) catch |err| {
             if (err == error.WouldBlock) {
-                clock.sleep(10 * std.time.ns_per_ms);
+                std.Io.sleep(io, .fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
                 continue;
             }
             return err;

@@ -102,7 +102,7 @@ test "exporters/trace WriterExporter" {
 
         const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
         const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-        var test_span = trace.Span.init(std.testing.allocator, span_context, "test-span", .Internal, scope);
+        var test_span = trace.Span.init(std.testing.allocator, std.testing.io, span_context, "test-span", .Internal, scope);
         defer test_span.deinit();
 
         // Export the span
@@ -134,7 +134,7 @@ test StdoutExporter {
 
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var test_span = trace.Span.init(std.testing.allocator, span_context, "stdout-test", .Internal, scope);
+    var test_span = trace.Span.init(std.testing.allocator, std.testing.io, span_context, "stdout-test", .Internal, scope);
     defer test_span.deinit();
 
     var spans = [_]trace.Span{test_span};
@@ -163,12 +163,12 @@ test InMemoryExporter {
 
         // First span - Internal kind
         const span_context_1 = trace.SpanContext.init(trace_id, span_id_1, trace.TraceFlags.default(), trace_state, false);
-        var span_1 = trace.Span.init(std.testing.allocator, span_context_1, "span-internal", .Internal, scope);
+        var span_1 = trace.Span.init(std.testing.allocator, std.testing.io, span_context_1, "span-internal", .Internal, scope);
         defer span_1.deinit();
 
         // Second span - Client kind
         const span_context_2 = trace.SpanContext.init(trace_id, span_id_2, trace.TraceFlags.default(), trace_state, false);
-        var span_2 = trace.Span.init(std.testing.allocator, span_context_2, "span-client", .Client, scope);
+        var span_2 = trace.Span.init(std.testing.allocator, std.testing.io, span_context_2, "span-client", .Client, scope);
         span_2.parent_span_id = span_id_1;
         defer span_2.deinit();
 

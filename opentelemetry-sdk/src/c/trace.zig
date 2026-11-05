@@ -35,7 +35,6 @@
 //! ```
 
 const std = @import("std");
-const clock = @import("clock");
 const TracerProvider = @import("../sdk/trace/provider.zig").TracerProvider;
 const TracerImpl = @import("../api/trace/tracer.zig").TracerImpl;
 const trace_api = @import("../api/trace.zig");
@@ -248,7 +247,7 @@ pub fn tracerProviderCreate() callconv(.c) ?*OtelTracerProvider {
 
     // Allocate the PRNG on the heap so it persists
     const prng_ptr = allocator.create(std.Random.DefaultPrng) catch return null;
-    prng_ptr.* = std.Random.DefaultPrng.init(@intCast(clock.nanoTimestamp()));
+    prng_ptr.* = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u96, @bitCast(std.Io.Clock.real.now(io).nanoseconds)))));
 
     // Create a random ID generator with the heap-allocated PRNG
     const random_generator = RandomIDGenerator.init(prng_ptr.random());

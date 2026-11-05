@@ -49,7 +49,6 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !G
         .root_source_file = b.path(sdk_root ++ "/src/clock.zig"),
         .target = info.target,
         .optimize = info.optimize,
-        .link_libc = true,
     });
     try dependencies.put("clock", clock_mod);
 
@@ -107,7 +106,6 @@ fn modules(b: *std.Build, info: CompilationInfo, dependencies: *BuildModules) !G
         .optimize = info.optimize,
         .strip = false,
         .unwind_tables = .sync,
-        .link_libc = true,
         .imports = try helpers.ImportsFromBuildModules(b.allocator, dependencies, &sdk_dep_names),
     });
     { // Build info
@@ -363,7 +361,6 @@ fn addDocsStep(b: *std.Build, mods: *const BuildModules, info: CompilationInfo) 
             // Doc emission is independent of optimize mode; pin to Debug
             // for the fastest doc builds.
             .optimize = .debug,
-            .link_libc = true,
             .imports = try helpers.ImportsFromBuildModules(b.allocator, mods, &dep_names),
         }),
     });

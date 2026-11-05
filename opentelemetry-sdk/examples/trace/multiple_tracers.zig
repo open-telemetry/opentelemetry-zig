@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const trace = sdk.trace;
 
@@ -10,7 +9,7 @@ pub fn main(init: std.process.Init) !void {
     // Create SDK components for realistic tracing
 
     // 1. Create an ID generator for trace and span IDs
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toMilliseconds()));
     const id_generator = trace.IDGenerator{
         .Random = trace.RandomIDGenerator.init(prng.random()),
     };

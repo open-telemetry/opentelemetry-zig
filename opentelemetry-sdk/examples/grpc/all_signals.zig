@@ -15,7 +15,6 @@
 //!   OTEL_EXPORTER_OTLP_ENDPOINT=<host:port> ./zig-out/bin/grpc/all_signals
 
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 
 pub fn main(init: std.process.Init) !void {
@@ -61,7 +60,7 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Traces ───────────────────────────────────────────────────────────────
 
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toMilliseconds()));
     const id_generator = sdk.trace.IDGenerator{
         .Random = sdk.trace.RandomIDGenerator.init(prng.random()),
     };
@@ -124,7 +123,7 @@ pub fn main(init: std.process.Init) !void {
             .duration = req.latency_ms,
         }, .{ .span_context = span.span_context });
 
-        clock.sleep(@as(u64, @intFromFloat(req.latency_ms * std.time.ns_per_ms)));
+        std.Io.sleep(io, .fromNanoseconds(@as(u64, @intFromFloat(req.latency_ms * std.time.ns_per_ms))), .awake) catch {};
 
         try req_count.add(1, .{
             "http.method", req.method,

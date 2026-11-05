@@ -6,7 +6,6 @@
 //! See: https://opentelemetry.io/docs/specs/otel/metrics/sdk_exporters/prometheus/
 
 const std = @import("std");
-const clock = @import("clock");
 const Allocator = std.mem.Allocator;
 
 const Measurements = @import("../../../api/metrics/measurement.zig").Measurements;
@@ -949,7 +948,7 @@ test "PrometheusExporter: server start and stop" {
     try std.testing.expect(exporter.server_thread != null);
 
     // Wait a bit for server to be ready
-    clock.sleep(100 * std.time.ns_per_ms);
+    std.Io.sleep(io, .fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
 
     // Stop the server (should not block)
     exporter.stop();
@@ -988,9 +987,9 @@ test "PrometheusExporter: repeated start/stop cycles" {
     var i: usize = 0;
     while (i < 3) : (i += 1) {
         try exporter.start();
-        clock.sleep(50 * std.time.ns_per_ms);
+        std.Io.sleep(io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
         exporter.stop();
-        clock.sleep(50 * std.time.ns_per_ms);
+        std.Io.sleep(io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
     }
 
     // Verify server is stopped
@@ -1011,7 +1010,7 @@ test "PrometheusExporter: concurrent HTTP requests" {
     defer exporter.stop();
 
     // Wait for server to be ready
-    clock.sleep(100 * std.time.ns_per_ms);
+    std.Io.sleep(io, .fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
 
     // Make multiple concurrent requests
     const RequestThread = struct {
@@ -1058,12 +1057,12 @@ test "PrometheusExporter: shutdown does not block" {
     defer exporter.deinit();
 
     try exporter.start();
-    clock.sleep(100 * std.time.ns_per_ms);
+    std.Io.sleep(io, .fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
 
     // Measure shutdown time (should be fast, not blocked)
-    const start_time = clock.milliTimestamp();
+    const start_time = std.Io.Clock.real.now(io).toMilliseconds();
     exporter.stop();
-    const end_time = clock.milliTimestamp();
+    const end_time = std.Io.Clock.real.now(io).toMilliseconds();
 
     const shutdown_time = end_time - start_time;
     // Shutdown should complete within 1 second (generous timeout)
@@ -1083,7 +1082,7 @@ test "PrometheusExporter: server handles invalid path with 404" {
     try exporter.start();
     defer exporter.stop();
 
-    clock.sleep(100 * std.time.ns_per_ms);
+    std.Io.sleep(io, .fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
 
     // Make request to invalid path
     const address = try std.Io.net.IpAddress.parse("127.0.0.1", 29470);
@@ -1161,7 +1160,7 @@ test "PrometheusExporter e2e" {
     defer result.prometheus.stop();
 
     // Wait for server to be ready
-    clock.sleep(100 * std.time.ns_per_ms);
+    std.Io.sleep(io, .fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
 
     try reader.collect();
 

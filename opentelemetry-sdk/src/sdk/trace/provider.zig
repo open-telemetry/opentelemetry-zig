@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const context = @import("../../api/context.zig");
 
 // NOTE: API-surface mutex operations use lockUncancelable so that user-facing
@@ -313,9 +312,9 @@ pub const Tracer = struct {
         // Determine trace ID based on parent
         if (parent_span_context) |parent_sc| {
             trace_id = parent_sc.trace_id;
-            span_id = self.provider.id_generator.newSpanID(trace_id);
+            span_id = self.provider.id_generator.newSpanID(self.provider.io, trace_id);
         } else {
-            const ids = self.provider.id_generator.newIDs();
+            const ids = self.provider.id_generator.newIDs(self.provider.io);
             trace_id = ids.trace_id;
             span_id = ids.span_id;
         }
@@ -354,7 +353,7 @@ pub const Tracer = struct {
         );
 
         // Create the span with instrumentation scope
-        var span = trace_api.Span.init(allocator, span_context, span_name, options.kind, self.scope);
+        var span = trace_api.Span.init(allocator, self.provider.io, span_context, span_name, options.kind, self.scope);
         span.owns_trace_state = true;
         errdefer span.deinit();
         span.parent_span_id = if (parent_span_context) |parent_sc|
@@ -379,7 +378,7 @@ pub const Tracer = struct {
         }
 
         // Set start time if provided, otherwise use current time
-        span.start_time_unix_nano = options.start_timestamp orelse @intCast(clock.nanoTimestamp());
+        span.start_time_unix_nano = options.start_timestamp orelse @intCast(std.Io.Clock.real.now(self.provider.io).nanoseconds);
 
         // Processors only see spans the sampler decided to record
         if (span.is_recording) {

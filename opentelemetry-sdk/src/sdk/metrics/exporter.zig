@@ -287,7 +287,7 @@ fn mockExporter(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void 
 // test harness to build an exporter that times out.
 fn waiterExporter(_: *ExporterImpl, _: []Measurements) MetricReadError!void {
     // Sleep for 1 second to simulate a slow exporter.
-    clock.sleep(std.time.ns_per_ms * 1000);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(std.time.ns_per_ms * 1000), .awake) catch {};
     return;
 }
 
@@ -392,7 +392,7 @@ test "metric exporter force flush fails" {
     defer bg.join();
 
     // Give the background thread time to acquire the export lock.
-    clock.sleep(50 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
 
     // Call forceFlush while the slow export is still in progress.
     // With a 10 ms timeout it should time out well before the 1 s export finishes.
@@ -408,7 +408,7 @@ test "metric exporter exportBatch with timeout" {
     const SlowExporter = struct {
         fn exportFn(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void {
             // Sleep for 100ms to simulate slow export
-            clock.sleep(100 * std.time.ns_per_ms);
+            std.Io.sleep(std.testing.io, .fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
             // Just free the metrics array, not the contents (they're stack-allocated in test)
             allocator.free(metrics);
         }
@@ -690,7 +690,7 @@ test "e2e periodic exporting metric reader" {
     try histogram.record(10.4, .{});
 
     // Allow repeated collections; cumulative values must not grow without new records.
-    clock.sleep(waiting_ms * 4 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(waiting_ms * 4 * std.time.ns_per_ms), .awake) catch {};
 
     const data = try inMem.fetch(allocator);
     defer {

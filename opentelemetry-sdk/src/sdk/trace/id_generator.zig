@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 
 const trace = @import("../../api/trace.zig");
 
@@ -10,15 +9,15 @@ pub const IDGenerator = union(enum) {
 
     const Self = @This();
 
-    pub fn newIDs(self: Self) TraceSpanID {
+    pub fn newIDs(self: Self, io: std.Io) TraceSpanID {
         return switch (self) {
-            inline else => |gen| gen.newIDs(),
+            inline else => |gen| gen.newIDs(io),
         };
     }
 
-    pub fn newSpanID(self: Self, trace_id: trace.TraceID) trace.SpanID {
+    pub fn newSpanID(self: Self, io: std.Io, trace_id: trace.TraceID) trace.SpanID {
         return switch (self) {
-            inline else => |gen| gen.newSpanID(trace_id),
+            inline else => |gen| gen.newSpanID(io, trace_id),
         };
     }
 };
@@ -41,7 +40,7 @@ pub const RandomIDGenerator = struct {
         };
     }
 
-    pub fn newIDs(self: Self) TraceSpanID {
+    pub fn newIDs(self: Self, _: std.Io) TraceSpanID {
         var trace_span_id = TraceSpanID{
             .trace_id = trace.TraceID.init(undefined),
             .span_id = trace.SpanID.init(undefined),
@@ -71,7 +70,7 @@ pub const RandomIDGenerator = struct {
         return trace_span_id;
     }
 
-    pub fn newSpanID(self: Self, _: trace.TraceID) trace.SpanID {
+    pub fn newSpanID(self: Self, _: std.Io, _: trace.TraceID) trace.SpanID {
         while (true) {
             var raw_span_id: [8]u8 = undefined;
             self.random.bytes(raw_span_id[0..raw_span_id.len]);
@@ -90,7 +89,7 @@ test "RandomIDGenerator newIDs" {
     var random_generator = RandomIDGenerator.init(default_prng.random());
 
     for (0..1000) |_| {
-        const trace_span_id = random_generator.newIDs();
+        const trace_span_id = random_generator.newIDs(std.testing.io);
 
         try std.testing.expect(trace_span_id.trace_id.isValid());
         try std.testing.expect(trace_span_id.span_id.isValid());
@@ -103,7 +102,7 @@ test "RandomIDGenerator newSpanID" {
     var random_generator = RandomIDGenerator.init(default_prng.random());
 
     for (0..1000) |_| {
-        const span_id = random_generator.newSpanID(trace.TraceID.init(undefined));
+        const span_id = random_generator.newSpanID(std.testing.io, trace.TraceID.init(undefined));
 
         try std.testing.expect(span_id.isValid());
     }
@@ -114,8 +113,8 @@ pub const TimeBasedIDGenerator = struct {
 
     const Self = @This();
 
-    pub fn newIDs(self: Self) TraceSpanID {
-        const timestamp = clock.nanoTimestamp();
+    pub fn newIDs(self: Self, io: std.Io) TraceSpanID {
+        const timestamp = std.Io.Clock.real.now(io).nanoseconds;
         const trace_id: i128 = timestamp ^ self.magic;
         const span_id: i64 = @truncate(timestamp & trace_id);
 
@@ -133,8 +132,8 @@ pub const TimeBasedIDGenerator = struct {
         };
     }
 
-    pub fn newSpanID(self: Self, trace_id: trace.TraceID) trace.SpanID {
-        const lower: i64 = @truncate(clock.nanoTimestamp() ^ self.magic);
+    pub fn newSpanID(self: Self, io: std.Io, trace_id: trace.TraceID) trace.SpanID {
+        const lower: i64 = @truncate(std.Io.Clock.real.now(io).nanoseconds ^ self.magic);
 
         // Mix with trace_id to reduce collision
         var lower_array = std.mem.toBytes(lower);
@@ -150,7 +149,7 @@ test "TimeBasedIDGenerator newIDs" {
     var time_based_generator = TimeBasedIDGenerator{};
 
     for (0..1000) |_| {
-        const trace_span_id = time_based_generator.newIDs();
+        const trace_span_id = time_based_generator.newIDs(std.testing.io);
 
         try std.testing.expect(trace_span_id.trace_id.isValid());
         try std.testing.expect(trace_span_id.span_id.isValid());
@@ -161,7 +160,7 @@ test "TimeBasedIDGenerator fills the trace ID bytes read by ratio sampling" {
     var time_based_generator = TimeBasedIDGenerator{};
 
     for (0..1000) |_| {
-        const trace_id = time_based_generator.newIDs().trace_id;
+        const trace_id = time_based_generator.newIDs(std.testing.io).trace_id;
 
         try std.testing.expect(std.mem.readInt(u56, trace_id.value[9..16], .big) != 0);
     }
@@ -171,7 +170,7 @@ test "TimeBasedIDGenerator newSpanID" {
     var time_based_generator = TimeBasedIDGenerator{ .magic = 0xFFFFFFFFFFFF };
 
     for (0..1000) |_| {
-        const span_id = time_based_generator.newSpanID(trace.TraceID.init(undefined));
+        const span_id = time_based_generator.newSpanID(std.testing.io, trace.TraceID.init(undefined));
 
         try std.testing.expect(span_id.isValid());
     }

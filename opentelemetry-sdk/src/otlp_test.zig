@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const http = std.http;
 
 const log = std.log.scoped(.otlp_test);
@@ -137,7 +136,7 @@ test "otlp HTTPClient send retries on retryable error" {
     thread.join();
 
     // Give the detached retry thread time to finish before the test tears down `threaded`.
-    clock.sleep(std.time.ns_per_ms * 10);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(std.time.ns_per_ms * 10), .awake) catch {};
 
     // Eventually the non-retryable status code is returned, and we should have received
     // the maximum number of requests.
@@ -322,7 +321,7 @@ fn oneDataPointMetricsExportRequest(allocator: std.mem.Allocator, data_point_att
     var data_points = try allocator.alloc(pbmetrics.NumberDataPoint, 1);
     const data_points0 = pbmetrics.NumberDataPoint{
         .value = .{ .as_int = 42 },
-        .start_time_unix_nano = @intCast(clock.nanoTimestamp()),
+        .start_time_unix_nano = @intCast(std.Io.Clock.real.now(std.testing.io).nanoseconds),
         .attributes = pb_attrs.values,
         .exemplars = .empty,
     };
@@ -371,7 +370,7 @@ const AssertionError = error{
 
 // Accepts the request but stalls well past any sane export timeout.
 fn slowResponse(request: *http.Server.Request) anyerror!void {
-    clock.sleep(2 * std.time.ns_per_s);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(2 * std.time.ns_per_s), .awake) catch {};
     try request.respond("", .{ .status = .ok });
 }
 

@@ -96,7 +96,7 @@ pub const FileExporter = struct {
                 log.err("failed to allocate memory for metrics: {s}", .{@errorName(err)});
                 return MetricReadError.OutOfMemory;
             };
-            metrics.appendAssumeCapacity(try toProtobufMetric(self.allocator, measurement, self.temporality));
+            metrics.appendAssumeCapacity(try toProtobufMetric(self.allocator, self.io, measurement, self.temporality));
 
             const attributes = try attributesToProtobufKeyValueList(self.allocator, measurement.scope.attributes);
             scope_metrics[i] = pbmetrics.ScopeMetrics{

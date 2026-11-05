@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 
 const attribute = @import("../../attributes.zig");
 const trace = @import("../trace.zig");
@@ -253,6 +252,7 @@ pub const Span = struct {
     status: ?Status,
     is_recording: bool,
     allocator: std.mem.Allocator,
+    io: std.Io,
     scope: InstrumentationScope,
     resource: ?[]const attribute.Attribute = null,
     /// True when `span_context.trace_state` was allocated for this span, e.g. by
@@ -326,13 +326,13 @@ pub const Span = struct {
         }
     };
 
-    pub fn init(allocator: std.mem.Allocator, span_context: SpanContext, name: []const u8, kind: SpanKind, scope: InstrumentationScope) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, span_context: SpanContext, name: []const u8, kind: SpanKind, scope: InstrumentationScope) Self {
         return Self{
             .span_context = span_context,
             .parent_span_id = null,
             .name = name,
             .kind = kind,
-            .start_time_unix_nano = @as(u64, @intCast(clock.nanoTimestamp())),
+            .start_time_unix_nano = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             .end_time_unix_nano = 0,
             .attributes = .empty,
             .events = std.ArrayList(Event).empty,
@@ -340,6 +340,7 @@ pub const Span = struct {
             .status = null,
             .is_recording = true,
             .allocator = allocator,
+            .io = io,
             .scope = scope,
         };
     }
@@ -362,6 +363,7 @@ pub const Span = struct {
             .status = null,
             .is_recording = false, // Non-recording spans are never recording
             .allocator = dummy_allocator.allocator(),
+            .io = undefined,
             .scope = InstrumentationScope{
                 .name = "unknown",
                 .version = null,
@@ -423,7 +425,7 @@ pub const Span = struct {
     pub fn addEvent(self: *Self, name: []const u8, timestamp: ?u64, attributes: ?[]const attribute.Attribute) !void {
         if (!self.is_recording) return;
 
-        const event_timestamp = timestamp orelse @as(u64, @intCast(clock.nanoTimestamp()));
+        const event_timestamp = timestamp orelse @as(u64, @intCast(std.Io.Clock.real.now(self.io).nanoseconds));
         var event = Event.init(self.allocator, name, event_timestamp);
 
         if (attributes) |attrs| {
@@ -519,7 +521,7 @@ pub const Span = struct {
     pub fn recordException(self: *Self, exception_type: []const u8, message: []const u8, stacktrace: ?[]const u8, attributes: ?[]const attribute.Attribute) !void {
         if (!self.is_recording) return;
 
-        const timestamp = @as(u64, @intCast(clock.nanoTimestamp()));
+        const timestamp: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
         var event = Event.init(self.allocator, "exception", timestamp);
 
         try event.attributes.put(self.allocator, "exception.type", .{ .string = exception_type });
@@ -542,7 +544,7 @@ pub const Span = struct {
     pub fn end(self: *Self, timestamp: ?u64) void {
         if (!self.is_recording) return;
 
-        self.end_time_unix_nano = timestamp orelse @as(u64, @intCast(clock.nanoTimestamp()));
+        self.end_time_unix_nano = timestamp orelse @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
         self.is_recording = false;
 
         if (self.tracer) |tracer| tracer.onEnd(self);
@@ -609,7 +611,7 @@ test "Span operations" {
     const trace_flags = @import("../trace.zig").TraceFlags.default();
     const span_context = SpanContext.init(trace_id, span_id, trace_flags, trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var span = Span.init(allocator, span_context, "test-span", .Server, scope);
+    var span = Span.init(allocator, std.testing.io, span_context, "test-span", .Server, scope);
     defer span.deinit();
 
     try std.testing.expect(span.isRecording());
@@ -699,7 +701,7 @@ test "Span releases owned TraceState after end" {
         false,
     );
 
-    var span = Span.init(allocator, span_context, "test-span", .Server, .{ .name = "test" });
+    var span = Span.init(allocator, std.testing.io, span_context, "test-span", .Server, .{ .name = "test" });
     span.owns_trace_state = true;
 
     // Ended spans are non-recording; the testing allocator reports a leak if
@@ -720,7 +722,7 @@ test "Span with InstrumentationScope" {
     const span_context = SpanContext.init(trace_id, span_id, trace_flags, trace_state, false);
 
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var span = Span.init(allocator, span_context, "test-span", .Server, scope);
+    var span = Span.init(allocator, std.testing.io, span_context, "test-span", .Server, scope);
     defer span.deinit();
 
     try std.testing.expect(span.isRecording());
@@ -923,7 +925,7 @@ test "Span.setStatus follows OpenTelemetry specification precedence" {
         TraceState.init(allocator),
         false,
     );
-    var span = Span.init(allocator, span_context, "test-span", .Internal, .{ .name = "test" });
+    var span = Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, .{ .name = "test" });
     defer span.deinit();
 
     // Default status is null (representing Unset)
@@ -989,7 +991,7 @@ test "Link.initWithAttributes and addLinkFrom" {
 
     try std.testing.expectEqual(@as(usize, 2), source_link.attributes.count());
 
-    var span = Span.init(allocator, span_context, "parent-span", .Internal, .{ .name = "test" });
+    var span = Span.init(allocator, std.testing.io, span_context, "parent-span", .Internal, .{ .name = "test" });
     defer span.deinit();
 
     try span.addLinkFrom(source_link);

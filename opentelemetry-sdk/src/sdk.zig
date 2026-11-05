@@ -3,6 +3,7 @@ test {
     _ = @import("sdk/trace.zig");
     _ = @import("sdk/metrics.zig");
     _ = @import("sdk/logs.zig");
+    _ = @import("sdk/profiles.zig");
     _ = @import("sdk/config.zig");
     _ = @import("sdk/resource.zig");
     _ = @import("sdk/propagation.zig");
@@ -25,6 +26,7 @@ pub const api = @import("api.zig");
 pub const trace = @import("sdk/trace.zig");
 pub const metrics = @import("sdk/metrics.zig");
 pub const logs = @import("sdk/logs.zig");
+pub const profiles = @import("sdk/profiles.zig");
 pub const config = @import("sdk/config.zig");
 pub const resource = @import("sdk/resource.zig");
 pub const propagation = @import("sdk/propagation.zig");

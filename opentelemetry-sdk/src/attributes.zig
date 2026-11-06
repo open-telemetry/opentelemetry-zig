@@ -123,6 +123,10 @@ pub const Attribute = struct {
     }
 };
 
+/// Compile-time builders for attribute lists, see `attributes/builders.zig`.
+pub const fromPairs = @import("attributes/builders.zig").fromPairs;
+pub const flatten = @import("attributes/builders.zig").flatten;
+
 /// Creates a slice of attributes from a list of key-value pairs.
 /// Caller owns the returned memory and should free the slice when done
 /// through the same allocator.

@@ -162,7 +162,7 @@ fn namedFields(comptime T: type) []const [:0]const u8 {
 
 /// Number of attributes `flatten` produces for the struct type `T`: one per leaf
 /// field, counting nested structs recursively.
-pub fn flatCount(comptime T: type) usize {
+fn flatCount(comptime T: type) usize {
     comptime var count: usize = 0;
     inline for (comptime namedFields(T)) |name| {
         count += if (comptime isNamedStruct(@FieldType(T, name))) flatCount(@FieldType(T, name)) else 1;

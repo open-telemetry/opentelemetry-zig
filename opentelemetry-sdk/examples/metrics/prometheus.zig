@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const MeterProvider = metrics_sdk.MeterProvider;
@@ -79,7 +78,7 @@ pub fn main(init: std.process.Init) !void {
         const duration = 0.01 + @as(f64, @floatFromInt(@mod(i, 100))) / 1000.0;
         try request_duration.record(duration, .{ "path", @as([]const u8, "/api/users") });
 
-        clock.sleep(1 * std.time.ns_per_s);
+        std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
     }
 
     std.log.info("Example completed.", .{});

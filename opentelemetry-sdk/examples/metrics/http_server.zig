@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const http = std.http;
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
@@ -87,8 +86,8 @@ const MonitoredHTTPServer = struct {
         var conn_writer = stream.writer(self.io, &write_buffer);
         var server = http.Server.init(&conn_reader.interface, &conn_writer.interface);
 
-        const start = clock.milliTimestamp();
-        defer self.response_latency.record(@floatFromInt(clock.milliTimestamp() - start), .{}) catch unreachable;
+        const start = std.Io.Clock.real.now(self.io).toMilliseconds();
+        defer self.response_latency.record(@floatFromInt(std.Io.Clock.real.now(self.io).toMilliseconds() - start), .{}) catch unreachable;
 
         var request = server.receiveHead() catch |err| {
             try self.request_counter.add(1, .{ "error", true, "reason", @errorName(err) });

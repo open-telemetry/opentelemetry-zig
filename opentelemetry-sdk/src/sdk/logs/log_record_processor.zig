@@ -584,9 +584,9 @@ test "BatchingLogRecordProcessor bounds export with export_timeout_millis" {
     defer log_record.deinit(allocator);
     log_processor.onEmit(&log_record, context.Context.init());
 
-    const start_ns = clock.monotonicNs();
+    const start_ns: u64 = @intCast(std.Io.Clock.awake.now(io).nanoseconds);
     try log_processor.forceFlush();
-    const elapsed_ms = (clock.monotonicNs() - start_ns) / std.time.ns_per_ms;
+    const elapsed_ms = (@as(u64, @intCast(std.Io.Clock.awake.now(io).nanoseconds)) - start_ns) / std.time.ns_per_ms;
 
     try std.testing.expect(stalling.canceled.load(.acquire));
     // The exporter would have blocked for 5s; the deadline is 100ms.
@@ -659,7 +659,7 @@ test "BatchingLogRecordProcessor basic functionality" {
     }
 
     // Wait a bit for the background thread to process
-    clock.sleep(200 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
 
     // Force flush to export remaining log records
     try log_processor.forceFlush();
@@ -691,7 +691,7 @@ test "BatchingLogRecordProcessor never exports concurrently and forceFlush waits
 
             if (self.calls.fetchAdd(1, .acq_rel) == 0) {
                 self.first_started.store(true, .release);
-                while (!self.release.load(.acquire)) clock.sleep(1 * std.time.ns_per_ms);
+                while (!self.release.load(.acquire)) std.Io.sleep(std.testing.io, .fromNanoseconds(1 * std.time.ns_per_ms), .awake) catch {};
             }
             for (log_records) |log_record| {
                 const body = log_record.body.?.string;
@@ -721,7 +721,7 @@ test "BatchingLogRecordProcessor never exports concurrently and forceFlush waits
             var attempts: usize = 0;
             while (!flag.load(.acquire)) : (attempts += 1) {
                 if (attempts == 5000) return error.Timeout;
-                clock.sleep(1 * std.time.ns_per_ms);
+                std.Io.sleep(std.testing.io, .fromNanoseconds(1 * std.time.ns_per_ms), .awake) catch {};
             }
         }
     };
@@ -779,7 +779,7 @@ test "BatchingLogRecordProcessor never exports concurrently and forceFlush waits
         mock_exporter.release.store(true, .release);
         flusher.join();
     }
-    clock.sleep(50 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
     try std.testing.expect(!flush_done.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), mock_exporter.calls.load(.acquire));
 

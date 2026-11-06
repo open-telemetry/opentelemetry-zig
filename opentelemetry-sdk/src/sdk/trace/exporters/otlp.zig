@@ -347,7 +347,7 @@ test "OTLPExporter with InstrumentationScope" {
             .version = "1.0.0",
         };
 
-        span.* = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+        span.* = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, scope);
     }
 
     defer {
@@ -425,7 +425,7 @@ test "span trace_id and span_id survive stack reuse" {
         trace_state,
         false,
     );
-    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, .{ .name = "test" });
+    var test_span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, .{ .name = "test" });
     defer test_span.deinit();
 
     var spans = [_]trace.Span{test_span};
@@ -464,7 +464,7 @@ test "span parent_span_id is exported" {
         trace_state,
         false,
     );
-    var test_span = trace.Span.init(allocator, span_context, "child", .Internal, .{ .name = "test" });
+    var test_span = trace.Span.init(allocator, std.testing.io, span_context, "child", .Internal, .{ .name = "test" });
     defer test_span.deinit();
     test_span.parent_span_id = trace.SpanID.init(expected_parent_span_id);
 
@@ -502,7 +502,7 @@ test "OTLPExporter basic functionality" {
 
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+    var test_span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, scope);
     defer test_span.deinit();
 
     var spans = [_]trace.Span{test_span};
@@ -538,7 +538,7 @@ test "span resource is exported" {
 
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+    var test_span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, scope);
     test_span.resource = &resource;
     defer test_span.deinit();
 
@@ -577,7 +577,7 @@ test "spans without a resource export no resource attributes" {
 
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+    var test_span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, scope);
     defer test_span.deinit();
 
     var spans = [_]trace.Span{test_span};

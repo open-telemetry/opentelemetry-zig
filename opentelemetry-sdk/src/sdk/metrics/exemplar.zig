@@ -8,7 +8,6 @@ const Attribute = attribute_types.Attribute;
 const Attributes = attribute_types.Attributes;
 const trace = @import("../../api/trace.zig");
 const context = @import("../../api/context.zig");
-const clock = @import("clock");
 pub const ExemplarFilter = @import("../config.zig").MetricsConfig.ExemplarFilter;
 
 /// An owned snapshot of a measurement. Raw candidates contain all attributes;
@@ -20,7 +19,7 @@ pub const Exemplar = struct {
     span_id: ?[8]u8 = null,
     filtered_attributes: []Attribute = &.{},
 
-    pub fn capture(comptime T: type, allocator: std.mem.Allocator, value: T, attributes: ?[]const Attribute, filter: ExemplarFilter) !?Exemplar {
+    pub fn capture(comptime T: type, allocator: std.mem.Allocator, io: std.Io, value: T, attributes: ?[]const Attribute, filter: ExemplarFilter) !?Exemplar {
         if (filter == .always_off) return null;
         var ids: ?struct { trace_id: [16]u8, span_id: [8]u8, sampled: bool } = null;
         if (trace.extractSpanContext(context.getCurrentContext())) |sc| {
@@ -33,7 +32,7 @@ pub const Exemplar = struct {
             };
         }
         if (filter == .trace_based and (ids == null or !ids.?.sampled)) return null;
-        const time_ns: u64 = @intCast(clock.nanoTimestamp());
+        const time_ns: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
         return .{
             .value = switch (@typeInfo(T)) {
                 .int => .{ .int = @intCast(value) },
@@ -565,10 +564,10 @@ test "exemplar fixed reservoir uniformly samples across a collection" {
 
 test "exemplar disabled filter makes no allocations without a span" {
     var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    const sample = try Exemplar.capture(i64, failing.allocator(), 1, null, .always_off);
+    const sample = try Exemplar.capture(i64, failing.allocator(), std.testing.io, 1, null, .always_off);
     try std.testing.expectEqual(null, sample);
     try std.testing.expectEqual(@as(usize, 0), failing.alloc_index);
-    try std.testing.expectEqual(null, try Exemplar.capture(i64, failing.allocator(), 1, null, .trace_based));
+    try std.testing.expectEqual(null, try Exemplar.capture(i64, failing.allocator(), std.testing.io, 1, null, .trace_based));
 }
 
 test "exemplar copying and sampling clean up allocation failures" {
@@ -579,7 +578,7 @@ fn exemplarAllocationFailure(allocator: std.mem.Allocator) !void {
     const attrs = [_]Attribute{
         .{ .key = "route", .value = .{ .string = "/one" } },
     };
-    var sample = (try Exemplar.capture(i64, allocator, 7, &attrs, .always_on)).?;
+    var sample = (try Exemplar.capture(i64, allocator, std.testing.io, 7, &attrs, .always_on)).?;
     defer sample.deinit(allocator);
     var reservoir = try SimpleFixedSizeExemplarReservoir.init(allocator, std.testing.io, 2);
     defer reservoir.deinit();
@@ -689,7 +688,7 @@ test "exemplar filters require a valid sampled context only for trace based samp
         defer trace.freeSerializedSpanContext(allocator, ctx);
         _ = try context.attachContext(ctx);
         attached = true;
-        var sample = try Exemplar.capture(i64, allocator, 7, null, case.filter);
+        var sample = try Exemplar.capture(i64, allocator, std.testing.io, 7, null, case.filter);
         defer if (sample) |*value| value.deinit(allocator);
         try std.testing.expectEqual(case.eligible, sample != null);
         if (sample) |value| {

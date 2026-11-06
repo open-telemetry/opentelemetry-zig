@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 
 // NOTE: API-surface mutex operations use lockUncancelable so that user-facing
 // methods do not introduce cancellation points. This is safe with Io.Threaded
@@ -471,7 +470,7 @@ pub const Logger = struct {
 
         var log_record: ReadWriteLogRecord = .{
             .timestamp = options.timestamp,
-            .observed_timestamp = options.observed_timestamp orelse @intCast(clock.nanoTimestamp()),
+            .observed_timestamp = options.observed_timestamp orelse @intCast(std.Io.Clock.real.now(self.provider.io).nanoseconds),
             .trace_id = if (span_context) |sc| sc.trace_id.toBinary() else null,
             .span_id = if (span_context) |sc| sc.span_id.toBinary() else null,
             .trace_flags = if (span_context) |sc| sc.trace_flags.value else null,

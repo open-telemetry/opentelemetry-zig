@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 
 const log = std.log.scoped(.instrument);
 
@@ -259,7 +258,7 @@ pub const InstrumentOptions = struct {
 
 /// A Counter is a monotonically increasing value used to record cumulative events.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#counter
-fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: std.mem.Allocator, points: []const DataPoint(From), collection_start_ns: *u64) ![]DataPoint(To) {
+fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: std.mem.Allocator, io: std.Io, points: []const DataPoint(From), collection_start_ns: *u64) ![]DataPoint(To) {
     const copied = try allocator.alloc(DataPoint(To), points.len);
     var initialized: usize = 0;
     errdefer {
@@ -284,7 +283,7 @@ fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: std.m
     }
     // Callers hold the recording lock, so the next batch starts after this cut.
     if (copied.len > 0) {
-        const collection_time: u64 = @intCast(clock.nanoTimestamp());
+        const collection_time: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
         for (copied) |*point| point.timestamps = .{ .start_time_ns = collection_start_ns.*, .time_ns = collection_time };
         collection_start_ns.* = collection_time;
     }
@@ -311,7 +310,7 @@ pub fn Counter(comptime T: type) type {
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
-                .collection_start_ns = @intCast(clock.nanoTimestamp()),
+                .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             };
         }
 
@@ -329,7 +328,7 @@ pub fn Counter(comptime T: type) type {
 
             var dp = try DataPoint(T).new(self.allocator, delta, attributes);
             errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.exemplar_filter);
+            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
             try self.data_points.append(self.allocator, dp);
         }
 
@@ -347,7 +346,7 @@ pub fn Counter(comptime T: type) type {
                     null,
             };
             errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.exemplar_filter);
+            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
             try self.data_points.append(self.allocator, dp);
         }
 
@@ -365,7 +364,7 @@ pub fn Counter(comptime T: type) type {
             }
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items, &self.collection_start_ns) };
+                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
                 },
                 else => unreachable,
             }
@@ -394,7 +393,7 @@ pub fn Histogram(comptime T: type) type {
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
-                .collection_start_ns = @intCast(clock.nanoTimestamp()),
+                .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
                 .data_points = .empty,
             };
         }
@@ -414,7 +413,7 @@ pub fn Histogram(comptime T: type) type {
 
             var dp = try DataPoint(T).new(self.allocator, value, attributes);
             errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.exemplar_filter);
+            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
             try self.data_points.append(self.allocator, dp);
         }
 
@@ -432,7 +431,7 @@ pub fn Histogram(comptime T: type) type {
                     null,
             };
             errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.exemplar_filter);
+            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
             try self.data_points.append(self.allocator, dp);
         }
 
@@ -454,10 +453,10 @@ pub fn Histogram(comptime T: type) type {
             // Aggregation will be performed later in AggregateMetrics.fetch()
             switch (T) {
                 u16, u32, u64, i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items, &self.collection_start_ns) };
+                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
                 },
                 f32, f64 => {
-                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.data_points.items, &self.collection_start_ns) };
+                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
                 },
                 // inner types are filtered before this point
                 else => unreachable,
@@ -484,7 +483,7 @@ pub fn Gauge(comptime T: type) type {
                 .io = io,
                 .data_points = .empty,
                 .lock = std.Io.Mutex.init,
-                .collection_start_ns = @intCast(clock.nanoTimestamp()),
+                .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             };
         }
 
@@ -502,7 +501,7 @@ pub fn Gauge(comptime T: type) type {
 
             var dp = try DataPoint(T).new(self.allocator, value, attributes);
             errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.exemplar_filter);
+            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
             try self.data_points.append(self.allocator, dp);
         }
 
@@ -520,7 +519,7 @@ pub fn Gauge(comptime T: type) type {
                     null,
             };
             errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.exemplar_filter);
+            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
             try self.data_points.append(self.allocator, dp);
         }
 
@@ -537,10 +536,10 @@ pub fn Gauge(comptime T: type) type {
 
             switch (T) {
                 i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.data_points.items, &self.collection_start_ns) };
+                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
                 },
                 f32, f64 => {
-                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.data_points.items, &self.collection_start_ns) };
+                    return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
                 },
                 else => unreachable,
             }
@@ -863,7 +862,7 @@ fn testCounterCollect(counter: *Counter(u64)) !void {
     for (0..1000) |_| {
         counter.lock.lockUncancelable(counter.io);
         counter.lock.unlock(counter.io);
-        clock.sleep(25);
+        std.Io.sleep(std.testing.io, .fromNanoseconds(25), .awake) catch {};
     }
 
     const fetched = try counter.measurementsData(std.testing.allocator);
@@ -910,7 +909,7 @@ fn testHistogramCollect(histogram: *Histogram(u64)) !void {
     for (0..1000) |_| {
         histogram.lock.lockUncancelable(histogram.io);
         histogram.lock.unlock(histogram.io);
-        clock.sleep(25);
+        std.Io.sleep(std.testing.io, .fromNanoseconds(25), .awake) catch {};
     }
 
     const fetched = try histogram.measurementsData(std.testing.allocator);
@@ -992,15 +991,16 @@ test "async instrument registered in meter" {
 
 test "exemplar recording snapshots caller attributes before draining" {
     const allocator = std.testing.allocator;
+    const io = std.testing.io;
     const instr = try Instrument.new(.Counter, .{ .name = "exemplar-counter" }, allocator);
     defer instr.deinit();
     const counter = try instr.counter(std.testing.io, u64);
     counter.exemplar_filter = .always_on;
     var value = [_]u8{ 'f', 'i', 'r', 's', 't' };
     var attrs = [_]Attribute{.{ .key = "request", .value = .{ .string = &value } }};
-    const before: u64 = @intCast(clock.nanoTimestamp());
+    const before: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
     try counter.addWithSlice(7, &attrs);
-    const after: u64 = @intCast(clock.nanoTimestamp());
+    const after: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
     @memcpy(&value, "later");
     var data = try instr.getInstrumentsData(allocator);
     defer data.deinit(allocator);

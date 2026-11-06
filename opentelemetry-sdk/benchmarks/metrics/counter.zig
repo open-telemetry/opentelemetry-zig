@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics = sdk.metrics;
 const MeterProvider = metrics.MeterProvider;
@@ -10,7 +9,7 @@ threadlocal var thread_rng: ?std.Random.DefaultPrng = null;
 
 fn getThreadRng() *std.Random.DefaultPrng {
     if (thread_rng == null) {
-        thread_rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.nanoTimestamp())));
+        thread_rng = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u96, @bitCast(std.Io.Clock.real.now(std.testing.io).nanoseconds)))));
     }
     return &thread_rng.?;
 }

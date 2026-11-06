@@ -32,7 +32,6 @@ const MetricExporter = exporter.MetricExporter;
 const ExporterIface = exporter.ExporterImpl;
 const ExportResult = exporter.ExportResult;
 const Temporality = @import("temporality.zig");
-const clock = @import("clock");
 const Exemplar = @import("exemplar.zig").Exemplar;
 const HistogramDataPoint = @import("../../api/metrics/measurement.zig").HistogramDataPoint;
 const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
@@ -226,7 +225,7 @@ pub const MetricReader = struct {
             }
         }
 
-        const collection_time: u64 = @intCast(clock.nanoTimestamp());
+        const collection_time: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
         var iter = map.iterator();
         while (iter.next()) |entry| {
             if (seen.contains(entry.key_ptr.*)) continue;
@@ -505,7 +504,7 @@ test "metric reader exports last value views as gauges" {
         try std.testing.expectEqual(1, data.len);
         try std.testing.expectEqual(@as(i64, @intCast(value)), data[0].data.int[0].value);
 
-        var metric = try @import("exporters/otlp.zig").toProtobufMetric(allocator, data[0], reader.temporality);
+        var metric = try @import("exporters/otlp.zig").toProtobufMetric(allocator, reader.io, data[0], reader.temporality);
         defer metric.deinit(allocator);
         try std.testing.expectEqual(@as(i64, @intCast(value)), metric.data.?.gauge.data_points.items[0].value.?.as_int);
     }
@@ -646,9 +645,9 @@ test "metric reader correctness exporting cumulative temporality" {
 
     // Generate data
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
-    const before_creation: u64 = @intCast(clock.nanoTimestamp());
+    const before_creation: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
     var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
-    const after_creation: u64 = @intCast(clock.nanoTimestamp());
+    const after_creation: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
     try counter.add(1, .{});
     try counter.add(2, .{});
 
@@ -702,9 +701,9 @@ test "metric reader cumulative histogram across collection" {
         defer reader.deinit();
         try mp.addReader(reader);
         const meter = try mp.getMeter(.{ .name = "test" });
-        const before_creation: u64 = @intCast(clock.nanoTimestamp());
+        const before_creation: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
         const histogram = try meter.createHistogram(T, .{ .name = "test-histogram" });
-        const after_creation: u64 = @intCast(clock.nanoTimestamp());
+        const after_creation: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
         const first: T = if (T == f64) 0.25 else 1;
         const second: T = if (T == f64) 0.5 else 6;
         var start_time: ?u64 = null;
@@ -712,9 +711,9 @@ test "metric reader cumulative histogram across collection" {
         for (0..3) |cycle| {
             if (cycle == 0) try histogram.record(first, .{});
             if (cycle == 1) try histogram.record(second, .{});
-            const before: u64 = @intCast(clock.nanoTimestamp());
+            const before: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
             try reader.collect();
-            const after: u64 = @intCast(clock.nanoTimestamp());
+            const after: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
             const result = try inMem.fetch(allocator);
             defer {
                 for (result) |*m| m.deinit(allocator);
@@ -981,9 +980,9 @@ test "metric reader cumulative exponential histogram across collection" {
         const histogram_name = "test-exponential-histogram";
         const meter = try mp.getMeter(.{ .name = "test" });
         try mp.addReader(reader);
-        const before_creation: u64 = @intCast(clock.nanoTimestamp());
+        const before_creation: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
         const exponential_histogram = try meter.createHistogram(T, .{ .name = histogram_name });
-        const after_creation: u64 = @intCast(clock.nanoTimestamp());
+        const after_creation: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
         const first = switch (T) {
             f64 => -1.5,
             i64 => -3,
@@ -1003,9 +1002,9 @@ test "metric reader cumulative exponential histogram across collection" {
             if (cycle == 1) {
                 try exponential_histogram.record(second, .{});
             }
-            const before: u64 = @intCast(clock.nanoTimestamp());
+            const before: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
             try reader.collect();
-            const after: u64 = @intCast(clock.nanoTimestamp());
+            const after: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
 
             const result = try inMem.fetch(allocator);
             defer {

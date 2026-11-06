@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics = sdk.metrics;
 const MeterProvider = metrics.MeterProvider;
@@ -343,7 +342,7 @@ test "AddSingleUseAttrs" {
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
             // Use timestamp to create unique attribute value for each iteration
-            const ts = clock.timestamp();
+            const ts = std.Io.Clock.real.now(std.testing.io).toSeconds();
 
             // Create unique attribute value for each iteration
             var buf: [32]u8 = undefined;
@@ -385,7 +384,7 @@ test "GaugeRecordVaried" {
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
             // Simulate CPU usage between 0% and 100%
-            var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.timestamp())));
+            var rng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(std.testing.io).toSeconds()));
             const value = rng.random().float(f64) * 100.0;
 
             const cpu: []const u8 = "cpu0";

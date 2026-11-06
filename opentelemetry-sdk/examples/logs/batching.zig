@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 
 pub fn main(init: std.process.Init) !void {
@@ -49,11 +48,11 @@ pub fn main(init: std.process.Init) !void {
     var i: usize = 0;
     while (i < 10) : (i += 1) {
         logger.emit(.info, "Batched log message", .{});
-        clock.sleep(50 * std.time.ns_per_ms); // Small delay
+        std.Io.sleep(io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {}; // Small delay
     }
 
     std.debug.print("\n\nWaiting for background export...\n", .{});
-    clock.sleep(500 * std.time.ns_per_ms);
+    std.Io.sleep(io, .fromNanoseconds(500 * std.time.ns_per_ms), .awake) catch {};
 
     std.debug.print("Force flushing remaining logs...\n", .{});
     try provider.forceFlush();

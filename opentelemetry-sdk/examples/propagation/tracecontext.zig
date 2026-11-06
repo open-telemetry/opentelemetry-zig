@@ -12,7 +12,6 @@
 //!   OTEL_PROPAGATORS=none zig build sdk-run-examples
 
 const std = @import("std");
-const clock = @import("clock");
 
 const sdk = @import("opentelemetry-sdk");
 const trace = sdk.trace;
@@ -30,7 +29,7 @@ pub fn main(init: std.process.Init) !void {
 
     std.debug.print("Trace context propagation enabled: {}\n\n", .{propagator.registry.tracecontext_enabled});
 
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(init.io).toMilliseconds()));
     var tracer_provider = try trace.TracerProvider.init(allocator, init.io, .{
         .Random = trace.RandomIDGenerator.init(prng.random()),
     });

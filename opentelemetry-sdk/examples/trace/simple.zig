@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const trace = sdk.trace;
 const trace_api = sdk.api.trace;
@@ -11,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
     // Create SDK components for a realistic trace setup
 
     // 1. Create an ID generator for trace and span IDs
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toMilliseconds()));
     const id_generator = trace.IDGenerator{
         .Random = trace.RandomIDGenerator.init(prng.random()),
     };
@@ -91,12 +90,12 @@ pub fn main(init: std.process.Init) !void {
     try db_span.setAttribute("db.rows_affected", .{ .int = 1 });
 
     // Simulate some work
-    clock.sleep(50 * std.time.ns_per_ms); // DB query time
+    std.Io.sleep(io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {}; // DB query time
 
     // End the DB span first (child spans should end before parent)
     db_span.end(null);
 
-    clock.sleep(50 * std.time.ns_per_ms); // HTTP processing time
+    std.Io.sleep(io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {}; // HTTP processing time
 
     // End the HTTP span
     http_span.end(null);

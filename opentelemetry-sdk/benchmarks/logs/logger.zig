@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const zbench = @import("benchmark");
 
 const sdk = @import("opentelemetry-sdk");
@@ -19,7 +18,7 @@ threadlocal var thread_rng: ?std.Random.DefaultPrng = null;
 
 fn getThreadRng() *std.Random.DefaultPrng {
     if (thread_rng == null) {
-        thread_rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.timestamp())));
+        thread_rng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(std.testing.io).toSeconds()));
     }
     return &thread_rng.?;
 }

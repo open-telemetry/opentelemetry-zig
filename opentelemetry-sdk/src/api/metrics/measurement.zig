@@ -35,8 +35,8 @@ pub fn DataPoint(comptime T: type) type {
         }
 
         /// Capture an eligible measurement before its caller's context changes.
-        pub fn captureExemplar(self: *Self, allocator: std.mem.Allocator, filter: exemplar_sdk.ExemplarFilter) !void {
-            var candidate = try Exemplar.capture(T, allocator, self.value, self.attributes, filter);
+        pub fn captureExemplar(self: *Self, allocator: std.mem.Allocator, io: std.Io, filter: exemplar_sdk.ExemplarFilter) !void {
+            var candidate = try Exemplar.capture(T, allocator, io, self.value, self.attributes, filter);
             errdefer if (candidate) |*sample| sample.deinit(allocator);
             if (candidate != null) try self.ownAttributes(allocator);
             if (self.exemplar_candidate) |*previous| previous.deinit(allocator);
@@ -362,7 +362,7 @@ pub const HistogramDataPoint = struct {
 test "exemplar datapoint copies own their samples" {
     const allocator = std.testing.allocator;
     const attrs = [_]Attribute{.{ .key = "request", .value = .{ .string = "first" } }};
-    var point = DataPoint(i64){ .value = 7, .exemplar_candidate = (try Exemplar.capture(i64, allocator, 7, &attrs, .always_on)).? };
+    var point = DataPoint(i64){ .value = 7, .exemplar_candidate = (try Exemplar.capture(i64, allocator, std.testing.io, 7, &attrs, .always_on)).? };
     point.exemplars = try allocator.alloc(Exemplar, 1);
     point.exemplars[0] = try point.exemplar_candidate.?.deepCopy(allocator);
     var copy = try point.deepCopy(allocator);
@@ -382,7 +382,7 @@ fn exemplarPointCopyFailure(allocator: std.mem.Allocator) !void {
     point.exemplars = try allocator.alloc(Exemplar, 1);
     point.exemplars[0] = .{ .value = .{ .int = 7 }, .time_ns = 123 };
     const attrs = [_]Attribute{.{ .key = "request", .value = .{ .string = "first" } }};
-    point.exemplar_candidate = (try Exemplar.capture(i64, allocator, 7, &attrs, .always_on)).?;
+    point.exemplar_candidate = (try Exemplar.capture(i64, allocator, std.testing.io, 7, &attrs, .always_on)).?;
     var copy = try point.deepCopy(allocator);
     defer copy.deinit(allocator);
 }
@@ -395,7 +395,7 @@ test "exemplar capture replaces owned snapshots without leaks" {
 fn recaptureExemplarFailure(allocator: std.mem.Allocator, filter: exemplar_sdk.ExemplarFilter) !void {
     var point = try DataPoint(i64).new(allocator, 7, .{ "request", @as([]const u8, "first") });
     defer point.deinit(allocator);
-    try point.captureExemplar(allocator, .always_on);
-    try point.captureExemplar(allocator, filter);
+    try point.captureExemplar(allocator, std.testing.io, .always_on);
+    try point.captureExemplar(allocator, std.testing.io, filter);
     try std.testing.expectEqual(filter == .always_on, point.exemplar_candidate != null);
 }

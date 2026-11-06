@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const logs_sdk = sdk.logs;
 const common = @import("common");
@@ -70,7 +69,7 @@ fn testLogs(
 
     try provider.shutdown();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Successfully sent {d} log records\n", .{num_logs + 1});
     std.debug.print("  Waiting for logs JSON file...\n", .{});
@@ -142,7 +141,7 @@ fn testLogsWithCompression(
 
     try provider.shutdown();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Successfully sent {d} compressed log records\n", .{num_logs});
     std.debug.print("  Waiting for logs JSON file with compressed data...\n", .{});

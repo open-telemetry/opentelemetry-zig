@@ -259,7 +259,7 @@ pub const BatchingProcessor = struct {
             return;
         }
 
-        const queued_span = cloneSpan(self.allocator, span) catch {
+        const queued_span = cloneSpan(self.allocator, self.io, span) catch {
             std.log.err("BatchingProcessor failed to copy span for queue", .{});
             return;
         };
@@ -403,12 +403,12 @@ pub const BatchingProcessor = struct {
         return result;
     }
 
-    fn cloneSpan(allocator: std.mem.Allocator, span: trace.Span) !trace.Span {
+    fn cloneSpan(allocator: std.mem.Allocator, io: std.Io, span: trace.Span) !trace.Span {
         // The queued copy may outlive the original span, so it owns its TraceState
         var span_context = span.span_context;
         span_context.trace_state = try span.span_context.trace_state.clone(allocator);
 
-        var result = trace.Span.init(allocator, span_context, span.name, span.kind, span.scope);
+        var result = trace.Span.init(allocator, io, span_context, span.name, span.kind, span.scope);
         result.owns_trace_state = true;
         errdefer result.deinit();
 
@@ -497,7 +497,7 @@ test "SimpleProcessor basic functionality" {
 
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+    var test_span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, scope);
     defer test_span.deinit();
 
     // Make the span recording
@@ -562,14 +562,14 @@ test "BatchingProcessor bounds export with export_timeout_millis" {
     defer trace_state.deinit();
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var test_span = trace.Span.init(allocator, span_context, "stalled-span", .Internal, scope);
+    var test_span = trace.Span.init(allocator, std.testing.io, span_context, "stalled-span", .Internal, scope);
     defer test_span.deinit();
 
     span_processor.onEnd(test_span);
 
-    const start_ns = clock.monotonicNs();
+    const start_ns: u64 = @intCast(std.Io.Clock.awake.now(std.testing.io).nanoseconds);
     try span_processor.forceFlush();
-    const elapsed_ms = (clock.monotonicNs() - start_ns) / std.time.ns_per_ms;
+    const elapsed_ms = (@as(u64, @intCast(std.Io.Clock.awake.now(std.testing.io).nanoseconds)) - start_ns) / std.time.ns_per_ms;
 
     try std.testing.expect(stalling.canceled.load(.acquire));
     // The exporter would have blocked for 5s; the deadline is 100ms.
@@ -597,7 +597,7 @@ test "BatchingProcessor never exports concurrently and forceFlush waits for the 
 
             if (self.calls.fetchAdd(1, .acq_rel) == 0) {
                 self.first_started.store(true, .release);
-                while (!self.release.load(.acquire)) clock.sleep(1 * std.time.ns_per_ms);
+                while (!self.release.load(.acquire)) std.Io.sleep(std.testing.io, .fromNanoseconds(1 * std.time.ns_per_ms), .awake) catch {};
             }
             _ = self.exported.fetchAdd(spans.len, .acq_rel);
         }
@@ -618,7 +618,7 @@ test "BatchingProcessor never exports concurrently and forceFlush waits for the 
             var attempts: usize = 0;
             while (!flag.load(.acquire)) : (attempts += 1) {
                 if (attempts == 5000) return error.Timeout;
-                clock.sleep(1 * std.time.ns_per_ms);
+                std.Io.sleep(std.testing.io, .fromNanoseconds(1 * std.time.ns_per_ms), .awake) catch {};
             }
         }
     };
@@ -649,7 +649,7 @@ test "BatchingProcessor never exports concurrently and forceFlush waits for the 
     defer trace_state.deinit();
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var test_span = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+    var test_span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, scope);
     defer test_span.deinit();
 
     // A full batch wakes the background task, which pops it and blocks inside the exporter.
@@ -665,7 +665,7 @@ test "BatchingProcessor never exports concurrently and forceFlush waits for the 
         mock_exporter.release.store(true, .release);
         flusher.join();
     }
-    clock.sleep(50 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
     try std.testing.expect(!flush_done.load(.acquire));
     try std.testing.expectEqual(@as(usize, 1), mock_exporter.calls.load(.acquire));
 
@@ -723,7 +723,7 @@ test "BatchingProcessor shutdown exports pending spans" {
     const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
     for (0..span_count) |_| {
-        var test_span = trace.Span.init(allocator, span_context, "pending-span", .Internal, scope);
+        var test_span = trace.Span.init(allocator, std.testing.io, span_context, "pending-span", .Internal, scope);
         defer test_span.deinit();
         span_processor.onEnd(test_span);
     }
@@ -797,7 +797,7 @@ test "BatchingProcessor basic functionality" {
 
         const span_context = trace.SpanContext.init(trace_id, span_id, trace.TraceFlags.default(), ts.*, false);
         const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-        span.* = trace.Span.init(allocator, span_context, "test-span", .Internal, scope);
+        span.* = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, scope);
         span.parent_span_id = trace.SpanID.init([8]u8{ @intCast(i + 1), 9, 8, 7, 6, 5, 4, 3 });
         span.is_recording = true;
     }
@@ -814,7 +814,7 @@ test "BatchingProcessor basic functionality" {
     }
 
     // Wait a bit for the background thread to process
-    clock.sleep(200 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(200 * std.time.ns_per_ms), .awake) catch {};
 
     // Force flush to export remaining spans
     try span_processor.forceFlush();
@@ -840,9 +840,9 @@ test "BatchingProcessor queued span owns its TraceState" {
         trace_state,
         false,
     );
-    var span = trace.Span.init(allocator, span_context, "test-span", .Internal, .{ .name = "test" });
+    var span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, .{ .name = "test" });
 
-    var queued = try BatchingProcessor.cloneSpan(allocator, span);
+    var queued = try BatchingProcessor.cloneSpan(allocator, std.testing.io, span);
     defer queued.deinit();
 
     // Release the original span and its TraceState before the queued copy is read
@@ -866,10 +866,10 @@ test "BatchingProcessor cloneSpan preserves resource" {
         trace.TraceState.init(allocator),
         false,
     );
-    var span = trace.Span.init(allocator, span_context, "test-span", .Internal, .{ .name = "test" });
+    var span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, .{ .name = "test" });
     span.resource = &resource;
 
-    var queued = try BatchingProcessor.cloneSpan(allocator, span);
+    var queued = try BatchingProcessor.cloneSpan(allocator, std.testing.io, span);
     defer queued.deinit();
 
     try std.testing.expect(queued.resource != null);
@@ -899,10 +899,10 @@ test "BatchingProcessor queued span owns its links TraceState" {
         trace.TraceState.init(allocator),
         false,
     );
-    var span = trace.Span.init(allocator, span_context, "test-span", .Internal, .{ .name = "test" });
+    var span = trace.Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, .{ .name = "test" });
     try span.addLink(link_context, null);
 
-    var queued = try BatchingProcessor.cloneSpan(allocator, span);
+    var queued = try BatchingProcessor.cloneSpan(allocator, std.testing.io, span);
     defer queued.deinit();
 
     // Release the original span and its link's TraceState before reading the queued copy

@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 env:
-  ZIG_VERSION: 0.17.0
+  ZIG_VERSION: 0.17.1
 
 jobs:
   build:
@@ -23,8 +23,8 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           mirror: 'https://zigmirror.com'
       - run: zig build --fetch
-      - run: zig build sdk-docs
-      - run: zig build semconv-docs
+      - run: zig build -Dcpu=baseline sdk-docs
+      - run: zig build -Dcpu=baseline semconv-docs
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0

@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  ZIG_VERSION: 0.17.0
+  ZIG_VERSION: 0.17.1
 
 jobs:
 
@@ -43,10 +43,10 @@ jobs:
       # provided by the protobuf dependency) and fail if they drift from git.
       - name: Regenerate proto bindings
         run: |
-          zig build proto-generate
+          zig build -Dcpu=baseline proto-generate
           git diff --exit-code opentelemetry-proto/src
       - name: Run proto module tests
-        run: zig build proto-test
+        run: zig build -Dcpu=baseline proto-test
 
   run_test:
     needs: proto
@@ -63,9 +63,9 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           mirror: 'https://zigmirror.com'
       - run: zig build --fetch
-      - run: zig build sdk-test -Dtest-verbose=true
+      - run: zig build -Dcpu=baseline sdk-test -Dtest-verbose=true
         timeout-minutes: 3
-      - run: zig build semconv-test
+      - run: zig build -Dcpu=baseline semconv-test
         timeout-minutes: 3
 
   build_examples:
@@ -81,13 +81,13 @@ jobs:
           mirror: 'https://zigmirror.com'
       - run: zig build --fetch
       - name: Build and install SDK examples
-        run: zig build sdk-examples
+        run: zig build -Dcpu=baseline sdk-examples
       - name: Run SDK examples
-        run: zig build sdk-run-examples
+        run: zig build -Dcpu=baseline sdk-run-examples
       - name: Build and install semconv examples
-        run: zig build semconv-examples
+        run: zig build -Dcpu=baseline semconv-examples
       - name: Run semconv examples
-        run: zig build semconv-run-examples
+        run: zig build -Dcpu=baseline semconv-run-examples
 
   # Execute bencharmks only if the PR has a specific label 'run::benchmarks'
   benchmarks:

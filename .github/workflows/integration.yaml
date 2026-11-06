@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  ZIG_VERSION: 0.17.0
+  ZIG_VERSION: 0.17.1
 
 jobs:
   integration:
@@ -26,6 +26,6 @@ jobs:
       - name: Fetch dependencies
         run: zig build --fetch
       - name: Build integration tests
-        run: zig build sdk-integration
+        run: zig build -Dcpu=baseline sdk-integration
       - name: Run integration tests
-        run: zig build sdk-run-integration
+        run: zig build -Dcpu=baseline sdk-run-integration

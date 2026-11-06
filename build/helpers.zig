@@ -9,6 +9,13 @@ pub fn getZigFileName(file_name: []const u8) ?[]const u8 {
     return file_name[0..index];
 }
 
+/// Opens `dir` (a `b.path(...)` directory) for iteration while configuring the
+/// build, and registers it so that adding or removing files re-runs configure.
+pub fn openSourceDir(b: *std.Build, dir: std.Build.LazyPath) !std.Io.Dir {
+    b.dependOnDirectoryContents(dir);
+    return b.root.openDir(b.graph.io, dir.src_path.sub_path, .{ .iterate = true });
+}
+
 pub const BuildModules = std.StringHashMap(*std.Build.Module);
 
 // Generates a ist of imports from a BuildModules map, only including the modules whose names are in the `include` list.
@@ -35,15 +42,21 @@ pub const BuildError = error{
 
 pub const CompilationInfo = struct {
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.builtin.Optimize,
     version: []const u8,
     pkg_name: []const u8,
+    /// Selects which tests to compile: a test is kept if its name contains any of
+    /// these strings (-Dtest-filter, repeatable). Empty keeps every test.
+    test_filters: []const []const u8,
 };
 
 /// Installs `exe` to zig-out/<install_subdir>/ and hooks that install into
 /// `build_step`, so building never implies running. `run_step` additionally
 /// runs the installed binary, depending on `cwd` for executables (e.g.
 /// integration tests) that must run from a specific working directory.
+///
+/// The shared libraries `exe` links are installed alongside it (see
+/// `installSharedLibs`).
 pub fn wireExample(
     b: *std.Build,
     exe: *std.Build.Step.Compile,
@@ -55,10 +68,50 @@ pub fn wireExample(
     const install = b.addInstallArtifact(exe, .{
         .dest_dir = .{ .override = .{ .custom = install_subdir } },
     });
+    installSharedLibs(b, exe, install, install_subdir);
     build_step.dependOn(&install.step);
 
     const run = b.addRunArtifact(exe);
     if (cwd) |c| run.setCwd(c);
     run.step.dependOn(&install.step);
     run_step.dependOn(&run.step);
+}
+
+// Installs to zig-out/lib/ every shared library `exe` links, and points `exe`
+// at that directory relative to itself: Zig builds those libraries in the
+// cache and only records an rpath relative to the build root, which is enough
+// for `zig build run` but leaves the installed binary unable to load them from
+// any other working directory. libgrpc does add `<executable>/../lib`, but
+// examples are installed one level deeper, in zig-out/bin/<dir>/.
+//
+// Only libraries built as part of this graph are walked, so a library taken
+// from the system instead (`-fsys=<name>`) is left to the loader, which knows
+// where to find it.
+fn installSharedLibs(
+    b: *std.Build,
+    exe: *std.Build.Step.Compile,
+    install: *std.Build.Step.InstallArtifact,
+    install_subdir: []const u8,
+) void {
+    var links_shared_lib = false;
+    for (exe.getCompileDependencies(true)) |dependency| {
+        if (dependency == exe or !dependency.isDynamicLibrary()) continue;
+        // Installs of shared libraries default to zig-out/lib/.
+        install.step.dependOn(&b.addInstallArtifact(dependency, .{}).step);
+        links_shared_lib = true;
+    }
+    // Windows has no rpath: there the run step puts the DLL directories on PATH.
+    if (links_shared_lib and exe.rootModuleTarget().os.tag != .windows) {
+        exe.root_module.addRPathSpecial(installedLibRpath(b, install_subdir, exe.rootModuleTarget()));
+    }
+}
+
+// Rpath letting a binary installed in zig-out/<install_subdir>/ load the shared
+// libraries installed in zig-out/lib/, whatever its working directory is.
+fn installedLibRpath(b: *std.Build, install_subdir: []const u8, target: std.Target) []const u8 {
+    // "@executable_path" is the Mach-O spelling of ELF's "$ORIGIN".
+    var rpath: []const u8 = if (target.os.tag.isDarwin()) "@executable_path" else "$ORIGIN";
+    var components = std.mem.tokenizeScalar(u8, install_subdir, '/');
+    while (components.next()) |_| rpath = b.fmt("{s}/..", .{rpath});
+    return b.fmt("{s}/lib", .{rpath});
 }

@@ -85,27 +85,31 @@ The exporter must complete synchronously and must not retain pointers past the c
 
 ### 4b. `BatchingLogRecordProcessor` — deferred export *(spec names this processor)*
 
-The processor owns a `batch_arena: std.heap.ArenaAllocator`. In `onEmit`, `toReadable` is
-called with the arena's allocator to deep-copy the record while the `ReadWriteLogRecord` is
-still valid. The resulting `ReadableLogRecord` (whose strings point into the arena) is
-pushed onto the internal `LogRecordQueue`:
+The processor owns two `std.heap.ArenaAllocator`s and an index to the active one. In `onEmit`,
+`toReadable` is called with the active arena's allocator to deep-copy the record while the
+`ReadWriteLogRecord` is still valid. The resulting `ReadableLogRecord` (whose strings point into
+the arena) is pushed onto the internal `LogRecordQueue`:
 
 ```zig
-const readable = try log_record.toReadable(self.batch_arena.allocator());
+const readable = try log_record.toReadable(self.arenas[self.active_arena].allocator());
 self.queue.push(readable);
 ```
 
-In the background `exportBatch`, records are popped and exported. After relocking the mutex,
-if the queue has drained to zero the arena is reset — freeing all record data at once while
+`exportQueued` exports every record queued when it is called, in batches of at most
+`max_export_batch_size`. First it makes the other arena the active one, so records emitted
+during the export are copied there and are left for the next export. Once all the records that
+were queued have been exported, their arena is reset — freeing all their data at once while
 retaining the backing pages for reuse:
 
 ```zig
-exporter.exportLogs(batch);
-if (self.queue.len == 0) _ = self.batch_arena.reset(.retain_capacity);
+const exported_arena = &self.arenas[self.active_arena];
+self.active_arena +%= 1;
+// ... pop and export the records queued so far ...
+_ = exported_arena.reset(.retain_capacity);
 ```
 
-If new records arrived during export (between the mutex unlock and relock), `queue.len > 0`
-and the reset is deferred until those records are also exported.
+Resetting after every export, rather than when the queue is empty, keeps memory bounded under
+sustained load, when the queue may never be empty.
 
 ### 5. `OTLPExporter.exportLogs` — conversion to protobuf
 
@@ -127,7 +131,7 @@ sends. `cleanupRequest` frees the request's heap allocations.
 | `options.attributes` slice and its string values | `emit` returns                                      |
 | `options.span_context`                           | `emit` returns (copied by value)                    |
 | `ReadableLogRecord` strings (Simple)             | `exportLogs` returns — borrowed from the emit stack |
-| `ReadableLogRecord` strings (Batching)           | `batch_arena.reset()` — after queue drains to zero  |
+| `ReadableLogRecord` strings (Batching)           | its export completes (its arena is then reset)      |
 | OTLP protobuf request                            | `cleanupRequest`                                    |
 
 ## Known shallow copies

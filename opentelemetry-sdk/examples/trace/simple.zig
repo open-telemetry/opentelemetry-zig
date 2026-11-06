@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const trace = sdk.trace;
 const trace_api = sdk.api.trace;
@@ -11,14 +10,14 @@ pub fn main(init: std.process.Init) !void {
     // Create SDK components for a realistic trace setup
 
     // 1. Create an ID generator for trace and span IDs
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.milliTimestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toMilliseconds()));
     const id_generator = trace.IDGenerator{
         .Random = trace.RandomIDGenerator.init(prng.random()),
     };
 
     // 2. Create a tracer provider with the ID generator
     var tracer_provider = try trace.TracerProvider.init(allocator, io, id_generator);
-    defer tracer_provider.shutdown();
+    defer tracer_provider.deinit();
 
     // 3. Create a stdout exporter and simple processor
     var stdout_buffer: [4096]u8 = undefined;
@@ -91,19 +90,19 @@ pub fn main(init: std.process.Init) !void {
     try db_span.setAttribute("db.rows_affected", .{ .int = 1 });
 
     // Simulate some work
-    clock.sleep(50 * std.time.ns_per_ms); // DB query time
+    std.Io.sleep(io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {}; // DB query time
 
     // End the DB span first (child spans should end before parent)
-    db_tracer.endSpan(&db_span);
+    db_span.end(null);
 
-    clock.sleep(50 * std.time.ns_per_ms); // HTTP processing time
+    std.Io.sleep(io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {}; // HTTP processing time
 
     // End the HTTP span
-    http_tracer.endSpan(&http_span);
+    http_span.end(null);
 
     // Verify spans were created successfully with valid IDs (not all zeros)
-    const zero_trace_id = [_]u8{0} ** 16;
-    const zero_span_id = [_]u8{0} ** 8;
+    const zero_trace_id: [16]u8 = @splat(0);
+    const zero_span_id: [8]u8 = @splat(0);
     std.debug.assert(!std.mem.eql(u8, &http_span.span_context.trace_id.value, &zero_trace_id));
     std.debug.assert(!std.mem.eql(u8, &http_span.span_context.span_id.value, &zero_span_id));
     std.debug.assert(!std.mem.eql(u8, &db_span.span_context.trace_id.value, &zero_trace_id));

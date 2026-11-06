@@ -6,17 +6,21 @@ If you're interested in contributing and becoming a maintainer or an approver, j
 
 ### Maintainers
 
-| Maintainer         | GitHub ID                                                |
-| ------------------ | -------------------------------------------------------  |
-| Francesco Gualazzi | [@inge4pres](https://github.com/inge4pres)               |
-| Giovanni Panice    | [@kmos](https://github.com/kmos)                         |
-| Hendrik Nielaender | [@hndrk](https://github.com/hndrk)                       |
-
+| Maintainer         | GitHub ID                                    |
+|--------------------|----------------------------------------------|
+| Francesco Gualazzi | [@inge4pres](https://github.com/inge4pres)   |
+| Giovanni Panice    | [@kmos](https://github.com/kmos)             |
+| Jacob Aronoff      | [@jaronoff97](https://github.com/jaronoff97) |
 
 ### Approvers
 
-| Approver           |                                                          |
-| ------------------ | -------------------------------------------------------  |
-| Antoine Gagniere   | [@agagniere](https://github.com/agagniere)               |
-| Kemal Akkoyun      | [@kakkoyun](https://github.com/kakkoyun)                 |
-| Jacob Aronoff      | [@jaronoff97](https://github.com/jaronoff97)             |
+| Approver         |                                            |
+|------------------|--------------------------------------------|
+| Antoine Gagniere | [@agagniere](https://github.com/agagniere) |
+| Kemal Akkoyun    | [@kakkoyun](https://github.com/kakkoyun)   |
+
+### Emeritus Maintainers
+
+| Emeritus Maintainer | GitHub ID                                                  |
+|---------------------|------------------------------------------------------------|
+| Hendrik Nielaender  | [@hendriknielaender](https://github.com/hendriknielaender) |

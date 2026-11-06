@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics = sdk.metrics;
 const MeterProvider = metrics.MeterProvider;
@@ -24,7 +23,7 @@ test "AddNoAttrs" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -55,7 +54,7 @@ test "AddOneAttr" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -89,7 +88,7 @@ test "AddThreeAttr" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -127,7 +126,7 @@ test "AddFiveAttr" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -169,7 +168,7 @@ test "AddTenAttr" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -222,7 +221,7 @@ test "RecordHistogram10Bounds" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
 
     // Add a view with custom explicit buckets for the histogram
     try provider.addView(metrics.View.View{
@@ -270,7 +269,7 @@ test "RecordHistogram50Bounds" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
 
     // Create 50 bucket boundaries
     var buckets: [50]f64 = undefined;
@@ -325,7 +324,7 @@ test "AddSingleUseAttrs" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -343,7 +342,7 @@ test "AddSingleUseAttrs" {
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
             // Use timestamp to create unique attribute value for each iteration
-            const ts = clock.timestamp();
+            const ts = std.Io.Clock.real.now(std.testing.io).toSeconds();
 
             // Create unique attribute value for each iteration
             var buf: [32]u8 = undefined;
@@ -367,7 +366,7 @@ test "GaugeRecordVaried" {
     defer threaded.deinit();
     const io = threaded.io();
     const provider = try setupMeter(std.testing.allocator, io);
-    defer provider.shutdown();
+    defer provider.deinit();
     const meter = try provider.getMeter(.{
         .name = "benchmark.general",
     });
@@ -385,7 +384,7 @@ test "GaugeRecordVaried" {
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
             // Simulate CPU usage between 0% and 100%
-            var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.timestamp())));
+            var rng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(std.testing.io).toSeconds()));
             const value = rng.random().float(f64) * 100.0;
 
             const cpu: []const u8 = "cpu0";

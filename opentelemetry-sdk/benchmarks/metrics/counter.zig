@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics = sdk.metrics;
 const MeterProvider = metrics.MeterProvider;
@@ -10,7 +9,7 @@ threadlocal var thread_rng: ?std.Random.DefaultPrng = null;
 
 fn getThreadRng() *std.Random.DefaultPrng {
     if (thread_rng == null) {
-        thread_rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.nanoTimestamp())));
+        thread_rng = std.Random.DefaultPrng.init(@as(u64, @truncate(@as(u96, @bitCast(std.Io.Clock.real.now(std.testing.io).nanoseconds)))));
     }
     return &thread_rng.?;
 }
@@ -24,7 +23,7 @@ const bench_config = benchmark.Config{
 
 fn setupSDK(allocator: std.mem.Allocator, io: std.Io) !*metrics.MeterProvider {
     const mp = try MeterProvider.init(allocator, io);
-    errdefer mp.shutdown();
+    errdefer mp.deinit();
     return mp;
 }
 
@@ -76,7 +75,7 @@ test "Counter_Add_W/O_Attributes" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
@@ -110,7 +109,7 @@ test "Counter_Add_Sorted" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
@@ -158,7 +157,7 @@ test "Counter_Add_Unsorted" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
@@ -206,7 +205,7 @@ test "Counter_Add_Non_Static_Values" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter",
@@ -269,7 +268,7 @@ test "Counter_Overflow" {
     const io = threaded.io();
 
     const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const meter = try mp.getMeter(.{
         .name = "benchmark.counter.overflow",
@@ -320,7 +319,7 @@ test "Counter_Concurrent" {
     const io = threaded.io();
 
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark-concurrent",
     });

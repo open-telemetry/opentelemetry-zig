@@ -8,6 +8,8 @@ const Instrument = instrument.Instrument;
 const spec = @import("../../api/metrics/spec.zig");
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
+const exemplar = @import("exemplar.zig");
+
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
 /// Instrument selector criteria for matching instruments to views
@@ -65,7 +67,7 @@ pub const AttributeFilter = struct {
     pub fn apply(self: AttributeFilter, allocator: std.mem.Allocator, attributes: ?Attributes) !?Attributes {
         if (attributes == null) return null;
 
-        const attrs = attributes.?;
+        const attrs = attributes.?.attributes orelse return null;
         var filtered = std.ArrayList(Attribute).empty;
         defer filtered.deinit(allocator);
 
@@ -99,7 +101,7 @@ pub const AttributeFilter = struct {
         }
 
         if (filtered.items.len == 0) return null;
-        return try allocator.dupe(Attribute, filtered.items);
+        return Attributes.with(try filtered.toOwnedSlice(allocator));
     }
 };
 
@@ -114,6 +116,8 @@ pub const View = struct {
     description: ?[]const u8 = null,
     /// Attribute filter for selecting which attributes to include
     attribute_filter: ?AttributeFilter = null,
+    /// Optional factory, instantiated once per resulting timeseries.
+    exemplar_reservoir: ?exemplar.ReservoirFactory = null,
     /// Aggregation to apply to matching instruments
     aggregation: Aggregation,
     /// Temporality to apply to matching instruments
@@ -146,12 +150,34 @@ pub const ExplicitBucketHistogramConfig = struct {
 
 /// Configuration for exponential bucket histogram aggregation
 pub const ExponentialBucketHistogramConfig = struct {
-    /// Maximum scale parameter (determines bucket resolution)
-    max_scale: i32 = 20,
-    /// Maximum number of buckets before scale reduction
-    max_size: u32 = 1024,
-    /// Whether to record min and max values
-    record_min_max: bool = true,
+    max_scale: i32,
+    max_size: u32,
+    record_min_max: bool,
+
+    pub const Options = struct {
+        /// Maximum scale parameter (determines bucket resolution)
+        max_scale: i32 = 20,
+        /// Maximum number of buckets before scale reduction (minimum is 2)
+        max_size: u32 = 1024,
+        /// Whether to record min and max values
+        record_min_max: bool = true,
+    };
+
+    pub fn init(options: Options) !ExponentialBucketHistogramConfig {
+        const config = ExponentialBucketHistogramConfig{
+            .max_scale = options.max_scale,
+            .max_size = options.max_size,
+            .record_min_max = options.record_min_max,
+        };
+        try config.validate();
+        return config;
+    }
+
+    pub fn validate(self: ExponentialBucketHistogramConfig) !void {
+        if (self.max_size < 2) {
+            return error.InvalidMaxSize;
+        }
+    }
 };
 
 /// Defines the ways and means to compute aggregated metrics.
@@ -173,6 +199,14 @@ pub const Aggregation = union(enum) {
             .ExplicitBucketHistogram => .ExplicitBucketHistogram,
             .ExponentialBucketHistogram => .ExponentialBucketHistogram,
         };
+    }
+
+    pub fn validate(self: Aggregation) !void {
+        switch (self) {
+            .Drop, .Sum, .LastValue => {},
+            .ExplicitBucketHistogram => {},
+            .ExponentialBucketHistogram => |config| try config.validate(),
+        }
     }
 };
 
@@ -237,6 +271,8 @@ pub const CombinedViewConfig = struct {
     name: ?[]const u8 = null,
     description: ?[]const u8 = null,
     attribute_filter: ?AttributeFilter = null,
+    /// Optional factory, instantiated once per resulting timeseries.
+    exemplar_reservoir: ?exemplar.ReservoirFactory = null,
     default_kind: instrument.Kind,
 
     const Self = @This();
@@ -281,6 +317,8 @@ pub const CombinedViewConfig = struct {
             } else self.description = new_desc;
         }
 
+        if (v.exemplar_reservoir) |factory| self.exemplar_reservoir = factory;
+
         // Apply attribute filter (last one wins, could be enhanced to merge filters)
         if (v.attribute_filter) |new_filter| {
             if (self.attribute_filter != null) {
@@ -290,8 +328,8 @@ pub const CombinedViewConfig = struct {
         }
     }
 
-    pub fn combinedAggregation(self: Self) Aggregation {
-        return self.aggregation orelse DefaultAggregation(self.default_kind);
+    pub fn combinedAggregation(self: Self, default: AggregationSelector) Aggregation {
+        return self.aggregation orelse default(self.default_kind);
     }
 
     pub fn combinedTemporality(self: Self) Temporality {
@@ -317,7 +355,14 @@ pub const CombinedViewConfig = struct {
 
 /// Get the aggregation to use for the given instrument and meter scope from a views slice.
 /// Uses the view system to determine the appropriate aggregation, applying all matching views additively.
-pub fn aggregationForViews(views: []const View, instr: *const Instrument, scope: *const InstrumentationScope) Aggregation {
+/// When no view matches, the default selector (usually the MetricReader's) decides.
+/// See https://opentelemetry.io/docs/specs/otel/metrics/sdk/#measurement-processing
+pub fn aggregationForViews(
+    views: []const View,
+    instr: *const Instrument,
+    scope: *const InstrumentationScope,
+    default: AggregationSelector,
+) Aggregation {
     var combined_config = CombinedViewConfig.init(instr.kind);
 
     for (views) |*v| {
@@ -326,7 +371,7 @@ pub fn aggregationForViews(views: []const View, instr: *const Instrument, scope:
         }
     }
 
-    return combined_config.combinedAggregation();
+    return combined_config.combinedAggregation(default);
 }
 
 /// Get the temporality to use for the given instrument and meter scope from a views slice.
@@ -344,3 +389,33 @@ pub fn temporalityForViews(views: []const View, instr: *const Instrument, scope:
 }
 
 const MeterProvider = @import("../../api/metrics/meter.zig").MeterProvider;
+
+test "ExponentialBucketHistogramConfig.init defaults" {
+    const config = try ExponentialBucketHistogramConfig.init(.{});
+    try std.testing.expectEqual(20, config.max_scale);
+    try std.testing.expectEqual(1024, config.max_size);
+    try std.testing.expectEqual(true, config.record_min_max);
+}
+
+test "ExponentialBucketHistogramConfig.init custom values" {
+    const config = try ExponentialBucketHistogramConfig.init(.{
+        .max_scale = 3,
+        .max_size = 2,
+        .record_min_max = false,
+    });
+    try std.testing.expectEqual(3, config.max_scale);
+    try std.testing.expectEqual(2, config.max_size);
+    try std.testing.expectEqual(false, config.record_min_max);
+}
+
+test "ExponentialBucketHistogramConfig.init invalid max_size" {
+    const max_sizes = [_]u32{ 0, 1 };
+    for (max_sizes) |size| {
+        const err = ExponentialBucketHistogramConfig.init(.{
+            .max_scale = 3,
+            .max_size = size,
+            .record_min_max = true,
+        });
+        try std.testing.expectError(error.InvalidMaxSize, err);
+    }
+}

@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 
 const attribute = @import("../../attributes.zig");
 const trace = @import("../trace.zig");
@@ -63,9 +62,14 @@ pub const SpanContext = struct {
 };
 
 /// TraceState carries tracing-system-specific trace identification data
+///
+/// Keys and values are borrowed by default. A TraceState returned by `clone`
+/// owns them, and `deinit` releases them together with the entries.
 pub const TraceState = struct {
     entries: StringArrayHashMap([]const u8),
     allocator: std.mem.Allocator,
+    /// Backing storage for keys and values of a cloned TraceState
+    owned_strings: []u8 = &.{},
 
     const Self = @This();
 
@@ -78,6 +82,45 @@ pub const TraceState = struct {
 
     pub fn deinit(self: *Self) void {
         self.entries.deinit(self.allocator);
+        self.allocator.free(self.owned_strings);
+    }
+
+    /// Deep copy the TraceState. The copy owns its keys and values, so it stays
+    /// valid after the original and the strings it borrows are released.
+    ///
+    /// TraceStates returned by insert, update and delete on the copy borrow its
+    /// strings, so the copy must outlive them.
+    pub fn clone(self: Self, allocator: std.mem.Allocator) !Self {
+        var strings_len: usize = 0;
+        for (self.entries.keys(), self.entries.values()) |key, value| {
+            strings_len += key.len + value.len;
+        }
+
+        const strings = try allocator.alloc(u8, strings_len);
+        errdefer allocator.free(strings);
+
+        var entries: StringArrayHashMap([]const u8) = .empty;
+        errdefer entries.deinit(allocator);
+        try entries.ensureTotalCapacity(allocator, self.entries.count());
+
+        var offset: usize = 0;
+        for (self.entries.keys(), self.entries.values()) |key, value| {
+            const owned_key = strings[offset..][0..key.len];
+            @memcpy(owned_key, key);
+            offset += key.len;
+
+            const owned_value = strings[offset..][0..value.len];
+            @memcpy(owned_value, value);
+            offset += value.len;
+
+            entries.putAssumeCapacity(owned_key, owned_value);
+        }
+
+        return Self{
+            .entries = entries,
+            .allocator = allocator,
+            .owned_strings = strings,
+        };
     }
 
     /// Get value for a given key
@@ -85,7 +128,9 @@ pub const TraceState = struct {
         return self.entries.get(key);
     }
 
-    /// Add a new key/value pair. Returns a new TraceState with the addition.
+    /// Add a new key/value pair, replacing any existing entry for the same key.
+    /// Returns a new TraceState with the entry as the left-most list-member, as
+    /// required by https://www.w3.org/TR/trace-context/#mutating-the-tracestate-field
     /// Validates input according to W3C Trace Context specification.
     pub fn insert(self: Self, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !Self {
         // Validate key according to W3C spec
@@ -93,32 +138,60 @@ pub const TraceState = struct {
         if (!isValidTraceStateValue(value)) return error.InvalidTraceStateValue;
 
         var new_state = Self.init(allocator);
+        errdefer new_state.deinit();
         try new_state.entries.ensureTotalCapacity(allocator, self.entries.count() + 1);
+
+        try new_state.entries.put(allocator, key, value);
 
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
+            if (std.mem.eql(u8, entry.key_ptr.*, key)) continue;
             try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
-        try new_state.entries.put(allocator, key, value);
         return new_state;
     }
 
-    /// Update an existing value for a given key. Returns a new TraceState with the update.
+    /// Append a key/value pair as the right-most list-member, keeping the order in
+    /// which entries are added. Unlike `insert`, this does not apply the W3C rule of
+    /// moving the entry to the front: that rule governs mutations, while this exists
+    /// to rebuild a TraceState from a serialized `tracestate`, where the order of the
+    /// list-members must be preserved verbatim.
+    /// A key that is already present keeps its position and takes the new value.
+    /// W3C allows only one entry per key, so a caller parsing an untrusted header is
+    /// responsible for deciding what a duplicate means: the spec lets a vendor drop
+    /// the offending entry or the whole header, and this returns neither.
+    /// Unlike the methods returning a new TraceState, this mutates in place and so
+    /// allocates with the allocator the TraceState was initialized with, the same one
+    /// `deinit` frees with.
+    /// Validates input according to W3C Trace Context specification.
+    pub fn append(self: *Self, key: []const u8, value: []const u8) !void {
+        if (!isValidTraceStateKey(key)) return error.InvalidTraceStateKey;
+        if (!isValidTraceStateValue(value)) return error.InvalidTraceStateValue;
+
+        try self.entries.put(self.allocator, key, value);
+    }
+
+    /// Update an existing value for a given key. Returns a new TraceState with the
+    /// updated entry moved to the left-most position, as required by
+    /// https://www.w3.org/TR/trace-context/#mutating-the-tracestate-field
+    /// A key that is not already present is not created; the returned TraceState
+    /// is then an unchanged copy.
     /// Validates input according to W3C Trace Context specification.
     pub fn update(self: Self, allocator: std.mem.Allocator, key: []const u8, value: []const u8) !Self {
         if (!isValidTraceStateKey(key)) return error.InvalidTraceStateKey;
         if (!isValidTraceStateValue(value)) return error.InvalidTraceStateValue;
 
         var new_state = Self.init(allocator);
+        errdefer new_state.deinit();
         try new_state.entries.ensureTotalCapacity(allocator, self.entries.count());
+
+        const exists = self.entries.get(key) != null;
+        if (exists) try new_state.entries.put(allocator, key, value);
 
         var iterator = self.entries.iterator();
         while (iterator.next()) |entry| {
-            if (std.mem.eql(u8, entry.key_ptr.*, key)) {
-                try new_state.entries.put(allocator, key, value);
-            } else {
-                try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
-            }
+            if (exists and std.mem.eql(u8, entry.key_ptr.*, key)) continue;
+            try new_state.entries.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
         }
         return new_state;
     }
@@ -179,8 +252,16 @@ pub const Span = struct {
     status: ?Status,
     is_recording: bool,
     allocator: std.mem.Allocator,
+    io: std.Io,
     scope: InstrumentationScope,
     resource: ?[]const attribute.Attribute = null,
+    /// True when `span_context.trace_state` was allocated for this span, e.g. by
+    /// the SDK tracer, and must be released by `deinit`
+    owns_trace_state: bool = false,
+    /// The Tracer that started this Span, set by the SDK so that end() can
+    /// notify it. Null for spans created through the API alone, and for the
+    /// copies handed over to span processors.
+    tracer: ?*trace.TracerImpl = null,
 
     const Self = @This();
 
@@ -210,6 +291,9 @@ pub const Span = struct {
         span_context: SpanContext,
         attributes: StringArrayHashMap(attribute.AttributeValue),
         allocator: std.mem.Allocator,
+        /// True when `span_context.trace_state` was allocated for this link, e.g. by
+        /// BatchingProcessor.cloneSpan, and must be released by `deinit`
+        owns_trace_state: bool = false,
 
         pub fn init(allocator: std.mem.Allocator, span_context: SpanContext) Link {
             return Link{
@@ -219,18 +303,36 @@ pub const Span = struct {
             };
         }
 
+        /// Create a Link initialized with the given attributes slice.
+        ///
+        /// Attribute key and string value slices are stored by reference and are
+        /// expected to outlive the Link, consistent with Span.setAttribute.
+        pub fn initWithAttributes(allocator: std.mem.Allocator, span_context: SpanContext, attrs: []const attribute.Attribute) !Link {
+            var link = Link.init(allocator, span_context);
+            errdefer link.deinit();
+            try link.attributes.ensureTotalCapacity(allocator, attrs.len);
+            for (attrs) |attr| {
+                link.attributes.putAssumeCapacity(attr.key, attr.value);
+            }
+            return link;
+        }
+
         pub fn deinit(self: *Link) void {
+            if (self.owns_trace_state) {
+                self.span_context.trace_state.deinit();
+                self.owns_trace_state = false;
+            }
             self.attributes.deinit(self.allocator);
         }
     };
 
-    pub fn init(allocator: std.mem.Allocator, span_context: SpanContext, name: []const u8, kind: SpanKind, scope: InstrumentationScope) Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, span_context: SpanContext, name: []const u8, kind: SpanKind, scope: InstrumentationScope) Self {
         return Self{
             .span_context = span_context,
             .parent_span_id = null,
             .name = name,
             .kind = kind,
-            .start_time_unix_nano = @as(u64, @intCast(clock.nanoTimestamp())),
+            .start_time_unix_nano = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             .end_time_unix_nano = 0,
             .attributes = .empty,
             .events = std.ArrayList(Event).empty,
@@ -238,6 +340,7 @@ pub const Span = struct {
             .status = null,
             .is_recording = true,
             .allocator = allocator,
+            .io = io,
             .scope = scope,
         };
     }
@@ -260,6 +363,7 @@ pub const Span = struct {
             .status = null,
             .is_recording = false, // Non-recording spans are never recording
             .allocator = dummy_allocator.allocator(),
+            .io = undefined,
             .scope = InstrumentationScope{
                 .name = "unknown",
                 .version = null,
@@ -270,6 +374,13 @@ pub const Span = struct {
     }
 
     pub fn deinit(self: *Self) void {
+        // The TraceState has its own allocator, and ended spans are non-recording,
+        // so release it before the early return below
+        if (self.owns_trace_state) {
+            self.span_context.trace_state.deinit();
+            self.owns_trace_state = false;
+        }
+
         // Don't try to deinit if this is a non-recording span with a dummy allocator
         if (!self.is_recording and self.attributes.count() == 0 and self.events.items.len == 0 and self.links.items.len == 0) {
             return;
@@ -314,7 +425,7 @@ pub const Span = struct {
     pub fn addEvent(self: *Self, name: []const u8, timestamp: ?u64, attributes: ?[]const attribute.Attribute) !void {
         if (!self.is_recording) return;
 
-        const event_timestamp = timestamp orelse @as(u64, @intCast(clock.nanoTimestamp()));
+        const event_timestamp = timestamp orelse @as(u64, @intCast(std.Io.Clock.real.now(self.io).nanoseconds));
         var event = Event.init(self.allocator, name, event_timestamp);
 
         if (attributes) |attrs| {
@@ -350,18 +461,54 @@ pub const Span = struct {
         try self.links.append(self.allocator, link);
     }
 
-    /// Set the status of the Span
+    /// Add an existing Link to this Span, copying its attributes into this Span's allocator.
+    ///
+    /// The span allocates and owns its internal Link and attribute hash map, but the
+    /// attribute key and string value slices are stored by reference and are expected
+    /// to outlive the Span, consistent with Span.setAttribute and Span.addEvent.
+    pub fn addLinkFrom(self: *Self, link: Link) !void {
+        if (!self.is_recording) return;
+
+        // Check if we should record this link according to the spec
+        const should_record = link.span_context.trace_id.isValid() or link.span_context.span_id.isValid() or
+            link.attributes.count() > 0 or
+            link.span_context.trace_state.entries.count() > 0;
+
+        if (!should_record) return;
+
+        var new_link = Link.init(self.allocator, link.span_context);
+        errdefer new_link.deinit();
+
+        try new_link.attributes.ensureTotalCapacity(self.allocator, link.attributes.count());
+        for (link.attributes.keys(), link.attributes.values()) |key, val| {
+            new_link.attributes.putAssumeCapacity(key, val);
+        }
+
+        try self.links.append(self.allocator, new_link);
+    }
+
+    /// Set the status of the Span according to the OpenTelemetry specification:
+    /// - An attempt to set value Unset is ignored.
+    /// - Ok takes precedence over Error and cannot be overwritten.
+    /// - Description is only used when StatusCode is Error.
     pub fn setStatus(self: *Self, status: Status) void {
         if (!self.is_recording) return;
 
-        // Status can only be set to Ok if it wasn't already set to Ok
+        // An attempt to set value Unset SHOULD be ignored.
+        if (status.code == .Unset) return;
+
+        // Ok takes precedence over Error and cannot be overwritten.
         if (self.status) |current_status| {
             if (current_status.code == .Ok) {
-                return; // Ignore attempts to change from Ok
+                return;
             }
         }
 
-        self.status = status;
+        // Description MUST only be used when StatusCode is Error.
+        self.status = if (status.code == .Ok)
+            Status.ok()
+        else
+            status;
     }
 
     /// Update the name of the Span
@@ -374,7 +521,7 @@ pub const Span = struct {
     pub fn recordException(self: *Self, exception_type: []const u8, message: []const u8, stacktrace: ?[]const u8, attributes: ?[]const attribute.Attribute) !void {
         if (!self.is_recording) return;
 
-        const timestamp = @as(u64, @intCast(clock.nanoTimestamp()));
+        const timestamp: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
         var event = Event.init(self.allocator, "exception", timestamp);
 
         try event.attributes.put(self.allocator, "exception.type", .{ .string = exception_type });
@@ -392,14 +539,15 @@ pub const Span = struct {
         try self.events.append(self.allocator, event);
     }
 
-    /// End the Span
-    /// NOTE: This does not notify span processors. Use Tracer.endSpan to end a
-    /// span through the SDK; calling this first makes that call a no-op.
+    /// End the Span, notifying the span processors registered on the SDK
+    /// Tracer that started it. Ending a Span twice is a no-op.
     pub fn end(self: *Self, timestamp: ?u64) void {
         if (!self.is_recording) return;
 
-        self.end_time_unix_nano = timestamp orelse @as(u64, @intCast(clock.nanoTimestamp()));
+        self.end_time_unix_nano = timestamp orelse @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
         self.is_recording = false;
+
+        if (self.tracer) |tracer| tracer.onEnd(self);
     }
 };
 
@@ -463,7 +611,7 @@ test "Span operations" {
     const trace_flags = @import("../trace.zig").TraceFlags.default();
     const span_context = SpanContext.init(trace_id, span_id, trace_flags, trace_state, false);
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var span = Span.init(allocator, span_context, "test-span", .Server, scope);
+    var span = Span.init(allocator, std.testing.io, span_context, "test-span", .Server, scope);
     defer span.deinit();
 
     try std.testing.expect(span.isRecording());
@@ -503,6 +651,65 @@ test "TraceState operations" {
     try std.testing.expectEqualStrings("value1", new_state.get("key1").?);
 }
 
+test "TraceState clone owns its strings" {
+    const allocator = std.testing.allocator;
+
+    // Strings that are released before the clone is read
+    const key = try allocator.dupe(u8, "rojo");
+    const value = try allocator.dupe(u8, "00f067aa0ba902b7");
+
+    var empty = TraceState.init(allocator);
+    defer empty.deinit();
+    var original = try empty.insert(allocator, key, value);
+
+    var copy = try original.clone(allocator);
+    defer copy.deinit();
+
+    original.deinit();
+    allocator.free(key);
+    allocator.free(value);
+
+    try std.testing.expectEqual(@as(usize, 1), copy.entries.count());
+    try std.testing.expectEqualStrings("00f067aa0ba902b7", copy.get("rojo").?);
+}
+
+test "TraceState clone of empty state" {
+    const allocator = std.testing.allocator;
+
+    var empty = TraceState.init(allocator);
+    defer empty.deinit();
+
+    var copy = try empty.clone(allocator);
+    defer copy.deinit();
+
+    try std.testing.expectEqual(@as(usize, 0), copy.entries.count());
+}
+
+test "Span releases owned TraceState after end" {
+    const allocator = std.testing.allocator;
+
+    var empty = TraceState.init(allocator);
+    defer empty.deinit();
+    var borrowed = try empty.insert(allocator, "rojo", "00f067aa0ba902b7");
+    defer borrowed.deinit();
+
+    const span_context = SpanContext.init(
+        trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+        trace.TraceFlags.sampled(),
+        try borrowed.clone(allocator),
+        false,
+    );
+
+    var span = Span.init(allocator, std.testing.io, span_context, "test-span", .Server, .{ .name = "test" });
+    span.owns_trace_state = true;
+
+    // Ended spans are non-recording; the testing allocator reports a leak if
+    // deinit skips the TraceState
+    span.end(null);
+    span.deinit();
+}
+
 test "Span with InstrumentationScope" {
     const allocator = std.testing.allocator;
 
@@ -515,7 +722,7 @@ test "Span with InstrumentationScope" {
     const span_context = SpanContext.init(trace_id, span_id, trace_flags, trace_state, false);
 
     const scope = InstrumentationScope{ .name = "test-lib", .version = "1.0.0" };
-    var span = Span.init(allocator, span_context, "test-span", .Server, scope);
+    var span = Span.init(allocator, std.testing.io, span_context, "test-span", .Server, scope);
     defer span.deinit();
 
     try std.testing.expect(span.isRecording());
@@ -544,4 +751,254 @@ test "TraceState validation" {
 
     // Test invalid value (contains equals)
     try std.testing.expectError(error.InvalidTraceStateValue, trace_state.insert(allocator, "key", "val=ue"));
+}
+
+/// Assert that a TraceState holds exactly the given key/value pairs, in order.
+/// Compares the keys and values by content: `expectEqualSlices` over `[]const u8`
+/// elements compares the slices by pointer, which only holds for deduplicated
+/// string literals and not for keys pointing into a parsed `tracestate` header.
+pub fn expectTraceStateEntries(expected: []const [2][]const u8, state: TraceState) !void {
+    try std.testing.expectEqual(expected.len, state.entries.count());
+    for (expected, state.entries.keys(), state.entries.values()) |kv, key, value| {
+        try std.testing.expectEqualStrings(kv[0], key);
+        try std.testing.expectEqualStrings(kv[1], value);
+    }
+}
+
+test "TraceState insert puts new entries at the front" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "a", "1" },
+        .{ "b", "2" },
+        .{ "c", "3" },
+    }) |kv| {
+        const next = try state.insert(allocator, kv[0], kv[1]);
+        state.deinit();
+        state = next;
+    }
+
+    try expectTraceStateEntries(&.{
+        .{ "c", "3" },
+        .{ "b", "2" },
+        .{ "a", "1" },
+    }, state);
+}
+
+test "TraceState update moves the modified entry to the front" {
+    const allocator = std.testing.allocator;
+
+    // Follows the Congo/Rojo example from the W3C specification: a trace starts at
+    // congo, passes through other systems, then re-enters congo. A third vendor is
+    // present so that the re-entry has to move congo past an intervening entry.
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "congo", "congosFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+        .{ "blue", "bluesFirstPosition" },
+    }) |kv| {
+        const next = try state.insert(allocator, kv[0], kv[1]);
+        state.deinit();
+        state = next;
+    }
+
+    const reentered = try state.update(allocator, "congo", "congosSecondPosition");
+    state.deinit();
+    state = reentered;
+
+    try expectTraceStateEntries(&.{
+        .{ "congo", "congosSecondPosition" },
+        .{ "blue", "bluesFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+    }, state);
+}
+
+test "TraceState insert on an existing key replaces it and moves it to the front" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "vendor", "first" },
+        .{ "other", "value" },
+        .{ "third", "value" },
+    }) |kv| {
+        const next = try state.insert(allocator, kv[0], kv[1]);
+        state.deinit();
+        state = next;
+    }
+
+    const replaced = try state.insert(allocator, "vendor", "second");
+    state.deinit();
+    state = replaced;
+
+    try expectTraceStateEntries(&.{
+        .{ "vendor", "second" },
+        .{ "third", "value" },
+        .{ "other", "value" },
+    }, state);
+}
+
+test "TraceState update leaves an absent key unchanged" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    const with_entry = try state.insert(allocator, "present", "value");
+    state.deinit();
+    state = with_entry;
+
+    const unchanged = try state.update(allocator, "absent", "value");
+    state.deinit();
+    state = unchanged;
+
+    try expectTraceStateEntries(&.{
+        .{ "present", "value" },
+    }, state);
+}
+
+test "TraceState append keeps entries in the order they are added" {
+    const allocator = std.testing.allocator;
+
+    // Deserializing a `tracestate` header replays the list-members left-to-right,
+    // so `append` must leave them where they were rather than moving each to the
+    // front the way `insert` does.
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    for ([_][2][]const u8{
+        .{ "congo", "congosFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+        .{ "blue", "bluesFirstPosition" },
+    }) |kv| {
+        try state.append(kv[0], kv[1]);
+    }
+
+    try expectTraceStateEntries(&.{
+        .{ "congo", "congosFirstPosition" },
+        .{ "rojo", "rojosFirstPosition" },
+        .{ "blue", "bluesFirstPosition" },
+    }, state);
+}
+
+test "TraceState append on an existing key replaces it in place" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    try state.append("vendor", "first");
+    try state.append("other", "value");
+    try state.append("vendor", "second");
+
+    try expectTraceStateEntries(&.{
+        .{ "vendor", "second" },
+        .{ "other", "value" },
+    }, state);
+}
+
+test "TraceState append validates keys and values" {
+    const allocator = std.testing.allocator;
+
+    var state = TraceState.init(allocator);
+    defer state.deinit();
+
+    try std.testing.expectError(error.InvalidTraceStateKey, state.append("Key", "value"));
+    try std.testing.expectError(error.InvalidTraceStateValue, state.append("key", "val,ue"));
+    try std.testing.expectEqual(@as(usize, 0), state.entries.count());
+}
+
+test "Span.setStatus follows OpenTelemetry specification precedence" {
+    const allocator = std.testing.allocator;
+
+    const span_context = SpanContext.init(
+        trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+        trace.TraceFlags.sampled(),
+        TraceState.init(allocator),
+        false,
+    );
+    var span = Span.init(allocator, std.testing.io, span_context, "test-span", .Internal, .{ .name = "test" });
+    defer span.deinit();
+
+    // Default status is null (representing Unset)
+    try std.testing.expect(span.status == null);
+
+    // Attempting to set Unset is ignored
+    span.setStatus(Status.unset());
+    try std.testing.expect(span.status == null);
+
+    // Setting Error sets the status and description
+    span.setStatus(Status.error_with_description("initial error"));
+    try std.testing.expect(span.status != null);
+    try std.testing.expectEqual(.Error, span.status.?.code);
+    try std.testing.expectEqualStrings("initial error", span.status.?.description);
+
+    // Calling setStatus(Unset) does not overwrite Error
+    span.setStatus(Status.unset());
+    try std.testing.expectEqual(.Error, span.status.?.code);
+    try std.testing.expectEqualStrings("initial error", span.status.?.description);
+
+    // Calling setStatus(Error) with a new description updates the error
+    span.setStatus(Status.error_with_description("updated error"));
+    try std.testing.expectEqual(.Error, span.status.?.code);
+    try std.testing.expectEqualStrings("updated error", span.status.?.description);
+
+    // Setting Ok takes precedence and overwrites Error, ignoring any description
+    span.setStatus(Status{ .code = .Ok, .description = "ok description should be ignored" });
+    try std.testing.expectEqual(.Ok, span.status.?.code);
+    try std.testing.expectEqualStrings("", span.status.?.description);
+
+    // Subsequent attempts to set Error or Unset are ignored once status is Ok
+    span.setStatus(Status.error_with_description("cannot overwrite ok"));
+    try std.testing.expectEqual(.Ok, span.status.?.code);
+
+    span.setStatus(Status.unset());
+    try std.testing.expectEqual(.Ok, span.status.?.code);
+
+    // Ending the span makes it non-recording, so setStatus is ignored
+    span.end(null);
+    try std.testing.expect(!span.isRecording());
+    span.setStatus(Status.error_with_description("after end"));
+    try std.testing.expectEqual(.Ok, span.status.?.code);
+}
+
+test "Link.initWithAttributes and addLinkFrom" {
+    const allocator = std.testing.allocator;
+
+    const span_context = SpanContext.init(
+        trace.TraceID.init([16]u8{ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 }),
+        trace.SpanID.init([8]u8{ 1, 2, 3, 4, 5, 6, 7, 8 }),
+        trace.TraceFlags.sampled(),
+        TraceState.init(allocator),
+        false,
+    );
+
+    const attrs = [_]attribute.Attribute{
+        .{ .key = "service", .value = .{ .string = "auth" } },
+        .{ .key = "retry_count", .value = .{ .int = 2 } },
+    };
+
+    var source_link = try Span.Link.initWithAttributes(allocator, span_context, &attrs);
+    defer source_link.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), source_link.attributes.count());
+
+    var span = Span.init(allocator, std.testing.io, span_context, "parent-span", .Internal, .{ .name = "test" });
+    defer span.deinit();
+
+    try span.addLinkFrom(source_link);
+
+    try std.testing.expectEqual(@as(usize, 1), span.links.items.len);
+    const recorded_link = span.links.items[0];
+    try std.testing.expectEqual(@as(usize, 2), recorded_link.attributes.count());
+    try std.testing.expectEqualStrings("auth", recorded_link.attributes.get("service").?.string);
+    try std.testing.expectEqual(@as(i64, 2), recorded_link.attributes.get("retry_count").?.int);
 }

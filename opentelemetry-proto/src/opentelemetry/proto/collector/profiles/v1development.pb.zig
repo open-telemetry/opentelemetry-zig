@@ -4,6 +4,7 @@ const std = @import("std");
 
 const protobuf = @import("protobuf");
 const fd = protobuf.fd;
+const fdf = protobuf.fdf;
 /// import package opentelemetry.proto.profiles.v1development
 const opentelemetry_proto_profiles_v1development = @import("../../profiles/v1development.pb.zig");
 
@@ -35,6 +36,10 @@ pub const ExportProfilesServiceRequest = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -103,6 +108,10 @@ pub const ExportProfilesServiceResponse = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -150,7 +159,7 @@ pub const ExportProfilesPartialSuccess = struct {
 
     pub const _desc_table = .{
         .rejected_profiles = fd(1, .{ .scalar = .int64 }),
-        .error_message = fd(2, .{ .scalar = .string }),
+        .error_message = fdf(2, .{ .scalar = .string }, .{ .utf8_validation = .verify }),
     };
 
     /// Encodes the message to the writer
@@ -171,6 +180,10 @@ pub const ExportProfilesPartialSuccess = struct {
     ) (protobuf.DecodingError || std.Io.Reader.Error || std.mem.Allocator.Error)!@This() {
         return protobuf.decode(@This(), reader, allocator);
     }
+
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
 
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
@@ -222,3 +235,16 @@ pub fn ProfilesService(comptime UserDataType: type, comptime ErrorSet: type) typ
         Export: *const fn (userdata: *UserDataType, request: ExportProfilesServiceRequest) ErrorSet!ExportProfilesServiceResponse,
     };
 }
+
+/// Options of the files of this package that have some
+/// (`google.protobuf.FileOptions`), by file name.
+pub const _file_options = .{
+    .@"opentelemetry/proto/collector/profiles/v1development/profiles_service.proto" = .{
+        .@"#raw" = "\n7io.opentelemetry.proto.collector.profiles.v1developmentB\x14ProfilesServiceProtoP\x01Z?go.opentelemetry.io/proto/otlp/collector/profiles/v1development\xaa\x024OpenTelemetry.Proto.Collector.Profiles.V1Development",
+        .java_package = "io.opentelemetry.proto.collector.profiles.v1development",
+        .java_outer_classname = "ProfilesServiceProto",
+        .java_multiple_files = true,
+        .go_package = "go.opentelemetry.io/proto/otlp/collector/profiles/v1development",
+        .csharp_namespace = "OpenTelemetry.Proto.Collector.Profiles.V1Development",
+    },
+};

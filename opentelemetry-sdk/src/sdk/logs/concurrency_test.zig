@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 const Attribute = @import("../../attributes.zig").Attribute;
 const Context = @import("../../api.zig").context.Context;
@@ -157,7 +156,7 @@ fn enabledWorker(logger: *Logger, count: usize, counter: *std.atomic.Value(usize
 
 fn addProcessorWorker(provider: *LoggerProvider, processor: LogRecordProcessor) void {
     // Sleep briefly to let other threads start
-    clock.sleep(1 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(1 * std.time.ns_per_ms), .awake) catch {};
     provider.addLogRecordProcessor(processor) catch {};
 }
 
@@ -350,7 +349,7 @@ test "concurrent shutdown with emission" {
     }
 
     // While emitting, shutdown the provider
-    clock.sleep(5 * std.time.ns_per_ms); // Let some logs be emitted first
+    std.Io.sleep(std.testing.io, .fromNanoseconds(5 * std.time.ns_per_ms), .awake) catch {}; // Let some logs be emitted first
     const shutdown_thread = try std.Thread.spawn(.{}, shutdownWorker, .{provider});
 
     // Wait for all threads
@@ -504,7 +503,7 @@ test "batching processor concurrency" {
     try provider.forceFlush();
 
     // Wait a bit for export to complete
-    clock.sleep(100 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
 
     // Verify all logs were exported
     const expected_count = num_threads * logs_per_thread;
@@ -553,7 +552,7 @@ test "mixed operations stress test" {
     }
 
     // Add another processor mid-flight
-    clock.sleep(5 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(5 * std.time.ns_per_ms), .awake) catch {};
     const add_thread = try std.Thread.spawn(.{}, addProcessorWorker, .{ provider, mock_processor2.asLogRecordProcessor() });
 
     // Wait for all threads

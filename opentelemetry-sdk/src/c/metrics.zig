@@ -191,7 +191,9 @@ pub fn meterProviderCreate() callconv(.c) ?*OtelMeterProvider {
     };
 
     const handle = allocator.create(MeterProviderHandle) catch {
-        provider.shutdown();
+        provider.deinit();
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
         return null;
     };
     handle.* = .{
@@ -219,7 +221,9 @@ pub fn meterProviderInit() callconv(.c) ?*OtelMeterProvider {
     };
 
     const handle = allocator.create(MeterProviderHandle) catch {
-        provider.shutdown();
+        provider.deinit();
+        threaded_ptr.deinit();
+        allocator.destroy(threaded_ptr);
         return null;
     };
     handle.* = .{
@@ -237,11 +241,24 @@ pub fn meterProviderInit() callconv(.c) ?*OtelMeterProvider {
 pub fn meterProviderShutdown(provider: ?*OtelMeterProvider) callconv(.c) void {
     if (provider) |p| {
         const handle: *MeterProviderHandle = @ptrCast(@alignCast(p));
-        handle.provider.shutdown();
+        handle.provider.deinit();
         handle.threaded.deinit();
         handle.allocator.destroy(handle.threaded);
         handle.allocator.destroy(handle);
     }
+}
+
+/// Force flush all registered MetricReaders.
+///
+/// Parameters:
+/// - provider: The MeterProvider handle
+///
+/// Returns: Status code indicating success or failure.
+pub fn meterProviderForceFlush(provider: ?*OtelMeterProvider) callconv(.c) OtelStatus {
+    const p = provider orelse return .error_invalid_argument;
+    const handle: *MeterProviderHandle = @ptrCast(@alignCast(p));
+    handle.provider.forceFlush() catch return .error_unknown;
+    return .ok;
 }
 
 /// Get a Meter from the MeterProvider.
@@ -677,13 +694,23 @@ pub fn metricReaderCollect(reader: ?*OtelMetricReader) callconv(.c) OtelStatus {
     return .ok;
 }
 
+/// Force flush the MetricReader.
+///
+/// Returns: Status code indicating success or failure.
+pub fn metricReaderForceFlush(reader: ?*OtelMetricReader) callconv(.c) OtelStatus {
+    const r = reader orelse return .error_invalid_argument;
+    const handle: *MetricReaderHandle = @ptrCast(@alignCast(r));
+    handle.reader.forceFlush() catch return .error_unknown;
+    return .ok;
+}
+
 /// Shutdown the MetricReader and release resources.
 ///
 /// After calling this function, the reader handle becomes invalid.
 pub fn metricReaderShutdown(reader: ?*OtelMetricReader) callconv(.c) void {
     if (reader) |r| {
         const handle: *MetricReaderHandle = @ptrCast(@alignCast(r));
-        handle.reader.shutdown();
+        handle.reader.deinit();
         if (handle.exporter) |exp_handle| {
             switch (exp_handle.inner) {
                 .stdout => |s| s.deinit(),
@@ -708,6 +735,7 @@ comptime {
     @export(&meterProviderCreate, .{ .name = "otel_meter_provider_create" });
     @export(&meterProviderInit, .{ .name = "otel_meter_provider_init" });
     @export(&meterProviderShutdown, .{ .name = "otel_meter_provider_shutdown" });
+    @export(&meterProviderForceFlush, .{ .name = "otel_meter_provider_force_flush" });
     @export(&meterProviderGetMeter, .{ .name = "otel_meter_provider_get_meter" });
     @export(&meterProviderAddReader, .{ .name = "otel_meter_provider_add_reader" });
 
@@ -735,6 +763,7 @@ comptime {
     // MetricReader exports
     @export(&metricReaderCreate, .{ .name = "otel_metric_reader_create" });
     @export(&metricReaderCollect, .{ .name = "otel_metric_reader_collect" });
+    @export(&metricReaderForceFlush, .{ .name = "otel_metric_reader_force_flush" });
     @export(&metricReaderShutdown, .{ .name = "otel_metric_reader_shutdown" });
 }
 
@@ -795,6 +824,12 @@ test "metrics C API - full pipeline with reader" {
 
     _ = counterAddU64(counter, 10, null, 0);
     _ = counterAddU64(counter, 20, null, 0);
+
+    const flush_status = meterProviderForceFlush(provider);
+    try std.testing.expectEqual(OtelStatus.ok, flush_status);
+
+    const reader_flush_status = metricReaderForceFlush(reader);
+    try std.testing.expectEqual(OtelStatus.ok, reader_flush_status);
 
     const collect_status = metricReaderCollect(reader);
     try std.testing.expectEqual(OtelStatus.ok, collect_status);

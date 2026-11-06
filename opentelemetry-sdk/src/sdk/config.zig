@@ -8,7 +8,11 @@
 
 const std = @import("std");
 
+const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").PercentDecodedCommaSeparatedAssignmentIterator;
+
 const EnvMap = std.process.Environ.Map;
+
+const Sampler = @import("trace/sampler.zig").Sampler;
 
 /// Log level for SDK internal logging
 pub const LogLevel = enum {
@@ -57,9 +61,9 @@ pub const TracePropagator = enum {
 
 /// Trace-specific configuration
 pub const TraceConfig = struct {
-    /// Sampling strategy
+    /// Sampling strategy, built from OTEL_TRACES_SAMPLER
     sampler: Sampler,
-    /// Arguments for the sampler (e.g., sampling probability)
+    /// Raw OTEL_TRACES_SAMPLER_ARG value, already applied to `sampler`
     sampler_arg: ?[]const u8,
     /// Exporter type
     exporter: ExporterType,
@@ -77,31 +81,6 @@ pub const TraceConfig = struct {
     link_count_limit: u32,
     event_attribute_count_limit: u32,
     link_attribute_count_limit: u32,
-
-    pub const Sampler = enum {
-        always_on,
-        always_off,
-        traceidratio,
-        parentbased_always_on,
-        parentbased_always_off,
-        parentbased_traceidratio,
-        parentbased_jaeger_remote,
-        jaeger_remote,
-        xray,
-
-        fn fromString(s: []const u8) ?Sampler {
-            if (std.ascii.eqlIgnoreCase(s, "always_on")) return .always_on;
-            if (std.ascii.eqlIgnoreCase(s, "always_off")) return .always_off;
-            if (std.ascii.eqlIgnoreCase(s, "traceidratio")) return .traceidratio;
-            if (std.ascii.eqlIgnoreCase(s, "parentbased_always_on")) return .parentbased_always_on;
-            if (std.ascii.eqlIgnoreCase(s, "parentbased_always_off")) return .parentbased_always_off;
-            if (std.ascii.eqlIgnoreCase(s, "parentbased_traceidratio")) return .parentbased_traceidratio;
-            if (std.ascii.eqlIgnoreCase(s, "parentbased_jaeger_remote")) return .parentbased_jaeger_remote;
-            if (std.ascii.eqlIgnoreCase(s, "jaeger_remote")) return .jaeger_remote;
-            if (std.ascii.eqlIgnoreCase(s, "xray")) return .xray;
-            return null;
-        }
-    };
 
     pub const ExporterType = enum {
         otlp,
@@ -121,15 +100,21 @@ pub const TraceConfig = struct {
     };
 
     pub fn fromEnv(env_map: *const EnvMap, allocator: std.mem.Allocator) !TraceConfig {
+        const sampler_arg = if (env_map.get("OTEL_TRACES_SAMPLER_ARG")) |s|
+            try allocator.dupe(u8, s)
+        else
+            null;
+        errdefer if (sampler_arg) |arg| allocator.free(arg);
+
         return TraceConfig{
-            .sampler = if (env_map.get("OTEL_TRACES_SAMPLER")) |s|
-                Sampler.fromString(s) orelse .parentbased_always_on
+            .sampler = if (env_map.get("OTEL_TRACES_SAMPLER")) |name|
+                Sampler.fromString(name, sampler_arg) orelse blk: {
+                    std.log.warn("OTEL_TRACES_SAMPLER={s} is not a known sampler, using the default", .{name});
+                    break :blk Sampler.default();
+                }
             else
-                .parentbased_always_on,
-            .sampler_arg = if (env_map.get("OTEL_TRACES_SAMPLER_ARG")) |s|
-                try allocator.dupe(u8, s)
-            else
-                null,
+                Sampler.default(),
+            .sampler_arg = sampler_arg,
             .exporter = if (env_map.get("OTEL_TRACES_EXPORTER")) |s|
                 ExporterType.fromString(s) orelse .otlp
             else
@@ -332,6 +317,9 @@ pub fn init(allocator: std.mem.Allocator, io: std.Io, env_map: *const EnvMap) !*
 /// ensure that no other thread is actively using the Configuration returned by
 /// `get()` before calling `deinit()`, because this function does not wait for
 /// readers to finish.
+///
+/// Call this on a Configuration obtained from init().
+/// To release the global singleton, use deinitGlobal() instead.
 pub fn deinit(self: *Configuration) void {
     // Atomically claim deinitialization rights.
     // - If we were the active singleton (prev == self), proceed to free.
@@ -352,6 +340,13 @@ pub fn deinit(self: *Configuration) void {
     self.allocator.destroy(self);
 }
 
+/// Release the global configuration singleton, if one is installed.
+/// Safe to call when no singleton is set, and safe to call twice.
+/// Callers must not call deinit() on the same Configuration afterwards.
+pub fn deinitGlobal() void {
+    if (Instance.load(.acquire)) |cfg| cfg.deinit();
+}
+
 // ============================================================================
 // Parsing Utilities
 // ============================================================================
@@ -365,20 +360,24 @@ pub fn deinit(self: *Configuration) void {
 fn resolveServiceName(allocator: std.mem.Allocator, io: std.Io, env_map: *const EnvMap) ![]const u8 {
     if (env_map.get("OTEL_SERVICE_NAME")) |name| return allocator.dupe(u8, name);
     if (env_map.get("OTEL_RESOURCE_ATTRIBUTES")) |attrs| {
-        if (serviceNameFromResourceAttributes(attrs)) |name| return allocator.dupe(u8, name);
+        if (try serviceNameFromResourceAttributes(allocator, attrs)) |name| return name;
     }
     return defaultServiceName(allocator, io);
 }
 
 /// Extract the service.name value from OTEL_RESOURCE_ATTRIBUTES, if present.
-fn serviceNameFromResourceAttributes(attrs: []const u8) ?[]const u8 {
-    var iter = std.mem.splitScalar(u8, attrs, ',');
-    while (iter.next()) |keyVal| {
-        const eq_pos = std.mem.indexOfScalar(u8, keyVal, '=') orelse continue;
-        const key = std.mem.trim(u8, keyVal[0..eq_pos], &std.ascii.whitespace);
-        if (std.mem.eql(u8, key, "service.name")) {
-            return std.mem.trim(u8, keyVal[eq_pos + 1 ..], &std.ascii.whitespace);
-        }
+fn serviceNameFromResourceAttributes(allocator: std.mem.Allocator, attrs: []const u8) !?[]const u8 {
+    // Decoding never grows a string, so `attrs.len` bytes is always enough room
+    // for the decoded name and value of any one entry.
+    const scratch = try allocator.alloc(u8, attrs.len);
+    defer allocator.free(scratch);
+
+    var iter: PercentDecodedCommaSeparatedAssignmentIterator = .init(attrs, scratch);
+    while (iter.next() catch unreachable) |entry| {
+        // A bare `service.name` with no value does not count; keep looking.
+        const value = entry.value orelse continue;
+        if (!std.mem.eql(u8, entry.name, "service.name")) continue;
+        return try allocator.dupe(u8, value);
     }
     return null;
 }
@@ -562,7 +561,7 @@ test "TraceConfig.fromEnv - defaults" {
     var config = try TraceConfig.fromEnv(&env_map, allocator);
     defer config.deinit(allocator);
 
-    try std.testing.expectEqual(TraceConfig.Sampler.parentbased_always_on, config.sampler);
+    try std.testing.expectEqual(Sampler.default(), config.sampler);
     try std.testing.expectEqual(@as(?[]const u8, null), config.sampler_arg);
     try std.testing.expectEqual(TraceConfig.ExporterType.otlp, config.exporter);
     try std.testing.expectEqual(@as(u64, 5000), config.bsp_schedule_delay_ms);
@@ -586,7 +585,7 @@ test "TraceConfig.fromEnv - custom values" {
     var config = try TraceConfig.fromEnv(&env_map, allocator);
     defer config.deinit(allocator);
 
-    try std.testing.expectEqual(TraceConfig.Sampler.always_on, config.sampler);
+    try std.testing.expectEqual(Sampler.always_on, config.sampler);
     try std.testing.expectEqualStrings("0.5", config.sampler_arg.?);
     try std.testing.expectEqual(TraceConfig.ExporterType.jaeger, config.exporter);
     try std.testing.expectEqual(@as(u64, 1000), config.bsp_schedule_delay_ms);
@@ -687,7 +686,7 @@ test "Configuration.init - custom values" {
     try std.testing.expectEqual(false, config.sdk_disabled);
     try std.testing.expectEqualStrings("test-service", config.service_name.?);
     try std.testing.expectEqual(LogLevel.debug, config.log_level);
-    try std.testing.expectEqual(TraceConfig.Sampler.always_on, config.trace_config.sampler);
+    try std.testing.expectEqual(Sampler.always_on, config.trace_config.sampler);
 }
 
 test Configuration {
@@ -707,6 +706,23 @@ test Configuration {
     const config2 = Configuration.get();
 
     try std.testing.expectEqual(config1, config2);
+}
+
+test "deinitGlobal releases the singleton and is idempotent" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
+    Configuration.set(config);
+
+    // Verify the singleton was released.
+    deinitGlobal();
+    try std.testing.expectEqual(@as(?*const Configuration, null), Configuration.get());
+
+    // Verify a second call is a no-op.
+    deinitGlobal();
+    try std.testing.expectEqual(@as(?*const Configuration, null), Configuration.get());
 }
 
 test "Configuration OTEL_SERVICE_NAME default is unknown_service:<executable>" {
@@ -810,7 +826,7 @@ test "ConfigurationMeterProvider with SDK disabled" {
 
     // Create MeterProvider
     var provider = try MeterProvider.init(allocator, std.testing.io);
-    defer provider.shutdown();
+    defer provider.deinit();
 
     // Verify SDK is disabled
     try std.testing.expect(provider.sdk_disabled);
@@ -883,7 +899,7 @@ test "Configuration SDK disabled with OTEL_SDK_DISABLED=false" {
     defer tracer_provider.deinit();
 
     var meter_provider = try MeterProvider.init(allocator, io);
-    defer meter_provider.shutdown();
+    defer meter_provider.deinit();
 
     var logger_provider = try LoggerProvider.init(allocator, io, null);
     defer logger_provider.deinit();

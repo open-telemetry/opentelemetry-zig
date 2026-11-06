@@ -80,7 +80,7 @@ fn createTestSpan(allocator: std.mem.Allocator, name: []const u8, index: u8) tra
 
     const span_context = trace_api.SpanContext.init(trace_id, span_id, trace_api.TraceFlags.default(), trace_state, false);
     const scope = InstrumentationScope{ .name = "benchmark-lib", .version = "1.0.0" };
-    var span = trace_api.Span.init(allocator, span_context, name, .Internal, scope);
+    var span = trace_api.Span.init(allocator, std.testing.io, span_context, name, .Internal, scope);
     span.is_recording = true;
     return span;
 }

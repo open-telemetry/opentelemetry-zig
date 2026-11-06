@@ -287,7 +287,7 @@ fn mockExporter(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void 
 // test harness to build an exporter that times out.
 fn waiterExporter(_: *ExporterImpl, _: []Measurements) MetricReadError!void {
     // Sleep for 1 second to simulate a slow exporter.
-    clock.sleep(std.time.ns_per_ms * 1000);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(std.time.ns_per_ms * 1000), .awake) catch {};
     return;
 }
 
@@ -318,14 +318,14 @@ test "metric exporter is called by metric reader" {
     const io = std.testing.io;
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     var mock = ExporterImpl{ .exportFn = mockExporter };
 
     const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &mock);
 
     var rdr = try MetricReader.init(std.testing.allocator, io, metric_exporter);
-    defer rdr.shutdown();
+    defer rdr.deinit();
 
     try mp.addReader(rdr);
 
@@ -392,7 +392,7 @@ test "metric exporter force flush fails" {
     defer bg.join();
 
     // Give the background thread time to acquire the export lock.
-    clock.sleep(50 * std.time.ns_per_ms);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(50 * std.time.ns_per_ms), .awake) catch {};
 
     // Call forceFlush while the slow export is still in progress.
     // With a 10 ms timeout it should time out well before the 1 s export finishes.
@@ -408,7 +408,7 @@ test "metric exporter exportBatch with timeout" {
     const SlowExporter = struct {
         fn exportFn(_: *ExporterImpl, metrics: []Measurements) MetricReadError!void {
             // Sleep for 100ms to simulate slow export
-            clock.sleep(100 * std.time.ns_per_ms);
+            std.Io.sleep(std.testing.io, .fromNanoseconds(100 * std.time.ns_per_ms), .awake) catch {};
             // Just free the metrics array, not the contents (they're stack-allocated in test)
             allocator.free(metrics);
         }
@@ -442,7 +442,7 @@ test "metric exporter builder in memory" {
     const io = std.testing.io;
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const metric_exporter = try MetricExporter.InMemory(
         std.testing.allocator,
@@ -451,12 +451,10 @@ test "metric exporter builder in memory" {
         null,
     );
 
-    defer {
-        metric_exporter.in_memory.deinit();
-        metric_exporter.exporter.shutdown();
-    }
+    defer metric_exporter.in_memory.deinit();
+    // The reader owns the exporter: shutting the reader down also shuts the exporter down.
     const metric_reader = try MetricReader.init(std.testing.allocator, io, metric_exporter.exporter);
-    defer metric_reader.shutdown();
+    defer metric_reader.deinit();
 
     try mp.addReader(metric_reader);
 
@@ -485,7 +483,7 @@ test "metric exporter builder stdout" {
     const io = std.testing.io;
 
     var mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const metric_exporter = try MetricExporter.Stdout(
         allocator,
@@ -499,7 +497,7 @@ test "metric exporter builder stdout" {
     }
 
     const metric_reader = try MetricReader.init(std.testing.allocator, io, metric_exporter.exporter);
-    defer metric_reader.shutdown();
+    defer metric_reader.deinit();
 
     try mp.addReader(metric_reader);
     // We can't colect any metrics because usage of stdout is blocked by zig build.
@@ -578,6 +576,10 @@ pub const PeriodicExportingReader = struct {
             .exportTimeoutMillis = timeout,
             .shared = .{ .io = io },
         };
+        reader.shutdown_hook = .{
+            .ctx = s,
+            .shutdownFn = stopWorkerHook,
+        };
         try mp.addReader(s.reader);
 
         s.collectThread = try std.Thread.spawn(
@@ -588,14 +590,26 @@ pub const PeriodicExportingReader = struct {
         return s;
     }
 
-    pub fn shutdown(self: *Self) void {
+    fn stopWorkerHook(ctx: *anyopaque) void {
+        const s: *Self = @ptrCast(@alignCast(ctx));
+        s.stopWorker();
+    }
+
+    pub fn stopWorker(self: *Self) void {
         self.shared.lock.lockUncancelable(self.shared.io);
+        if (self.shared.shuttingDown) {
+            self.shared.lock.unlock(self.shared.io);
+            return;
+        }
         self.shared.shuttingDown = true;
         self.shared.lock.unlock(self.shared.io);
         self.shared.wake.set(self.shared.io);
         self.collectThread.join();
+    }
 
-        self.reader.shutdown();
+    pub fn shutdown(self: *Self) void {
+        self.stopWorker();
+        self.reader.deinit();
 
         // Only when the background collector has stopped we can destroy.
         self.allocator.destroy(self);
@@ -637,7 +651,7 @@ test "e2e periodic exporting metric reader" {
     const io = std.testing.io;
 
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const waiting_ms: u64 = 100;
 
@@ -675,9 +689,8 @@ test "e2e periodic exporting metric reader" {
     try histogram.record(1.4, .{});
     try histogram.record(10.4, .{});
 
-    // Need to wait for the PeriodicExportingReader to collect and export the metrics.
-    // Wait for more than 1 collection cycle to ensure that no duplication of data points occurs.
-    clock.sleep(waiting_ms * 4 * std.time.ns_per_ms);
+    // Allow repeated collections; cumulative values must not grow without new records.
+    std.Io.sleep(std.testing.io, .fromNanoseconds(waiting_ms * 4 * std.time.ns_per_ms), .awake) catch {};
 
     const data = try inMem.fetch(allocator);
     defer {
@@ -687,14 +700,32 @@ test "e2e periodic exporting metric reader" {
         allocator.free(data);
     }
 
-    // There are 2 measurements: a counter and a histogram.
-    try std.testing.expectEqual(2, data.len);
-    // Meter attributes are added.
-    try std.testing.expectEqual("test-reader", data[0].scope.name);
-    try std.testing.expectEqual(1, data[0].scope.attributes.?.len);
-    try std.testing.expectEqual("wonderful", data[0].scope.attributes.?[0].key);
-    // Counter has 2 data points.
-    try std.testing.expectEqual(2, data[0].data.int.len);
+    var seen_counter = false;
+    var seen_histogram = false;
+    for (data) |m| {
+        try std.testing.expectEqual("test-reader", m.scope.name);
+        try std.testing.expectEqual(1, m.scope.attributes.?.len);
+        try std.testing.expectEqual("wonderful", m.scope.attributes.?[0].key);
+
+        if (std.mem.eql(u8, m.instrumentOptions.name, "requests")) {
+            try std.testing.expect(m.data.int.len == 1 or m.data.int.len == 2);
+            if (m.data.int.len == 2) seen_counter = true;
+        } else if (std.mem.eql(u8, m.instrumentOptions.name, "latency")) {
+            try std.testing.expectEqual(1, m.data.histogram.len);
+            const value = m.data.histogram[0].value;
+            switch (value.count) {
+                1 => try std.testing.expectApproxEqAbs(1.4, value.sum.?, 1e-12),
+                2 => {
+                    try std.testing.expectApproxEqAbs(11.8, value.sum.?, 1e-12);
+                    seen_histogram = true;
+                },
+                else => return error.UnexpectedHistogramCount,
+            }
+        } else {
+            return error.UnexpectedMetric;
+        }
+    }
+    try std.testing.expect(seen_counter and seen_histogram);
 }
 
 // Include testing for the exporters

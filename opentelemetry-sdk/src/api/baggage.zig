@@ -35,7 +35,11 @@ const context = @import("context.zig");
 pub const BaggageEntry = struct {
     /// The value associated with this baggage entry
     value: []const u8,
-    /// Optional metadata for this entry (opaque string)
+    /// Optional metadata for this entry (opaque string).
+    ///
+    /// Propagators forward it as is, neither encoding nor decoding it, so the caller
+    /// percent-encodes whatever needs it (`%20` for a space in a property value). It
+    /// cannot hold a `,` or a control character, which would corrupt the header.
     metadata: ?[]const u8,
 
     /// Create a new baggage entry
@@ -152,7 +156,9 @@ pub const Baggage = struct {
     /// - `allocator`: Memory allocator for the new baggage data
     /// - `name`: The key to associate with the value (case-sensitive)
     /// - `value`: The string value to store
-    /// - `metadata`: Optional metadata string for this entry
+    /// - `metadata`: Optional opaque metadata string for this entry. Propagators
+    ///   write it to the baggage header as is, so it must already be percent-encoded
+    ///   where needed (see `BaggageEntry.metadata`).
     ///
     /// ## Errors
     /// - `OutOfMemory`: If allocation fails during baggage creation
@@ -356,17 +362,18 @@ pub const Baggage = struct {
 
 // Context integration
 
-/// Thread-local storage for the baggage key
-threadlocal var baggage_key: ?context.ContextKey = null;
+/// Process-wide storage for the baggage context key ID
+var baggage_key_id: std.atomic.Value(usize) = .init(0);
 
 /// Get or create the Baggage context key
 fn getBaggageKey() context.ContextKey {
-    if (baggage_key) |key| {
-        return key;
+    var id = baggage_key_id.load(.acquire);
+    if (id == 0) {
+        const key = context.createKey("opentelemetry.baggage");
+        _ = baggage_key_id.cmpxchgStrong(0, key.id, .release, .acquire);
+        id = baggage_key_id.load(.acquire);
     }
-    const key = context.createKey("opentelemetry.baggage");
-    baggage_key = key;
-    return key;
+    return .{ .id = id, .name = "opentelemetry.baggage" };
 }
 
 /// Extract Baggage from a Context instance.
@@ -748,4 +755,33 @@ test "baggage setValue memory safety with allocator" {
     try std.testing.expectEqualStrings("new_meta", bag.getValue("k1").?.metadata.?);
 
     // If there are any leaks, std.testing.allocator will catch them when we deinit
+}
+
+test "baggage cross-thread context extraction" {
+    const allocator = std.testing.allocator;
+
+    var bag = Baggage.init();
+    try bag.setValue(allocator, "user_id", "alice", null);
+    defer bag.deinit();
+
+    var ctx = try insertBaggage(allocator, bag);
+    defer ctx.deinit();
+
+    const Worker = struct {
+        fn run(c: context.Context, matched: *std.atomic.Value(bool)) void {
+            if (extractBaggage(c)) |extracted| {
+                if (extracted.getValue("user_id")) |entry| {
+                    if (std.mem.eql(u8, entry.value, "alice")) {
+                        matched.store(true, .seq_cst);
+                    }
+                }
+            }
+        }
+    };
+
+    var matched = std.atomic.Value(bool).init(false);
+    const thread = try std.Thread.spawn(.{}, Worker.run, .{ ctx, &matched });
+    thread.join();
+
+    try std.testing.expect(matched.load(.seq_cst));
 }

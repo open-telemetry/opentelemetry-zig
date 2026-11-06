@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const http = std.http;
 
 const log = std.log.scoped(.otlp_test);
@@ -46,6 +45,57 @@ test "otlp HTTPClient send fails on non-retryable error" {
     try std.testing.expectError(otlp.ExportError.NonRetryableStatusCodeInResponse, result);
 }
 
+test "otlp HTTPClient send honors ConfigOptions.timeout_sec" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var server = try HTTPTestServer.init(allocator, io, slowResponse);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
+    defer config.deinit();
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+    config.timeout_sec = 1;
+
+    var dummy = try emptyMetricsExportRequest(allocator);
+    defer dummy.deinit(std.testing.allocator);
+
+    const result = otlp.Export(allocator, io, config, otlp.Signal.Data{ .metrics = dummy });
+    try std.testing.expectError(otlp.ExportError.Timeout, result);
+}
+
+test "otlp HTTPClient send with zero timeout succeeds without deadline" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var server = try HTTPTestServer.init(allocator, io, assertUncompressedProtobufMetricsBodyCanBeParsed);
+    defer server.deinit();
+
+    const thread = try std.Thread.spawn(.{}, HTTPTestServer.processSingleRequest, .{server});
+    defer thread.join();
+
+    var env_map = std.process.Environ.Map.init(allocator);
+    defer env_map.deinit();
+    const config = try ConfigOptions.init(allocator, &env_map);
+    defer config.deinit();
+    const endpoint = try std.fmt.allocPrint(allocator, "127.0.0.1:{d}", .{server.port()});
+    defer allocator.free(endpoint);
+    config.endpoint = endpoint;
+    config.timeout_sec = 0;
+
+    var dummy = try emptyMetricsExportRequest(allocator);
+    defer dummy.deinit(std.testing.allocator);
+
+    try otlp.Export(allocator, io, config, otlp.Signal.Data{ .metrics = dummy });
+}
+
 test "otlp HTTPClient send retries on retryable error" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -86,7 +136,7 @@ test "otlp HTTPClient send retries on retryable error" {
     thread.join();
 
     // Give the detached retry thread time to finish before the test tears down `threaded`.
-    clock.sleep(std.time.ns_per_ms * 10);
+    std.Io.sleep(std.testing.io, .fromNanoseconds(std.time.ns_per_ms * 10), .awake) catch {};
 
     // Eventually the non-retryable status code is returned, and we should have received
     // the maximum number of requests.
@@ -271,7 +321,7 @@ fn oneDataPointMetricsExportRequest(allocator: std.mem.Allocator, data_point_att
     var data_points = try allocator.alloc(pbmetrics.NumberDataPoint, 1);
     const data_points0 = pbmetrics.NumberDataPoint{
         .value = .{ .as_int = 42 },
-        .start_time_unix_nano = @intCast(clock.nanoTimestamp()),
+        .start_time_unix_nano = @intCast(std.Io.Clock.real.now(std.testing.io).nanoseconds),
         .attributes = pb_attrs.values,
         .exemplars = .empty,
     };
@@ -317,6 +367,12 @@ const AssertionError = error{
     CompressionMismatch,
     ExtraHeaderMissing,
 };
+
+// Accepts the request but stalls well past any sane export timeout.
+fn slowResponse(request: *http.Server.Request) anyerror!void {
+    std.Io.sleep(std.testing.io, .fromNanoseconds(2 * std.time.ns_per_s), .awake) catch {};
+    try request.respond("", .{ .status = .ok });
+}
 
 fn badRequest(request: *http.Server.Request) anyerror!void {
     try request.respond("", .{ .status = .bad_request });

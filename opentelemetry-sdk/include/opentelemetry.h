@@ -264,6 +264,14 @@ otel_status_t otel_meter_provider_add_reader(
     otel_meter_provider_t* provider,
     otel_metric_reader_t* reader);
 
+/**
+ * @brief Force flush all registered MetricReaders.
+ *
+ * @param provider The MeterProvider handle.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_meter_provider_force_flush(otel_meter_provider_t* provider);
+
 /* ============================================================================
  * Counter API (u64)
  * ============================================================================ */
@@ -502,6 +510,16 @@ otel_metric_reader_t* otel_metric_reader_create(otel_metric_exporter_t* exporter
 otel_status_t otel_metric_reader_collect(otel_metric_reader_t* reader);
 
 /**
+ * @brief Force flush unexported metrics to the exporter.
+ *
+ * Performs a collection and calls force flush on the underlying exporter.
+ *
+ * @param reader The MetricReader handle.
+ * @return Status code indicating success or failure.
+ */
+otel_status_t otel_metric_reader_force_flush(otel_metric_reader_t* reader);
+
+/**
  * @brief Shutdown the MetricReader and release resources.
  *
  * Performs a final collection, shuts down the exporter, and frees
@@ -598,8 +616,8 @@ typedef struct {
  * @brief Create a new TracerProvider.
  *
  * Creates a TracerProvider that manages Tracers and their Spans.
- * The provider must be shut down with otel_tracer_provider_shutdown()
- * when no longer needed.
+ * The provider must be shut down with otel_tracer_provider_shutdown() and
+ * released with otel_tracer_provider_destroy() when no longer needed.
  *
  * @return Pointer to the TracerProvider, or NULL on error.
  *
@@ -609,21 +627,35 @@ typedef struct {
  * if (provider) {
  *     // Use the provider...
  *     otel_tracer_provider_shutdown(provider);
+ *     otel_tracer_provider_destroy(provider);
  * }
  * ```
  */
 otel_tracer_provider_t* otel_tracer_provider_create(void);
 
 /**
- * @brief Shutdown the TracerProvider and release all resources.
+ * @brief Shutdown the TracerProvider.
  *
  * This function flushes all pending spans, shuts down all associated
- * processors and exporters, and frees all memory. After calling this
- * function, the provider handle becomes invalid and must not be used.
+ * processors and exporters, and stops the recording of new spans. The handle
+ * stays valid, so spans started earlier can still be ended, although they are
+ * no longer exported. Use otel_tracer_provider_destroy() to free it.
  *
  * @param provider The TracerProvider to shutdown. Can be NULL (no-op).
  */
 void otel_tracer_provider_shutdown(otel_tracer_provider_t* provider);
+
+/**
+ * @brief Destroy the TracerProvider and release all resources.
+ *
+ * Shuts the provider down first if that has not happened yet. After calling
+ * this function, the provider handle and every Tracer obtained from it become
+ * invalid and must not be used. All spans must have been ended before this
+ * call, since an unended span still refers to the Tracer that started it.
+ *
+ * @param provider The TracerProvider to destroy. Can be NULL (no-op).
+ */
+void otel_tracer_provider_destroy(otel_tracer_provider_t* provider);
 
 /**
  * @brief Get a Tracer from the TracerProvider.

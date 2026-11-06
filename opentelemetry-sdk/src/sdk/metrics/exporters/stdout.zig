@@ -22,13 +22,14 @@ pub const StdoutExporter = struct {
     io: std.Io,
     exporter: ExporterImpl,
 
-    file: std.Io.File = std.Io.File.stdout(),
+    file: std.Io.File,
 
     pub fn init(allocator: std.mem.Allocator, io: std.Io) !*Self {
         const s = try allocator.create(Self);
         s.* = Self{
             .allocator = allocator,
             .io = io,
+            .file = .stdout(),
             .exporter = ExporterImpl{
                 .exportFn = exportBatch,
             },

@@ -9,7 +9,9 @@ const benchmark = @import("benchmark");
 const bench_config = benchmark.Config{
     .max_iterations = 100000,
     .time_budget_ns = 2 * std.time.ns_per_s,
-    .track_allocations = true,
+    // zBench's tracking allocator does not account for successful remaps, so
+    // freeing a remapped allocation underflows its counter and panics.
+    .track_allocations = false,
 };
 
 test "ObservableCounter_Create" {
@@ -30,7 +32,7 @@ const ObservableCounterBench = struct {
         var bench_threaded: std.Io.Threaded = .init(allocator, .{});
         defer bench_threaded.deinit();
         const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
-        defer provider.shutdown();
+        defer provider.deinit();
 
         const meter = provider.getMeter(.{
             .name = "observable-counter-benchmark",
@@ -63,7 +65,7 @@ const ObservableUpDownBench = struct {
         var bench_threaded: std.Io.Threaded = .init(allocator, .{});
         defer bench_threaded.deinit();
         const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
-        defer provider.shutdown();
+        defer provider.deinit();
 
         const meter = provider.getMeter(.{
             .name = "observable-updown-benchmark",
@@ -95,7 +97,7 @@ const ObservableGaugeBench = struct {
         var bench_threaded: std.Io.Threaded = .init(allocator, .{});
         defer bench_threaded.deinit();
         const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
-        defer provider.shutdown();
+        defer provider.deinit();
 
         const meter = provider.getMeter(.{
             .name = "observable-gauge-benchmark",

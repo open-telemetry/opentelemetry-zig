@@ -5,6 +5,10 @@ const Attributes = @import("../../attributes.zig").Attributes;
 const Kind = @import("instrument.zig").Kind;
 const InstrumentOptions = @import("instrument.zig").InstrumentOptions;
 const ExponentialHistogramDataPoint = @import("../../sdk/metrics/aggregation.zig").ExponentialHistogramDataPoint;
+const AggregationType = @import("../../sdk/metrics/view.zig").AggregationType;
+
+const exemplar_sdk = @import("../../sdk/metrics/exemplar.zig");
+const Exemplar = exemplar_sdk.Exemplar;
 
 const InstrumentationScope = @import("../../scope.zig").InstrumentationScope;
 
@@ -16,6 +20,9 @@ pub fn DataPoint(comptime T: type) type {
 
         value: T,
         attributes: ?[]Attribute = null,
+        attributes_owned: bool = false,
+        exemplar_candidate: ?Exemplar = null,
+        exemplars: []Exemplar = &.{},
         timestamps: ?Timestamps = null, // Timestamps are filled in when extracting data points from the meter.
 
         /// Creates a data points with the provided value and attributes,
@@ -27,6 +34,24 @@ pub fn DataPoint(comptime T: type) type {
             };
         }
 
+        /// Capture an eligible measurement before its caller's context changes.
+        pub fn captureExemplar(self: *Self, allocator: std.mem.Allocator, io: std.Io, filter: exemplar_sdk.ExemplarFilter) !void {
+            var candidate = try Exemplar.capture(T, allocator, io, self.value, self.attributes, filter);
+            errdefer if (candidate) |*sample| sample.deinit(allocator);
+            if (candidate != null) try self.ownAttributes(allocator);
+            if (self.exemplar_candidate) |*previous| previous.deinit(allocator);
+            self.exemplar_candidate = candidate;
+        }
+
+        pub fn ownAttributes(self: *Self, allocator: std.mem.Allocator) !void {
+            const attributes = self.attributes orelse return;
+            if (self.attributes_owned) return;
+            const owned = try Exemplar.copyAttributes(allocator, attributes);
+            allocator.free(attributes);
+            self.attributes = owned;
+            self.attributes_owned = true;
+        }
+
         pub fn deinit(self: *Self, allocator: std.mem.Allocator) void {
             switch (T) {
                 HistogramDataPoint => allocator.free(self.value.bucket_counts),
@@ -36,10 +61,33 @@ pub fn DataPoint(comptime T: type) type {
                 },
                 else => {},
             }
-            if (self.attributes) |a| allocator.free(a);
+            if (self.attributes) |attributes| {
+                if (self.attributes_owned) for (attributes) |attr| {
+                    allocator.free(attr.key);
+                    if (attr.value == .string) allocator.free(attr.value.string);
+                };
+                allocator.free(attributes);
+            }
+            if (self.exemplar_candidate) |*sample| sample.deinit(allocator);
+            Exemplar.deinitList(allocator, self.exemplars);
         }
 
         pub fn deepCopy(self: Self, allocator: std.mem.Allocator) !Self {
+            const attr = if (self.attributes) |a|
+                if (self.attributes_owned) try Exemplar.copyAttributes(allocator, a) else try allocator.dupe(Attribute, a)
+            else
+                null;
+            errdefer if (attr) |a| {
+                if (self.attributes_owned) for (a) |attribute| {
+                    allocator.free(attribute.key);
+                    if (attribute.value == .string) allocator.free(attribute.value.string);
+                };
+                allocator.free(a);
+            };
+            var candidate = if (self.exemplar_candidate) |sample| try sample.deepCopy(allocator) else null;
+            errdefer if (candidate) |*sample| sample.deinit(allocator);
+            const samples = try exemplar_sdk.copyList(allocator, self.exemplars);
+            errdefer Exemplar.deinitList(allocator, samples);
             return Self{
                 .value = switch (T) {
                     HistogramDataPoint => HistogramDataPoint{
@@ -50,21 +98,31 @@ pub fn DataPoint(comptime T: type) type {
                         .min = self.value.min,
                         .max = self.value.max,
                     },
-                    ExponentialHistogramDataPoint => ExponentialHistogramDataPoint{
-                        .sum = self.value.sum,
-                        .count = self.value.count,
-                        .min = self.value.min,
-                        .max = self.value.max,
-                        .scale = self.value.scale,
-                        .zero_count = self.value.zero_count,
-                        .positive_offset = self.value.positive_offset,
-                        .positive_bucket_counts = try allocator.dupe(u64, self.value.positive_bucket_counts),
-                        .negative_offset = self.value.negative_offset,
-                        .negative_bucket_counts = try allocator.dupe(u64, self.value.negative_bucket_counts),
+                    ExponentialHistogramDataPoint => blk: {
+                        const positive_bucket_counts = try allocator.dupe(u64, self.value.positive_bucket_counts);
+                        errdefer allocator.free(positive_bucket_counts);
+                        const negative_bucket_counts = try allocator.dupe(u64, self.value.negative_bucket_counts);
+                        const value = ExponentialHistogramDataPoint{
+                            .sum = self.value.sum,
+                            .count = self.value.count,
+                            .min = self.value.min,
+                            .max = self.value.max,
+                            .scale = self.value.scale,
+                            .zero_count = self.value.zero_count,
+                            .positive_offset = self.value.positive_offset,
+                            .positive_bucket_counts = positive_bucket_counts,
+                            .negative_offset = self.value.negative_offset,
+                            .negative_bucket_counts = negative_bucket_counts,
+                        };
+                        break :blk value;
                     },
                     else => self.value,
                 },
-                .attributes = try Attributes.with(self.attributes).dupe(allocator),
+                .attributes = attr,
+                .attributes_owned = self.attributes_owned,
+                .exemplar_candidate = candidate,
+                .exemplars = samples,
+                .timestamps = self.timestamps,
             };
         }
     };
@@ -145,10 +203,9 @@ pub const MeasurementsData = union(enum) {
     }
 
     fn mergeDataPoints(comptime T: type, dp1: []DataPoint(T), dp2: []DataPoint(T), allocator: std.mem.Allocator) ![]DataPoint(T) {
+        var ret = try allocator.alloc(DataPoint(T), dp1.len + dp2.len);
         defer allocator.free(dp1);
         defer allocator.free(dp2);
-
-        var ret = try allocator.alloc(DataPoint(T), dp1.len + dp2.len);
         for (dp1, 0..) |point, i| {
             ret[i] = point;
         }
@@ -171,31 +228,33 @@ pub const MeasurementsData = union(enum) {
     }
 
     fn pruneByAttributes(comptime T: type, dp: []DataPoint(T), allocator: std.mem.Allocator) ![]DataPoint(T) {
-        defer allocator.free(dp);
-
         var seen = std.HashMap(
             Attributes,
-            DataPoint(T),
+            usize,
             Attributes.HashContext,
             std.hash_map.default_max_load_percentage,
         ).init(allocator);
         defer seen.deinit();
-
-        for (dp) |point| {
+        for (dp, 0..) |point, index| {
             const gop = try seen.getOrPut(Attributes.with(point.attributes));
-            if (gop.found_existing) {
-                // we need to free the memory for the duplicate data point before replacing it.
-                gop.value_ptr.deinit(allocator);
-            }
-            gop.value_ptr.* = point;
+            gop.value_ptr.* = index;
         }
-        var ret = try std.ArrayList(DataPoint(T)).initCapacity(allocator, seen.count());
-        var i = seen.valueIterator();
-        while (i.next()) |entry| {
-            try ret.append(allocator, entry.*);
+        const ret = try allocator.alloc(DataPoint(T), seen.count());
+        errdefer allocator.free(ret);
+        const selected = try allocator.alloc(bool, dp.len);
+        defer allocator.free(selected);
+        @memset(selected, false);
+        var indices = seen.valueIterator();
+        var out: usize = 0;
+        while (indices.next()) |index| {
+            selected[index.*] = true;
+            ret[out] = dp[index.*];
+            out += 1;
         }
-
-        return try ret.toOwnedSlice(allocator);
+        // Hash keys borrow input attributes until all lookups have finished.
+        for (dp, selected) |*point, keep| if (!keep) point.deinit(allocator);
+        allocator.free(dp);
+        return ret;
     }
 };
 
@@ -262,8 +321,20 @@ pub const Measurements = struct {
     instrumentOptions: InstrumentOptions,
 
     data: MeasurementsData,
+    /// Aggregation that produced `data`, null when unknown (e.g. measurements built by hand).
+    aggregation: ?AggregationType = null,
 
     resource: ?[]const Attribute = null,
+
+    /// Numeric data is either a Sum or a LastValue result.
+    /// Without a known aggregation, gauges are assumed to be LastValue.
+    pub fn isLastValue(self: Measurements) bool {
+        if (self.aggregation) |a| return a == .LastValue;
+        return switch (self.instrumentKind) {
+            .Gauge, .ObservableGauge => true,
+            else => false,
+        };
+    }
 
     pub fn deinit(self: *Measurements, allocator: std.mem.Allocator) void {
         switch (self.data) {
@@ -287,3 +358,44 @@ pub const HistogramDataPoint = struct {
     min: ?f64 = null, // Optional min value
     max: ?f64 = null, // Optional max value
 };
+
+test "exemplar datapoint copies own their samples" {
+    const allocator = std.testing.allocator;
+    const attrs = [_]Attribute{.{ .key = "request", .value = .{ .string = "first" } }};
+    var point = DataPoint(i64){ .value = 7, .exemplar_candidate = (try Exemplar.capture(i64, allocator, std.testing.io, 7, &attrs, .always_on)).? };
+    point.exemplars = try allocator.alloc(Exemplar, 1);
+    point.exemplars[0] = try point.exemplar_candidate.?.deepCopy(allocator);
+    var copy = try point.deepCopy(allocator);
+    defer copy.deinit(allocator);
+    point.deinit(allocator);
+    try std.testing.expectEqualStrings("first", copy.exemplar_candidate.?.filtered_attributes[0].value.string);
+    try std.testing.expectEqualStrings("first", copy.exemplars[0].filtered_attributes[0].value.string);
+}
+
+test "exemplar datapoint copying cleans up allocation failures" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, exemplarPointCopyFailure, .{});
+}
+
+fn exemplarPointCopyFailure(allocator: std.mem.Allocator) !void {
+    var point = DataPoint(i64){ .value = 7 };
+    defer point.deinit(allocator);
+    point.exemplars = try allocator.alloc(Exemplar, 1);
+    point.exemplars[0] = .{ .value = .{ .int = 7 }, .time_ns = 123 };
+    const attrs = [_]Attribute{.{ .key = "request", .value = .{ .string = "first" } }};
+    point.exemplar_candidate = (try Exemplar.capture(i64, allocator, std.testing.io, 7, &attrs, .always_on)).?;
+    var copy = try point.deepCopy(allocator);
+    defer copy.deinit(allocator);
+}
+
+test "exemplar capture replaces owned snapshots without leaks" {
+    inline for (.{ exemplar_sdk.ExemplarFilter.always_on, exemplar_sdk.ExemplarFilter.always_off }) |filter|
+        try std.testing.checkAllAllocationFailures(std.testing.allocator, recaptureExemplarFailure, .{filter});
+}
+
+fn recaptureExemplarFailure(allocator: std.mem.Allocator, filter: exemplar_sdk.ExemplarFilter) !void {
+    var point = try DataPoint(i64).new(allocator, 7, .{ "request", @as([]const u8, "first") });
+    defer point.deinit(allocator);
+    try point.captureExemplar(allocator, std.testing.io, .always_on);
+    try point.captureExemplar(allocator, std.testing.io, filter);
+    try std.testing.expectEqual(filter == .always_on, point.exemplar_candidate != null);
+}

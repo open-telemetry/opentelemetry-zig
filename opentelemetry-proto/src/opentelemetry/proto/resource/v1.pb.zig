@@ -38,6 +38,10 @@ pub const Resource = struct {
         return protobuf.decode(@This(), reader, allocator);
     }
 
+    /// Streaming pull-decoder: walks a `std.Io.Reader` one wire
+    /// field at a time without allocating. See `src/stream.zig`.
+    pub const StreamDecoder = protobuf.StreamDecoder(@This());
+
     /// Deinitializes and frees the memory associated with the message.
     pub fn deinit(self: *@This(), allocator: std.mem.Allocator) void {
         return protobuf.deinit(allocator, self);
@@ -76,4 +80,17 @@ pub const Resource = struct {
     ) !@This() {
         return protobuf.json.parse(@This(), allocator, source, options);
     }
+};
+
+/// Options of the files of this package that have some
+/// (`google.protobuf.FileOptions`), by file name.
+pub const _file_options = .{
+    .@"opentelemetry/proto/resource/v1/resource.proto" = .{
+        .@"#raw" = "\n\"io.opentelemetry.proto.resource.v1B\rResourceProtoP\x01Z*go.opentelemetry.io/proto/otlp/resource/v1\xaa\x02\x1fOpenTelemetry.Proto.Resource.V1",
+        .java_package = "io.opentelemetry.proto.resource.v1",
+        .java_outer_classname = "ResourceProto",
+        .java_multiple_files = true,
+        .go_package = "go.opentelemetry.io/proto/otlp/resource/v1",
+        .csharp_namespace = "OpenTelemetry.Proto.Resource.V1",
+    },
 };

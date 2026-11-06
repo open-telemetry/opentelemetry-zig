@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const common = @import("common");
@@ -29,14 +28,14 @@ fn testMetricsHttpJson(
     config.protocol = .http_json;
 
     const mp = try metrics_sdk.MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);
     defer me.otlp.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
-    defer mr.shutdown();
+    // mr.deinit() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.deinit();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = "integration-test-http-json" });
@@ -52,7 +51,7 @@ fn testMetricsHttpJson(
 
     try mr.collect();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Sent {d} data points via http/json\n", .{num_data_points});
     std.debug.print("  Waiting for collector to write metrics.json...\n", .{});

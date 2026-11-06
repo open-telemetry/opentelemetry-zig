@@ -21,7 +21,9 @@ pub const TracerProviderImpl = struct {
         return self.getTracerFn(self, scope);
     }
 
-    /// Shutdown the tracer provider and free up associated resources.
+    /// Shutdown the tracer provider: no new spans are recorded and the
+    /// registered span processors are shut down. Freeing the provider is left
+    /// to the implementation, since spans may still point back to their tracer.
     pub fn shutdown(self: *TracerProviderImpl) void {
         return self.shutdownFn(self);
     }
@@ -34,11 +36,15 @@ pub const TracerProviderImpl = struct {
 pub const TracerImpl = struct {
     startSpanFn: *const fn (*TracerImpl, std.mem.Allocator, []const u8, StartOptions) anyerror!trace.Span,
     isEnabledFn: *const fn (*TracerImpl) bool,
-    endSpanFn: *const fn (*TracerImpl, *trace.Span) void,
+    onEndFn: *const fn (*TracerImpl, *const trace.Span) void,
 
     /// StartOptions contains options for starting a new span
     pub const StartOptions = struct {
+        /// Explicit parent context. If null and root is false, defaults to
+        /// the currently active context (context.getCurrentContext()).
         parent_context: ?context.Context = null,
+        /// If true, explicitly creates a root span without a parent.
+        root: bool = false,
         kind: trace.SpanKind = .Internal,
         attributes: ?[]const attribute.Attribute = null,
         links: ?[]const trace.Link = null,
@@ -55,9 +61,10 @@ pub const TracerImpl = struct {
         return self.isEnabledFn(self);
     }
 
-    /// End a span - this should be called when the span is completed
-    pub fn endSpan(self: *TracerImpl, span: *trace.Span) void {
-        return self.endSpanFn(self, span);
+    /// Notify the Tracer that a Span has ended, so that it can hand the Span
+    /// over to the span processors. Called by Span.end().
+    pub fn onEnd(self: *TracerImpl, span: *const trace.Span) void {
+        return self.onEndFn(self, span);
     }
 };
 

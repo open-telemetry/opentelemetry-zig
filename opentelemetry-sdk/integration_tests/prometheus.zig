@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const MeterProvider = metrics_sdk.MeterProvider;
@@ -21,7 +20,7 @@ pub fn main(init: std.process.Init) !void {
 
 fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !void {
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const result = try MetricExporter.Prometheus(allocator, io, .{
         .host = "127.0.0.1",
@@ -34,8 +33,8 @@ fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !
     defer result.prometheus.deinit();
 
     const reader = try MetricReader.init(allocator, io, result.exporter);
-    // reader.shutdown() also shuts down the underlying MetricExporter.
-    defer reader.shutdown();
+    // reader.deinit() also shuts down the underlying MetricExporter.
+    defer reader.deinit();
     try mp.addReader(reader);
 
     try result.prometheus.start();
@@ -43,7 +42,7 @@ fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !
 
     std.log.info("✓ Prometheus exporter started on port {d}", .{port});
 
-    clock.sleep(500 * std.time.ns_per_ms);
+    std.Io.sleep(io, .fromNanoseconds(500 * std.time.ns_per_ms), .awake) catch {};
 
     const meter = try mp.getMeter(.{
         .name = "integration.test.prometheus",
@@ -102,7 +101,7 @@ fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !
     while (true) {
         const n = reader_stream.interface.readSliceShort(&buf) catch |err| {
             if (err == error.WouldBlock) {
-                clock.sleep(10 * std.time.ns_per_ms);
+                std.Io.sleep(io, .fromNanoseconds(10 * std.time.ns_per_ms), .awake) catch {};
                 continue;
             }
             return err;

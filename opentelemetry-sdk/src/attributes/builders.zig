@@ -96,18 +96,18 @@ fn valueOf(definition: anytype, value: anytype) AttributeValue {
     return toAttributeValue(value);
 }
 
-fn pairFields(comptime T: type) []const std.builtin.Type.StructField {
+fn pairNames(comptime T: type) []const [:0]const u8 {
     const info = @typeInfo(T);
     if (info != .@"struct" or !info.@"struct".is_tuple) {
         @compileError("expected a tuple of .{ key, value } pairs, found " ++ @typeName(T));
     }
-    inline for (info.@"struct".fields) |field| {
-        const pair = @typeInfo(field.type);
-        if (pair != .@"struct" or !pair.@"struct".is_tuple or pair.@"struct".fields.len != 2) {
-            @compileError("expected a .{ key, value } pair, found " ++ @typeName(field.type));
+    inline for (info.@"struct".field_types) |field_type| {
+        const pair = @typeInfo(field_type);
+        if (pair != .@"struct" or !pair.@"struct".is_tuple or pair.@"struct".field_names.len != 2) {
+            @compileError("expected a .{ key, value } pair, found " ++ @typeName(field_type));
         }
     }
-    return info.@"struct".fields;
+    return info.@"struct".field_names;
 }
 
 /// Builds an attribute list from `.{ key, value }` pairs, without allocating.
@@ -133,10 +133,10 @@ fn pairFields(comptime T: type) []const std.builtin.Type.StructField {
 /// array is owned by the caller and must outlive every use of the attributes it holds.
 /// Taking its address inline, as in `.attributes = &fromPairs(.{ ... })`, is enough for a
 /// call that consumes the attributes before it returns.
-pub fn fromPairs(pairs: anytype) [pairFields(@TypeOf(pairs)).len]Attribute {
-    var attrs: [pairFields(@TypeOf(pairs)).len]Attribute = undefined;
-    inline for (comptime pairFields(@TypeOf(pairs)), 0..) |field, i| {
-        const pair = @field(pairs, field.name);
+pub fn fromPairs(pairs: anytype) [pairNames(@TypeOf(pairs)).len]Attribute {
+    var attrs: [pairNames(@TypeOf(pairs)).len]Attribute = undefined;
+    inline for (comptime pairNames(@TypeOf(pairs)), 0..) |name, i| {
+        const pair = @field(pairs, name);
         attrs[i] = .{ .key = keyOf(pair[0]), .value = valueOf(pair[0], pair[1]) };
     }
     return attrs;
@@ -148,32 +148,32 @@ pub fn fromPairs(pairs: anytype) [pairFields(@TypeOf(pairs)).len]Attribute {
 /// an empty tuple counts here and yields no attributes.
 fn isNamedStruct(comptime T: type) bool {
     return switch (@typeInfo(T)) {
-        .@"struct" => |s| !s.is_tuple or s.fields.len == 0,
+        .@"struct" => |s| !s.is_tuple or s.field_names.len == 0,
         else => false,
     };
 }
 
-fn namedFields(comptime T: type) []const std.builtin.Type.StructField {
+fn namedFields(comptime T: type) []const [:0]const u8 {
     if (comptime !isNamedStruct(T)) {
         @compileError("expected a struct literal with named fields, found " ++ @typeName(T));
     }
-    return @typeInfo(T).@"struct".fields;
+    return @typeInfo(T).@"struct".field_names;
 }
 
 /// Number of attributes `flatten` produces for the struct type `T`: one per leaf
 /// field, counting nested structs recursively.
 pub fn flatCount(comptime T: type) usize {
     comptime var count: usize = 0;
-    inline for (comptime namedFields(T)) |field| {
-        count += if (comptime isNamedStruct(field.type)) flatCount(field.type) else 1;
+    inline for (comptime namedFields(T)) |name| {
+        count += if (comptime isNamedStruct(@FieldType(T, name))) flatCount(@FieldType(T, name)) else 1;
     }
     return count;
 }
 
 fn flattenInto(comptime prefix: []const u8, data: anytype, out: []Attribute, next: *usize) void {
-    inline for (comptime namedFields(@TypeOf(data))) |field| {
-        const key = comptime if (prefix.len == 0) field.name else prefix ++ "." ++ field.name;
-        const value = @field(data, field.name);
+    inline for (comptime namedFields(@TypeOf(data))) |name| {
+        const key = comptime if (prefix.len == 0) name else prefix ++ "." ++ name;
+        const value = @field(data, name);
         if (comptime isNamedStruct(@TypeOf(value))) {
             flattenInto(key, value, out, next);
         } else {

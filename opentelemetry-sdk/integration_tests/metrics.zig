@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
 const common = @import("common");
@@ -7,6 +6,11 @@ const common = @import("common");
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
     const io = init.io;
+
+    const sdk_config = try sdk.config.Configuration.init(allocator, io, init.environ_map);
+    defer sdk_config.deinit();
+    sdk_config.metrics_config.exemplar_filter = .always_on;
+    sdk.config.Configuration.set(sdk_config);
 
     var ctx = try common.setupTestContext(allocator, io, "metrics");
     defer common.cleanupTestContext(&ctx, io);
@@ -32,14 +36,14 @@ fn testMetrics(
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
 
     const mp = try metrics_sdk.MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);
     defer me.otlp.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
-    defer mr.shutdown();
+    // mr.deinit() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.deinit();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = "integration-test" });
@@ -52,7 +56,7 @@ fn testMetrics(
 
     try mr.collect();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Successfully sent {d} metric data points\n", .{num_data_points});
     std.debug.print("  Waiting for metrics JSON file...\n", .{});
@@ -61,6 +65,9 @@ fn testMetrics(
 
     const json_content = try common.readJsonFile(allocator, io, tmp_dir, "metrics.json");
     defer allocator.free(json_content);
+
+    if (std.mem.indexOf(u8, json_content, "\"exemplars\"") == null)
+        return error.ExemplarsNotReceivedByCollector;
 
     const has_test_counter = std.mem.indexOf(u8, json_content, "test_counter") != null;
     const has_resource_metrics = std.mem.indexOf(u8, json_content, "resourceMetrics") != null or
@@ -88,14 +95,14 @@ fn testMetricsWithCompression(
     config.compression = .gzip;
 
     const mp = try metrics_sdk.MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);
     defer me.otlp.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    // mr.shutdown() also shuts down me.exporter (the MetricExporter wrapper).
-    defer mr.shutdown();
+    // mr.deinit() also shuts down me.exporter (the MetricExporter wrapper).
+    defer mr.deinit();
     try mp.addReader(mr);
 
     const meter = try mp.getMeter(.{ .name = "integration-test-compression" });
@@ -108,7 +115,7 @@ fn testMetricsWithCompression(
 
     try mr.collect();
 
-    clock.sleep(1 * std.time.ns_per_s);
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
 
     std.debug.print("  Successfully sent {d} compressed metric data points\n", .{num_data_points});
     std.debug.print("  Waiting for metrics JSON file with compressed data...\n", .{});

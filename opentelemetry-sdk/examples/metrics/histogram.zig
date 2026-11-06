@@ -25,7 +25,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Create meter provider
     const mp = try MeterProvider.init(allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
 
     // Example 1: Histogram with Explicit Bucket Aggregation
     try explicitBucketHistogramExample(allocator, io, mp);
@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
 fn explicitBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, mp: *MeterProvider) !void {
     // Create a view for histogram instruments with explicit bucket aggregation
     const histogram_view = view.View{
-        .instrument_selector = .{ .kind = .Histogram },
+        .instrument_selector = .{ .kind = .Histogram, .name = "http_request_duration_seconds" },
         .aggregation = .{ .ExplicitBucketHistogram = .{
             .buckets = &.{ 0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1.0, 2.5, 5.0, 10.0 },
         } },
@@ -57,7 +57,7 @@ fn explicitBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, mp: 
     defer me.in_memory.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    defer mr.shutdown();
+    defer mr.deinit();
 
     // Register the metric reader to the meter provider
     try mp.addReader(mr);
@@ -133,7 +133,7 @@ fn exponentialBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, m
     // Create a view for histogram instruments with exponential bucket aggregation
     const exponential_view = view.View{
         .instrument_selector = .{ .kind = .Histogram, .name = "memory_usage_bytes_exp" },
-        .aggregation = .{ .ExponentialBucketHistogram = .{} },
+        .aggregation = .{ .ExponentialBucketHistogram = try view.ExponentialBucketHistogramConfig.init(.{}) },
         .temporality = .Cumulative,
     };
 
@@ -145,7 +145,7 @@ fn exponentialBucketHistogramExample(allocator: std.mem.Allocator, io: std.Io, m
     defer me.in_memory.deinit();
 
     const mr = try metrics_sdk.MetricReader.init(allocator, io, me.exporter);
-    defer mr.shutdown();
+    defer mr.deinit();
 
     // Register the metric reader to the meter provider
     try mp.addReader(mr);

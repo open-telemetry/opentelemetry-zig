@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const sdk = @import("opentelemetry-sdk");
 const metrics = sdk.metrics;
 const MeterProvider = metrics.MeterProvider;
@@ -14,7 +13,7 @@ const bench_config = benchmark.Config{
 
 fn setupSDK(allocator: std.mem.Allocator, io: std.Io) !*MeterProvider {
     const mp = try MeterProvider.init(allocator, io);
-    errdefer mp.shutdown();
+    errdefer mp.deinit();
     return mp;
 }
 
@@ -23,7 +22,7 @@ test "UpDownCounter_Add_WithoutAttributes" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark",
     });
@@ -56,7 +55,7 @@ test "UpDownCounter_Add_WithAttributes" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark",
     });
@@ -96,7 +95,7 @@ test "UpDownCounter_Concurrent" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark",
     });
@@ -158,7 +157,7 @@ test "UpDownCounter_MixedOperations" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/benchmark",
     });
@@ -200,7 +199,7 @@ test "UpDownCounterMixedOps" {
     defer threaded.deinit();
     const io = threaded.io();
     const mp = try setupSDK(std.testing.allocator, io);
-    defer mp.shutdown();
+    defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "benchmark.general",
     });
@@ -218,7 +217,7 @@ test "UpDownCounterMixedOps" {
 
         pub fn run(self: *@This(), _: std.mem.Allocator) void {
             // Use random to alternate between positive and negative values
-            var rng = std.Random.DefaultPrng.init(@as(u64, @intCast(clock.timestamp())));
+            var rng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(std.testing.io).toSeconds()));
             const is_positive = rng.random().boolean();
             const value: i64 = if (is_positive) 1 else -1;
             const op: []const u8 = if (value > 0) "increment" else "decrement";

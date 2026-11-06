@@ -1,5 +1,4 @@
 const std = @import("std");
-const clock = @import("clock");
 const http = std.http;
 const sdk = @import("opentelemetry-sdk");
 const metrics_sdk = sdk.metrics;
@@ -12,9 +11,9 @@ pub fn main(init: std.process.Init) !void {
 
     const otel = try setupTelemetry(allocator, io);
     defer {
-        otel.metric_reader.shutdown();
-        otel.meter_provider.shutdown();
+        otel.metric_reader.deinit();
         otel.in_memory_exporter.deinit();
+        otel.meter_provider.deinit();
     }
 
     const ip = "127.0.0.1";
@@ -87,8 +86,8 @@ const MonitoredHTTPServer = struct {
         var conn_writer = stream.writer(self.io, &write_buffer);
         var server = http.Server.init(&conn_reader.interface, &conn_writer.interface);
 
-        const start = clock.milliTimestamp();
-        defer self.response_latency.record(@floatFromInt(clock.milliTimestamp() - start), .{}) catch unreachable;
+        const start = std.Io.Clock.real.now(self.io).toMilliseconds();
+        defer self.response_latency.record(@floatFromInt(std.Io.Clock.real.now(self.io).toMilliseconds() - start), .{}) catch unreachable;
 
         var request = server.receiveHead() catch |err| {
             try self.request_counter.add(1, .{ "error", true, "reason", @errorName(err) });
@@ -110,7 +109,7 @@ const OTel = struct {
 
 fn setupTelemetry(allocator: std.mem.Allocator, io: std.Io) !OTel {
     const mp = try metrics_sdk.MeterProvider.init(allocator, io);
-    errdefer mp.shutdown();
+    errdefer mp.deinit();
 
     // Create a view for histogram instruments with explicit bucket aggregation
     const http_latency_view = view.View{

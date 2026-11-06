@@ -22,6 +22,11 @@ pub const Configuration = struct {
     /// The maximum duration of batch exporting.
     timeout_sec: u64 = 10,
 
+    /// Sent as metadata with every call, e.g. an `authorization` header.
+    /// gRPC requires lowercase keys, so backends lowercase the header names,
+    /// which are case-insensitive.
+    headers: []const std.http.Header = &.{},
+
     /// CA chain used to verify server certificate (PEM format).
     ///
     /// If unset, the libgrpc implementation will first try to dereference the

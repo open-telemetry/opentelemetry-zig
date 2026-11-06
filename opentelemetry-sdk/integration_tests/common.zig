@@ -1,8 +1,13 @@
 const std = @import("std");
-const clock = @import("clock");
+const integration_options = @import("integration_options");
 
 pub const COLLECTOR_HTTP_PORT = "4318";
 pub const COLLECTOR_GRPC_PORT = "4317";
+
+/// gRPC backend the SDK under test was built with (`-Dgrpc-provider`).
+/// Tests exercising the gRPC transport should skip themselves when it is
+/// `.none`, since every export then fails with UnimplementedTransportProtocol.
+pub const grpc_provider = integration_options.grpc_provider;
 
 /// Context for running integration tests with a containerized collector
 pub const TestContext = struct {
@@ -18,8 +23,8 @@ pub const TestContext = struct {
 };
 
 /// Generate a unique container name to avoid conflicts when running tests in parallel
-pub fn generateContainerName(allocator: std.mem.Allocator, test_name: []const u8) ![]const u8 {
-    const timestamp = clock.milliTimestamp();
+pub fn generateContainerName(allocator: std.mem.Allocator, io: std.Io, test_name: []const u8) ![]const u8 {
+    const timestamp = std.Io.Clock.real.now(io).toMilliseconds();
     var prng = std.Random.DefaultPrng.init(@intCast(timestamp));
     const random_suffix = prng.random().int(u32);
     return std.fmt.allocPrint(allocator, "otel-test-{s}-{d}-{x}", .{ test_name, timestamp, random_suffix });
@@ -104,11 +109,11 @@ pub fn waitForCollector(allocator: std.mem.Allocator, io: std.Io, container_name
         defer allocator.free(result.stderr);
 
         if (result.term == .exited and result.term.exited == 0 and std.mem.startsWith(u8, result.stdout, "true")) {
-            clock.sleep(2 * std.time.ns_per_s);
+            std.Io.sleep(io, .fromNanoseconds(2 * std.time.ns_per_s), .awake) catch {};
             return;
         }
 
-        clock.sleep(1 * std.time.ns_per_s);
+        std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
     }
 
     return error.CollectorNotReady;
@@ -149,7 +154,7 @@ pub fn waitForFile(io: std.Io, dir: std.Io.Dir, file_name: []const u8, max_retri
     while (retry < max_retries) : (retry += 1) {
         const file = dir.openFile(io, file_name, .{}) catch |err| {
             if (err == error.FileNotFound and retry < max_retries - 1) {
-                clock.sleep(1 * std.time.ns_per_s);
+                std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
                 continue;
             }
             return err;
@@ -162,7 +167,7 @@ pub fn waitForFile(io: std.Io, dir: std.Io.Dir, file_name: []const u8, max_retri
         }
 
         if (retry < max_retries - 1) {
-            clock.sleep(1 * std.time.ns_per_s);
+            std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
         }
     }
     return error.FileNotFound;
@@ -173,7 +178,7 @@ pub fn waitForFileContent(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.
     while (retry < max_retries) : (retry += 1) {
         const content = readJsonFile(allocator, io, dir, file_name) catch |err| {
             if (err == error.FileNotFound and retry < max_retries - 1) {
-                clock.sleep(1 * std.time.ns_per_s);
+                std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
                 continue;
             }
             return err;
@@ -185,7 +190,7 @@ pub fn waitForFileContent(allocator: std.mem.Allocator, io: std.Io, dir: std.Io.
 
         allocator.free(content);
         if (retry < max_retries - 1) {
-            clock.sleep(1 * std.time.ns_per_s);
+            std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
         }
     }
     return error.ExpectedContentNotFound;
@@ -230,7 +235,7 @@ pub fn setupTestContext(allocator: std.mem.Allocator, io: std.Io, test_name: []c
 
     std.debug.print("✓ Data directory ready: {s}\n\n", .{tmp_path});
 
-    const container_name = try generateContainerName(allocator, test_name);
+    const container_name = try generateContainerName(allocator, io, test_name);
     errdefer allocator.free(container_name);
 
     cleanupContainer(allocator, io, container_name) catch {};

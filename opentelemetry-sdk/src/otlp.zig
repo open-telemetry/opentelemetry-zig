@@ -22,6 +22,7 @@ const log = std.log.scoped(.otlp);
 const proto = @import("opentelemetry-proto");
 const protobuf = @import("protobuf");
 const grpc_transport = @import("grpc_transport");
+const CommaSeparatedAssignmentIterator = @import("sdk/key_value_sequence_iterator.zig").CommaSeparatedAssignmentIterator;
 
 const pbmetrics = proto.metrics_v1;
 const pblogs = proto.logs_v1;
@@ -47,6 +48,7 @@ pub const ConfigError = error{
     InvalidWireFormatForClient,
     InvalidCompression,
     InvalidProtocol,
+    TimeoutSecTooBig,
 };
 
 /// Error set for the OTLP Export operation.
@@ -60,6 +62,8 @@ pub const ExportError = error{
     RetryableStatusCodeInResponse,
     UnimplementedTransportProtocol,
     NonRetryableStatusCodeInResponse,
+    /// The request did not complete within `ConfigOptions.timeout_sec`.
+    Timeout,
 };
 
 /// The combination of underlying transport protocol and format used to send the data.
@@ -160,7 +164,7 @@ pub const Signal = enum {
                 .http_json => {
                     switch (self) {
                         inline else => |data| {
-                            return try protobuf.json.encode(data, .{}, .{ .emit_oneof_field_name = false }, allocator);
+                            return try encodeOtlpJson(data, allocator);
                         },
                     }
                 },
@@ -186,6 +190,43 @@ pub const Signal = enum {
         }
     };
 };
+
+/// OTLP/JSON requires trace and span IDs as hex strings, while protobuf JSON encodes bytes as base64.
+/// See https://opentelemetry.io/docs/specs/otlp/#json-protobuf-encoding
+// TODO: drop the rewrite once zig-protobuf can customize bytes encoding (Arwalk/zig-protobuf#176).
+fn encodeOtlpJson(data: anytype, allocator: std.mem.Allocator) ![]const u8 {
+    const json = try protobuf.json.encode(data, .{}, .{ .emit_oneof_field_name = false }, allocator);
+    defer allocator.free(json);
+
+    var out: std.Io.Writer.Allocating = try .initCapacity(allocator, json.len);
+    errdefer out.deinit();
+
+    // Quotes inside JSON strings are escaped, so this only matches the end of an object key.
+    const key_end = "Id\":\"";
+    var cursor: usize = 0;
+    while (std.mem.indexOfPos(u8, json, cursor, key_end)) |key_pos| {
+        const value_start = key_pos + key_end.len;
+        try out.writer.writeAll(json[cursor..value_start]);
+        cursor = value_start;
+
+        const key = json[0 .. key_pos + "Id".len];
+        if (!std.mem.endsWith(u8, key, "\"traceId") and
+            !std.mem.endsWith(u8, key, "\"spanId") and
+            !std.mem.endsWith(u8, key, "\"parentSpanId")) continue;
+
+        // Base64 has no quotes, so the next one closes the value.
+        const value_end = std.mem.indexOfScalarPos(u8, json, value_start, '"').?;
+        const encoded = json[value_start..value_end];
+        var id: [16]u8 = undefined;
+        const id_len = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
+        if (id_len > id.len) return error.InvalidOtlpIdentifier;
+        try std.base64.standard.Decoder.decode(id[0..id_len], encoded);
+        try out.writer.printHex(id[0..id_len], .lower);
+        cursor = value_end;
+    }
+    try out.writer.writeAll(json[cursor..]);
+    return out.toOwnedSlice();
+}
 
 test "otlp Signal.Data get payload bytes" {
     const allocator = std.testing.allocator;
@@ -220,7 +261,10 @@ pub const ConfigOptions = struct {
 
     /// Comma-separated list of key=value pairs to include in the request as headers.
     /// Format "key1=value1,key2=value2,...".
-    /// They wll be parsed into HTTP headers and all the values will be treated as strings.
+    /// They wll be parsed into HTTP headers, or gRPC metadata, and all the values will be treated as strings.
+    ///
+    /// Keys and values are sent as is: they are not percent-decoded. The W3C Baggage
+    /// metadata syntax (`;property`) is not supported, and a `;` is rejected.
     headers: ?[]const u8 = null,
 
     tls_opts: ?TLSOptions = null,
@@ -240,6 +284,17 @@ pub const ConfigOptions = struct {
     // Tracks whether `endpoint` was allocated by us and must be freed on deinit.
     endpoint_owned: bool = false,
 
+    // Owned copy of headers allocated during environment parsing.
+    // Stored separately from the public `headers` field so that callers can
+    // reassign `headers` without causing invalid frees or leaking this allocation.
+    allocated_headers: ?[]const u8 = null,
+
+    // The transport security that the scheme of `endpoint` selects, if it had one.
+    // Kept apart from `insecure`, which also applies to signal endpoints without a scheme.
+    endpoint_insecure: ?bool = null,
+
+    const max_timeout_sec = 600;
+
     pub fn init(allocator: std.mem.Allocator, env_map: *const EnvMap) !*ConfigOptions {
         const s = try allocator.create(ConfigOptions);
         s.* = ConfigOptions{
@@ -252,6 +307,7 @@ pub const ConfigOptions = struct {
 
     pub fn deinit(self: *ConfigOptions) void {
         if (self.endpoint_owned) self.allocator.free(self.endpoint);
+        if (self.allocated_headers) |h| self.allocator.free(h);
         var it = self.custom_signal_urls.valueIterator();
         while (it.next()) |v| self.allocator.free(v.*);
         self.custom_signal_urls.deinit(self.allocator);
@@ -267,6 +323,9 @@ pub const ConfigOptions = struct {
             if (self.insecure) |ins| {
                 if (ins) return ConfigError.ConflictingOptions;
             }
+        }
+        if (self.timeout_sec > max_timeout_sec) {
+            return ConfigError.TimeoutSecTooBig;
         }
     }
 
@@ -299,24 +358,78 @@ pub const ConfigOptions = struct {
         if (entryFromEnvMap(environ, "PROTOCOL")) |protocol| {
             self.protocol = try Protocol.fromString(protocol);
         }
-        // TODO implement the rest of the environment variables.
+        if (entryFromEnvMap(environ, "INSECURE")) |insecure_str| {
+            if (insecure_str.len != 0) {
+                const insecure = std.ascii.eqlIgnoreCase(insecure_str, "true");
+                self.insecure = insecure;
+                if (!insecure and !std.ascii.eqlIgnoreCase(insecure_str, "false")) {
+                    log.warn("invalid OTEL_EXPORTER_OTLP_INSECURE value '{s}'; using false", .{insecure_str});
+                }
+            }
+        }
+        if (entryFromEnvMap(environ, "TIMEOUT")) |timeout_str| {
+            if (timeout_str.len != 0) {
+                const timeout_ms: ?u64 = std.fmt.parseInt(u64, timeout_str, 10) catch null;
+                if (timeout_ms) |ms| {
+                    if (ms <= max_timeout_sec * std.time.ms_per_s) {
+                        self.timeout_sec = if (ms == 0) 0 else @max(1, (ms + 999) / 1000);
+                    } else {
+                        log.warn("OTEL_EXPORTER_OTLP_TIMEOUT value '{s}' exceeds the supported maximum; ignoring setting", .{timeout_str});
+                    }
+                } else {
+                    log.warn("invalid OTEL_EXPORTER_OTLP_TIMEOUT value '{s}'; ignoring setting", .{timeout_str});
+                }
+            }
+        }
+        if (entryFromEnvMap(environ, "HEADERS")) |headers_val| {
+            const trimmed = std.mem.trim(u8, headers_val, " ");
+            if (trimmed.len > 0) {
+                const parsed = try parseHeaders(self.allocator, trimmed);
+                self.allocator.free(parsed);
+
+                if (self.allocated_headers) |h| {
+                    self.allocator.free(h);
+                    self.allocated_headers = null;
+                }
+                const owned = try self.allocator.dupe(u8, trimmed);
+                self.allocated_headers = owned;
+                self.headers = owned;
+            } else {
+                if (self.allocated_headers) |h| {
+                    self.allocator.free(h);
+                    self.allocated_headers = null;
+                }
+                self.headers = null;
+            }
+        }
+    }
+
+    const Scheme = @FieldType(ConfigOptions, "scheme");
+
+    // Splits the scheme, if any, from a bare host:port or a full URL.
+    fn splitScheme(raw: []const u8) !struct { scheme: ?Scheme, rest: []const u8 } {
+        if (std.mem.indexOf(u8, raw, "://") == null) return .{ .scheme = null, .rest = raw };
+        const uri = Uri.parse(raw) catch return ConfigError.InvalidEndpoint;
+        var buf: ["https".len]u8 = undefined;
+        if (uri.scheme.len > buf.len) return ConfigError.InvalidScheme;
+        const lower = std.ascii.lowerString(buf[0..uri.scheme.len], uri.scheme);
+        return .{
+            .scheme = std.meta.stringToEnum(Scheme, lower) orelse return ConfigError.InvalidScheme,
+            .rest = raw[uri.scheme.len + "://".len ..],
+        };
     }
 
     // Accepts bare host:port or a full URL; splits any scheme into self.scheme.
     fn setEndpointFromUrl(self: *ConfigOptions, raw: []const u8) !void {
-        var value = raw;
-        if (std.mem.indexOf(u8, raw, "://") != null) {
-            const uri = Uri.parse(raw) catch return ConfigError.InvalidEndpoint;
-            var buf: ["https".len]u8 = undefined;
-            if (uri.scheme.len > buf.len) return ConfigError.InvalidScheme;
-            const lower = std.ascii.lowerString(buf[0..uri.scheme.len], uri.scheme);
-            const Scheme = @FieldType(ConfigOptions, "scheme");
-            self.scheme = std.meta.stringToEnum(Scheme, lower) orelse return ConfigError.InvalidScheme;
-            value = raw[uri.scheme.len + "://".len ..];
+        const split = try splitScheme(raw);
+        if (split.scheme) |scheme| {
+            self.scheme = scheme;
+            // gRPC dials a bare host:port, so for it the scheme is the TLS
+            // switch — and per spec it wins: the insecure setting applies only
+            // to endpoints given without a scheme.
+            self.endpoint_insecure = scheme != .https;
         }
-        while (value.len > 0 and value[value.len - 1] == '/') {
-            value = value[0 .. value.len - 1];
-        }
+        const value = std.mem.trimEnd(u8, split.rest, "/");
         if (value.len == 0) return ConfigError.InvalidEndpoint;
         const owned = try self.allocator.dupe(u8, value);
         if (self.endpoint_owned) self.allocator.free(self.endpoint);
@@ -325,7 +438,7 @@ pub const ConfigOptions = struct {
     }
 
     fn entryFromEnvMap(environ: *const EnvMap, varSuffix: []const u8) ?[]const u8 {
-        var env_var_name: [128]u8 = [_]u8{0} ** 128;
+        var env_var_name: [128]u8 = @splat(0);
         for (env_var_prefix, 0..) |c, i| {
             env_var_name[i] = c;
         }
@@ -352,6 +465,27 @@ pub const ConfigOptions = struct {
 
         return url.toOwnedSlice(allocator);
     }
+
+    const GrpcEndpoint = struct {
+        endpoint: []const u8,
+        insecure: ?bool,
+    };
+
+    // Where to send each signal over gRPC: a custom signal URL replaces the
+    // endpoint, and is used as is, without appending a path as for HTTP.
+    // As for the endpoint, its scheme, if any, decides the transport security.
+    // Returned memory is borrowed from self.
+    fn grpcEndpointForSignal(self: ConfigOptions, signal: Signal) !GrpcEndpoint {
+        const url = self.custom_signal_urls.get(signal) orelse
+            return .{ .endpoint = self.endpoint, .insecure = self.endpoint_insecure orelse self.insecure };
+        const split = try splitScheme(url);
+        const endpoint = std.mem.trimEnd(u8, split.rest, "/");
+        if (endpoint.len == 0) return ConfigError.InvalidEndpoint;
+        return .{
+            .endpoint = endpoint,
+            .insecure = if (split.scheme) |scheme| scheme != .https else self.insecure,
+        };
+    }
 };
 
 test "otlp config from env" {
@@ -370,6 +504,231 @@ test "otlp config from env" {
     try std.testing.expectEqualStrings(new_endpoint, config.endpoint);
     try std.testing.expectEqual(Compression.gzip, config.compression);
     try std.testing.expectEqual(Protocol.grpc, config.protocol);
+    // No scheme in the endpoint: the transport security choice stays unset.
+    try std.testing.expectEqual(@as(?bool, null), config.insecure);
+}
+
+test "otlp config from env headers" {
+    const allocator = std.testing.allocator;
+
+    // Valid headers
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_HEADERS", "api-key=secret,env=prod");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expect(config.headers != null);
+        try std.testing.expectEqualStrings("api-key=secret,env=prod", config.headers.?);
+    }
+
+    // Empty headers string resets / keeps headers null
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_HEADERS", "   ");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(@as(?[]const u8, null), config.headers);
+    }
+
+    // Invalid headers syntax returns ConfigError.InvalidHeadersSyntax
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_HEADERS", "not_a_valid_header");
+
+        try std.testing.expectError(ConfigError.InvalidHeadersSyntax, ConfigOptions.init(allocator, &map));
+    }
+
+    // Caller overriding headers with a literal string does not leak or cause invalid free
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_HEADERS", "env=test");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        config.headers = "override=literal";
+        try std.testing.expectEqualStrings("override=literal", config.headers.?);
+    }
+}
+
+test "otlp config from env timeout" {
+    const allocator = std.testing.allocator;
+
+    // Standard timeout in milliseconds converted to seconds
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "15000");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(15, config.timeout_sec);
+    }
+
+    // Sub-second timeout rounds up to at least 1 second
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "500");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(1, config.timeout_sec);
+    }
+
+    // Zero timeout
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "0");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(0, config.timeout_sec);
+    }
+
+    // Empty timeout string is ignored and preserves default (10s)
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
+    }
+
+    // Invalid non-integer timeout is ignored and preserves default (10s)
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "not_a_number");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
+    }
+
+    // Negative timeout is ignored and preserves default (10s)
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "-500");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
+    }
+
+    // Timeout exceeding max_timeout_sec is ignored and preserves default (10s)
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "700000");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
+    }
+
+    // u64 max value does not overflow and is ignored
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_TIMEOUT", "18446744073709551615");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(10, config.timeout_sec);
+    }
+}
+
+test "otlp config from env insecure" {
+    const allocator = std.testing.allocator;
+
+    // "true" (case-insensitive)
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_INSECURE", "True");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(@as(?bool, true), config.insecure);
+    }
+
+    // "false"
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_INSECURE", "false");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(@as(?bool, false), config.insecure);
+    }
+
+    // Empty string behaves as unset
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_INSECURE", "");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(@as(?bool, null), config.insecure);
+    }
+
+    // Invalid boolean string falls back to false
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_INSECURE", "maybe");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        try std.testing.expectEqual(@as(?bool, false), config.insecure);
+    }
+
+    // Explicit endpoint scheme takes precedence in gRPC rather than failing config init
+    {
+        var map = EnvMap.init(allocator);
+        defer map.deinit();
+        try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.example.com:4317");
+        try map.put("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "metrics.example.com:4317");
+        try map.put("OTEL_EXPORTER_OTLP_INSECURE", "true");
+
+        const config = try ConfigOptions.init(allocator, &map);
+        defer config.deinit();
+
+        // Explicit scheme wins for traces
+        const traces = try config.grpcEndpointForSignal(.traces);
+        try std.testing.expectEqual(@as(?bool, false), traces.insecure);
+
+        // Scheme-less endpoint honors insecure setting
+        const metrics = try config.grpcEndpointForSignal(.metrics);
+        try std.testing.expectEqual(@as(?bool, true), metrics.insecure);
+    }
 }
 
 test "otlp config from env with URL scheme in endpoint" {
@@ -379,6 +738,7 @@ test "otlp config from env with URL scheme in endpoint" {
         env: []const u8,
         endpoint: []const u8,
         scheme: @FieldType(ConfigOptions, "scheme"),
+        insecure: ?bool,
         url: []const u8,
         signal: Signal,
     };
@@ -387,6 +747,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "http://localhost:4318",
             .endpoint = "localhost:4318",
             .scheme = .http,
+            .insecure = true,
             .signal = .traces,
             .url = "http://localhost:4318/v1/traces",
         },
@@ -394,6 +755,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "https://collector.example.com:4318/",
             .endpoint = "collector.example.com:4318",
             .scheme = .https,
+            .insecure = false,
             .signal = .metrics,
             .url = "https://collector.example.com:4318/v1/metrics",
         },
@@ -402,6 +764,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "HTTPS://collector:4318",
             .endpoint = "collector:4318",
             .scheme = .https,
+            .insecure = false,
             .signal = .logs,
             .url = "https://collector:4318/v1/logs",
         },
@@ -410,6 +773,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "http://host:4318/mycollector/",
             .endpoint = "host:4318/mycollector",
             .scheme = .http,
+            .insecure = true,
             .signal = .traces,
             .url = "http://host:4318/mycollector/v1/traces",
         },
@@ -418,6 +782,7 @@ test "otlp config from env with URL scheme in endpoint" {
             .env = "http://host:4318///",
             .endpoint = "host:4318",
             .scheme = .http,
+            .insecure = true,
             .signal = .traces,
             .url = "http://host:4318/v1/traces",
         },
@@ -433,6 +798,9 @@ test "otlp config from env with URL scheme in endpoint" {
 
         try std.testing.expectEqualStrings(c.endpoint, config.endpoint);
         try std.testing.expect(config.scheme == c.scheme);
+        try std.testing.expectEqual(c.insecure, (try config.grpcEndpointForSignal(c.signal)).insecure);
+        // Left for the signal endpoints without a scheme
+        try std.testing.expectEqual(@as(?bool, null), config.insecure);
 
         const url = try config.httpUrlForSignal(c.signal, allocator);
         defer allocator.free(url);
@@ -481,6 +849,43 @@ test "otlp config custom endpoint for singals" {
     try std.testing.expectEqualStrings("https://another.com:1234/traces", customTraces);
     try std.testing.expectEqualStrings("http://metrics-new:1234", customMetrics);
     try std.testing.expectEqualStrings("http://localhost:4318/v1/logs", standardLogs);
+}
+
+test "otlp config custom endpoint for signals over gRPC" {
+    const allocator = std.testing.allocator;
+
+    var map = EnvMap.init(allocator);
+    defer map.deinit();
+    try map.put("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4317");
+    try map.put("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://traces.example.com:4317/");
+    try map.put("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "metrics:4317");
+    // logs are left untouched
+
+    var config = try ConfigOptions.init(allocator, &map);
+    defer config.deinit();
+
+    // The scheme decides the transport security, and no path is appended.
+    const traces = try config.grpcEndpointForSignal(.traces);
+    try std.testing.expectEqualStrings("traces.example.com:4317", traces.endpoint);
+    try std.testing.expectEqual(@as(?bool, false), traces.insecure);
+    // Without a scheme, the insecure setting applies, not the scheme of the endpoint it replaces.
+    const metrics = try config.grpcEndpointForSignal(.metrics);
+    try std.testing.expectEqualStrings("metrics:4317", metrics.endpoint);
+    try std.testing.expectEqual(@as(?bool, null), metrics.insecure);
+    const logs = try config.grpcEndpointForSignal(.logs);
+    try std.testing.expectEqualStrings("collector:4317", logs.endpoint);
+    try std.testing.expectEqual(@as(?bool, true), logs.insecure);
+
+    // Still unset with TLS files configured, so that they select SSL credentials.
+    config.tls_opts = .{ .certificate_file = "/some/ca.pem" };
+    try std.testing.expectEqual(@as(?bool, null), (try config.grpcEndpointForSignal(.metrics)).insecure);
+    config.insecure = false;
+    try std.testing.expectEqual(@as(?bool, false), (try config.grpcEndpointForSignal(.metrics)).insecure);
+    // While the scheme of an endpoint still wins over it.
+    try std.testing.expectEqual(@as(?bool, true), (try config.grpcEndpointForSignal(.logs)).insecure);
+
+    try config.custom_signal_urls.put(allocator, .logs, try allocator.dupe(u8, "ftp://logs:4317"));
+    try std.testing.expectError(ConfigError.InvalidScheme, config.grpcEndpointForSignal(.logs));
 }
 
 test "otlp config validation" {
@@ -594,6 +999,21 @@ const HTTPClient = struct {
         return request_options;
     }
 
+    // std.http.Client has no request timeout: the only `timeout` field
+    // is on ConnectTcpOptions and is never forwarded to the connect call,
+    // so the deadline has to be imposed from outside.
+    fn fetchBounded(self: *Self, opts: http.Client.FetchOptions) !http.Client.FetchResult {
+        if (self.config.timeout_sec == 0) {
+            return self.client.fetch(opts);
+        }
+        return clock.callTimeout(
+            self.client.io,
+            self.config.timeout_sec * std.time.ms_per_s,
+            http.Client.fetch,
+            .{ &self.client, opts },
+        );
+    }
+
     // Send the OTLP data to the url using the client's configuration.
     // Data passed as argument should either be protobuf or JSON encoded, as specified in the config.
     // Data will be compressed here.
@@ -623,13 +1043,14 @@ const HTTPClient = struct {
             .payload = req_body,
         };
 
-        const response = self.client.fetch(fetch_request) catch |err| {
+        const response = self.fetchBounded(fetch_request) catch |err| {
             // Handle connection errors that occur before getting a response
             switch (err) {
                 error.HttpConnectionClosing, error.ReadFailed, error.ConnectionResetByPeer => {
                     // These are connection-level errors that should be treated as non-retryable
                     return ExportError.NonRetryableStatusCodeInResponse;
                 },
+                error.Timeout => return ExportError.Timeout,
                 else => return err,
             }
         };
@@ -687,11 +1108,12 @@ const HTTPClient = struct {
                     // This retry runs in a dedicated OS thread (see retryRequest spawn above).
                     // For Io.Evented users, the spawned thread still blocks the OS thread,
                     // which is less efficient than an evented delay but correct.
-                    clock.sleep(std.time.ns_per_ms * calculateDelayMillisec(
+                    std.Io.sleep(io, .fromNanoseconds(std.time.ns_per_ms * calculateDelayMillisec(
+                        io,
                         retry_config.base_delay_ms,
                         retry_config.max_delay_ms,
                         retry_count,
-                    ));
+                    )), .awake) catch {};
                     continue;
                 },
                 else => |status| {
@@ -722,44 +1144,47 @@ const HTTPClient = struct {
     }
 };
 
-fn calculateDelayMillisec(base_delay_ms: u64, max_delay_ms: u64, attempt: u32) u64 {
+fn calculateDelayMillisec(io: std.Io, base_delay_ms: u64, max_delay_ms: u64, attempt: u32) u64 {
     // Exponential backoff with jitter: delay = min(max_delay, base * 2^attempt) + random(0, 10%)
     const delay: u64 = @min(
         max_delay_ms,
         base_delay_ms * std.math.pow(u64, 2, attempt),
     );
-    var prng = std.Random.DefaultPrng.init(@intCast(clock.timestamp()));
+    var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(io).toSeconds()));
     const jitter = prng.random().intRangeAtMost(u64, 0, @intCast(@divTrunc(delay, 10)));
     return delay + jitter;
 }
 
 // Parses the key-value, comma separated list of headers from the config.
-// Caller owns the memory and must free it.
+//
+// The format is the one of a W3C Baggage header, without its `;property` metadata:
+// whitespace around keys, values and commas is ignored, blank entries are skipped,
+// a value may be empty or hold further `=`. A missing `=`, an empty key or a `;` is
+// invalid. Keys and values are not percent-decoded: they are sent as is.
+//
+// The returned names and values point into `key_values`.
+// Caller owns the returned slice and must free it.
 fn parseHeaders(allocator: std.mem.Allocator, key_values: []const u8) ![]std.http.Header {
     // Maximum 64 items are allowd in the W3C baggage
     var headers = try allocator.alloc(std.http.Header, 64);
     defer allocator.free(headers);
 
-    var comma_split = std.mem.splitScalar(u8, key_values, ',');
+    var entries: CommaSeparatedAssignmentIterator = .init(key_values);
 
     var idx: usize = 0;
     // The sum of all characters in the key and value must be less than 8192 bytes (2^13).
     var cum_bytes: u13 = 0;
-    while (comma_split.next()) |item| {
+    while (entries.next()) |entry| {
         // Fail if there are more than 64 headers.
         if (idx == headers.len) {
             return ConfigError.InvalidHeadersTooManyItems;
         }
-        var kv = std.mem.splitScalar(u8, item, '=');
-        const key: []const u8 = if (kv.next()) |t| std.mem.trim(u8, t, " ") else return ConfigError.InvalidHeadersSyntax;
+        const key = entry.name;
         if (key.len == 0) {
             return ConfigError.InvalidHeadersSyntax;
         }
-        const value: []const u8 = if (kv.next()) |t| std.mem.trim(u8, t, " ") else return ConfigError.InvalidHeadersSyntax;
-        if (value.len == 0) {
-            return ConfigError.InvalidHeadersSyntax;
-        }
-        if (kv.next()) |_| {
+        const value = entry.value orelse return ConfigError.InvalidHeadersSyntax;
+        if (std.mem.indexOfScalar(u8, key, ';') != null or std.mem.indexOfScalar(u8, value, ';') != null) {
             return ConfigError.InvalidHeadersSyntax;
         }
         // Fail when the sum of all bytes for the headers overflows.
@@ -772,6 +1197,12 @@ fn parseHeaders(allocator: std.mem.Allocator, key_values: []const u8) ![]std.htt
     const ret = try allocator.alloc(std.http.Header, idx);
     std.mem.copyForwards(std.http.Header, ret, headers[0..idx]);
     return ret;
+}
+
+/// Repeats `str` `n` times at comptime.
+inline fn repeatString(comptime n: usize, comptime str: []const u8) []const u8 {
+    const buf: [n][str.len]u8 = @splat(str[0..str.len].*);
+    return @ptrCast(&buf);
 }
 
 test "otlp config parse headers" {
@@ -799,16 +1230,44 @@ test "otlp config parse headers" {
     try std.testing.expectEqualSlices(u8, "key2", parsed[3].name);
     try std.testing.expectEqualSlices(u8, "value2", parsed[3].value);
 
-    const invalid_headers: [4][]const u8 = .{ "a=,", "=b", "a=b=c", "a=b,=c=d" };
+    // Blank entries are skipped, and whitespace of any kind around the separators is ignored.
+    const blanks = try parseHeaders(allocator, " a=b ,, \t, c\t=\td ,");
+    defer allocator.free(blanks);
+
+    try std.testing.expectEqual(2, blanks.len);
+    try std.testing.expectEqualSlices(u8, "a", blanks[0].name);
+    try std.testing.expectEqualSlices(u8, "b", blanks[0].value);
+    try std.testing.expectEqualSlices(u8, "c", blanks[1].name);
+    try std.testing.expectEqualSlices(u8, "d", blanks[1].value);
+
+    // A value may be empty, or hold further '=' (a legal W3C Baggage octet).
+    const odd_values = try parseHeaders(allocator, "empty=,equation=a=b=c,token=dGVzdA==");
+    defer allocator.free(odd_values);
+
+    try std.testing.expectEqual(3, odd_values.len);
+    try std.testing.expectEqualSlices(u8, "empty", odd_values[0].name);
+    try std.testing.expectEqualSlices(u8, "", odd_values[0].value);
+    try std.testing.expectEqualSlices(u8, "a=b=c", odd_values[1].value);
+    try std.testing.expectEqualSlices(u8, "dGVzdA==", odd_values[2].value);
+
+    // Values are sent as is, never percent-decoded.
+    const encoded = try parseHeaders(allocator, "Authorization=Bearer%20abc,plus=a+b");
+    defer allocator.free(encoded);
+
+    try std.testing.expectEqualSlices(u8, "Bearer%20abc", encoded[0].value);
+    try std.testing.expectEqualSlices(u8, "a+b", encoded[1].value);
+
+    // An empty key, a missing '=' and the unsupported ';' metadata are invalid.
+    const invalid_headers = [_][]const u8{ "=b", "a=b,=c=d", "novalue", "a=b,novalue", "a=b;c", "a=b;c=d", "a;b=c" };
     for (invalid_headers) |header| {
         try std.testing.expectError(ConfigError.InvalidHeadersSyntax, parseHeaders(allocator, header));
     }
 
     // 150 bytes * 60 == 9000 bytes
-    const invalid_too_many_bytes: []const u8 = "key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA," ** 60;
+    const invalid_too_many_bytes: []const u8 = repeatString(60, "key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,");
     try std.testing.expectError(ConfigError.InvalidHeadersTooManyBytes, parseHeaders(allocator, invalid_too_many_bytes));
 
-    const invalid_too_many_items: []const u8 = "key=val," ** 65;
+    const invalid_too_many_items: []const u8 = repeatString(65, "key=val,");
     try std.testing.expectError(ConfigError.InvalidHeadersTooManyItems, parseHeaders(allocator, invalid_too_many_items));
 }
 
@@ -837,8 +1296,8 @@ test "otlp exp backoff delay calculation" {
         .max_delay_ms = 30000,
     };
 
-    const first_backoff = calculateDelayMillisec(config.base_delay_ms, config.max_delay_ms, 1);
-    const second_backoff = calculateDelayMillisec(config.base_delay_ms, config.max_delay_ms, 2);
+    const first_backoff = calculateDelayMillisec(std.testing.io, config.base_delay_ms, config.max_delay_ms, 1);
+    const second_backoff = calculateDelayMillisec(std.testing.io, config.base_delay_ms, config.max_delay_ms, 2);
 
     try std.testing.expect(first_backoff >= 10 and first_backoff <= 12);
     try std.testing.expect(second_backoff >= 20 and second_backoff <= 23);
@@ -864,7 +1323,7 @@ test "otlp HTTPClient send fails for missing server" {
     const url = try config.httpUrlForSignal(.metrics, allocator);
     defer allocator.free(url);
 
-    var payload = [_]u8{0} ** 1024;
+    var payload: [1024]u8 = @splat(0);
     const result = client.send(url, &payload);
     try std.testing.expectError(error.ConnectionRefused, result);
 }
@@ -893,14 +1352,21 @@ pub fn Export(
 
             break :blk http_client.send(url, payload);
         },
-        .grpc => grpc_transport.send(allocator, otlp_payload.signal().grpcPath(), payload, .{
-            .endpoint = config.endpoint,
-            .insecure = config.insecure,
-            .timeout_sec = config.timeout_sec,
-            .server_root_certificates_filename = if (config.tls_opts) |tls| tls.certificate_file else null,
-            .client_certificate_filename = if (config.tls_opts) |tls| tls.client_certificate_file else null,
-            .client_private_key_filename = if (config.tls_opts) |tls| tls.client_private_key_file else null,
-        }),
+        .grpc => blk: {
+            const target = try config.grpcEndpointForSignal(otlp_payload.signal());
+            const headers: []const std.http.Header = if (config.headers) |h| try parseHeaders(allocator, h) else &.{};
+            defer allocator.free(headers);
+
+            break :blk grpc_transport.send(allocator, io, otlp_payload.signal().grpcPath(), payload, .{
+                .endpoint = target.endpoint,
+                .insecure = target.insecure,
+                .timeout_sec = config.timeout_sec,
+                .headers = headers,
+                .server_root_certificates_filename = if (config.tls_opts) |tls| tls.certificate_file else null,
+                .client_certificate_filename = if (config.tls_opts) |tls| tls.client_certificate_file else null,
+                .client_private_key_filename = if (config.tls_opts) |tls| tls.client_private_key_file else null,
+            });
+        },
     } catch |err| {
         // Both retry-related variants are signaling state, not failure: the
         // HTTP transport owns its retry loop ("Enqueued"), while the gRPC
@@ -939,7 +1405,83 @@ pub fn ExportFile(
     try file.sync(io);
 }
 
+test "otlp http_json encodes trace and span IDs as lowercase hex" {
+    const allocator = std.testing.allocator;
+    const trace_id = [16]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef, 0x10, 0x32, 0x54, 0x76, 0x98, 0xba, 0xdc, 0xfe };
+    const span_id = [8]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef };
+    const parent_span_id = [8]u8{ 0xfe, 0xdc, 0xba, 0x98, 0x76, 0x54, 0x32, 0x10 };
+
+    var attributes = [_]pbcommon.KeyValue{.{ .key = "bytes", .value = .{ .value = .{ .bytes_value = &span_id } } }};
+    var links = [_]pbtrace.Span.Link{.{ .trace_id = &trace_id, .span_id = &span_id }};
+    var spans = [_]pbtrace.Span{.{
+        .trace_id = &trace_id,
+        .span_id = &span_id,
+        .parent_span_id = &parent_span_id,
+        .attributes = .fromOwnedSlice(&attributes),
+        .links = .fromOwnedSlice(&links),
+    }};
+    var scope_spans = [_]pbtrace.ScopeSpans{.{ .spans = .fromOwnedSlice(&spans) }};
+    var resource_spans = [_]pbtrace.ResourceSpans{.{ .scope_spans = .fromOwnedSlice(&scope_spans) }};
+    const traces = try (Signal.Data{ .traces = .{ .resource_spans = .fromOwnedSlice(&resource_spans) } }).toOwnedSlice(allocator, .http_json);
+    defer allocator.free(traces);
+
+    try std.testing.expectEqual(2, std.mem.count(u8, traces, "\"traceId\":\"0123456789abcdef1032547698badcfe\""));
+    try std.testing.expectEqual(2, std.mem.count(u8, traces, "\"spanId\":\"0123456789abcdef\""));
+    try std.testing.expect(std.mem.indexOf(u8, traces, "\"parentSpanId\":\"fedcba9876543210\"") != null);
+    // Other bytes fields keep the protobuf JSON base64 encoding.
+    try std.testing.expect(std.mem.indexOf(u8, traces, "\"bytesValue\":\"ASNFZ4mrze8=\"") != null);
+
+    var log_records = [_]pblogs.LogRecord{
+        .{ .trace_id = &trace_id, .span_id = &span_id, .body = .{ .value = .{ .string_value = "\"traceId\":\"AAAA\"" } } },
+        // Logs emitted outside a span carry empty IDs, which the protobuf JSON encoding omits.
+        .{},
+    };
+    var scope_logs = [_]pblogs.ScopeLogs{.{ .log_records = .fromOwnedSlice(&log_records) }};
+    var resource_logs = [_]pblogs.ResourceLogs{.{ .scope_logs = .fromOwnedSlice(&scope_logs) }};
+    const logs = try (Signal.Data{ .logs = .{ .resource_logs = .fromOwnedSlice(&resource_logs) } }).toOwnedSlice(allocator, .http_json);
+    defer allocator.free(logs);
+
+    try std.testing.expect(std.mem.indexOf(u8, logs, "\"traceId\":\"0123456789abcdef1032547698badcfe\",\"spanId\":\"0123456789abcdef\"") != null);
+    try std.testing.expectEqual(1, std.mem.count(u8, logs, "\"traceId\":"));
+    try std.testing.expectEqual(1, std.mem.count(u8, logs, "\"spanId\":"));
+    // A key-like sequence inside a string value is left untouched.
+    try std.testing.expect(std.mem.indexOf(u8, logs, "\"stringValue\":\"\\\"traceId\\\":\\\"AAAA\\\"\"") != null);
+}
+
 // Integration tests
 test {
     _ = @import("otlp_test.zig");
+}
+
+test "exemplar/otlp JSON exports hexadecimal IDs and original measurement values" {
+    const allocator = std.testing.allocator;
+    var filtered = [_]pbcommon.KeyValue{.{ .key = "request_id", .value = .{ .value = .{ .string_value = "abc" } } }};
+    var samples = [_]pbmetrics.Exemplar{.{
+        .value = .{ .as_int = 7 },
+        .time_unix_nano = 150,
+        .trace_id = &@as([16]u8, @splat(1)),
+        .span_id = &@as([8]u8, @splat(2)),
+        .filtered_attributes = .fromOwnedSlice(&filtered),
+    }};
+    var points = [_]pbmetrics.NumberDataPoint{.{ .value = .{ .as_int = 8 }, .exemplars = .fromOwnedSlice(&samples) }};
+    const metric = pbmetrics.Metric{ .name = "example", .data = .{ .sum = .{ .data_points = .fromOwnedSlice(&points) } } };
+    var metrics = [_]pbmetrics.Metric{metric};
+    var scopes = [_]pbmetrics.ScopeMetrics{.{ .metrics = .fromOwnedSlice(&metrics) }};
+    var resources = [_]pbmetrics.ResourceMetrics{.{ .scope_metrics = .fromOwnedSlice(&scopes) }};
+    const payload = try (Signal.Data{ .metrics = .{ .resource_metrics = .fromOwnedSlice(&resources) } }).toOwnedSlice(allocator, .http_json);
+    defer allocator.free(payload);
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+    defer parsed.deinit();
+    const resource = parsed.value.object.get("resourceMetrics").?.array.items[0];
+    const scope = resource.object.get("scopeMetrics").?.array.items[0];
+    const data = scope.object.get("metrics").?.array.items[0].object.get("sum").?;
+    const point = data.object.get("dataPoints").?.array.items[0];
+    const sample = point.object.get("exemplars").?.array.items[0];
+    try std.testing.expectEqualStrings("01010101010101010101010101010101", sample.object.get("traceId").?.string);
+    try std.testing.expectEqualStrings("0202020202020202", sample.object.get("spanId").?.string);
+    try std.testing.expectEqualStrings("7", sample.object.get("asInt").?.string);
+    try std.testing.expectEqualStrings("150", sample.object.get("timeUnixNano").?.string);
+    const attribute = sample.object.get("filteredAttributes").?.array.items[0];
+    try std.testing.expectEqualStrings("request_id", attribute.object.get("key").?.string);
+    try std.testing.expectEqualStrings("abc", attribute.object.get("value").?.object.get("stringValue").?.string);
 }

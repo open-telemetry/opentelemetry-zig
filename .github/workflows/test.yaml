@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  ZIG_VERSION: 0.16.0
+  ZIG_VERSION: 0.17.0
 
 jobs:
 
@@ -103,12 +103,86 @@ jobs:
           version: ${{ env.ZIG_VERSION }}
           mirror: 'https://zigmirror.com'
       - run: zig build --fetch
-      # The optimize argument builds the SDK library with optimizations,
-      # benchmarks files are always compiled with ReleaseFast.
+      # The release flag builds the SDK library with its preferred optimize mode (safe),
+      # benchmarks files are always compiled with the fast optimize mode.
       - run: |
-          zig build sdk-benchmarks -Doptimize=ReleaseFast -Dbenchmark-output=benchmarks-result.txt
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+          zig build sdk-benchmarks --release -Dbenchmark-output=benchmarks-result.txt
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchmarks-result
           path: benchmarks-result.txt
           retention-days: 60
+
+  # gRPC is opt-in (`-Dgrpc-provider=libgrpc`) and compiling gRPC Core from
+  # source is slow, so the two jobs below only run when a PR carries the
+  # 'run::grpc' label.
+  #
+  # This one takes the default route: gRPC Core is built from source as part of
+  # the dependency tree. It is linked dynamically, to cover the installation of
+  # shared libraries next to the examples.
+  grpc_vendored:
+    needs: proto
+    if: contains(github.event.pull_request.labels.*.name, 'run::grpc')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+          # A gRPC Core build fills more than the default 2 GiB limit, which
+          # would empty the cache after each run
+          cache-size-limit: 4096
+      - name: Fetch dependencies
+        run: zig build --fetch -Dgrpc-provider=libgrpc
+      # The CPU is part of every cache key, and the runners' native CPUs vary:
+      # target the baseline CPU so that the cached gRPC Core can be reused.
+      # Zig 0.17 still rebuilds it until https://codeberg.org/ziglang/zig/issues/37200 is fixed
+      - name: Run SDK tests with the libgrpc provider
+        run: zig build -Dcpu=baseline --summary new -Dgrpc-provider=libgrpc -Dgrpc-link-mode=dynamic sdk-test -Dtest-verbose=true
+        timeout-minutes: 50
+      - name: Build gRPC examples
+        run: zig build -Dcpu=baseline --summary new -Dgrpc-provider=libgrpc -Dgrpc-link-mode=dynamic sdk-examples
+        timeout-minutes: 10
+      # The integration harness starts its own collector container.
+      - name: Run gRPC integration test
+        run: zig build -Dcpu=baseline --summary new -Dgrpc-provider=libgrpc -Dgrpc-link-mode=dynamic sdk-run-integration -Dintegration-filter=logs_grpc
+        timeout-minutes: 10
+
+  # Same provider, linking the libgrpc that Homebrew installed (`-fsys=grpc`)
+  # instead of building gRPC Core from source. GitHub's macOS runners have no
+  # Docker daemon, so this job builds the integration test without running it.
+  grpc_system:
+    needs: proto
+    if: contains(github.event.pull_request.labels.*.name, 'run::grpc')
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+          mirror: 'https://zigmirror.com'
+      - name: Install libgrpc
+        run: |
+          brew install grpc
+          # Zig only searches Homebrew's include and lib directories when this
+          # is set (`--search-prefix` does not reach translate-c)
+          echo "HOMEBREW_PREFIX=$(brew --prefix)" >> "$GITHUB_ENV"
+          echo "GRPC_PREFIX=$(brew --prefix grpc)" >> "$GITHUB_ENV"
+      - name: Fetch dependencies
+        run: zig build --fetch -Dgrpc-provider=libgrpc -fsys=grpc
+      - name: Run SDK tests against the system libgrpc
+        run: zig build -Dcpu=baseline --summary new -Dgrpc-provider=libgrpc -fsys=grpc sdk-test -Dtest-verbose=true
+        timeout-minutes: 5
+      - name: Build gRPC examples against the system libgrpc
+        run: zig build -Dcpu=baseline --summary new -Dgrpc-provider=libgrpc -fsys=grpc sdk-examples
+        timeout-minutes: 5
+      - run: otool -L zig-out/bin/grpc/all_signals | grep -F "$GRPC_PREFIX"
+      # Docker is unavailable here: only build the integration test
+      - name: Build gRPC integration test against the system libgrpc
+        run: zig build -Dcpu=baseline --summary new -Dgrpc-provider=libgrpc -fsys=grpc sdk-integration -Dintegration-filter=logs_grpc
+        timeout-minutes: 5

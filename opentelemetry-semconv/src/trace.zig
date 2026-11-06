@@ -113,7 +113,7 @@ pub const aws_bedrock_knowledge_base_id = types.StringAttribute{
 ///
 /// - [\"{ \\"AttributeName\\": \\"string\\", \\"AttributeType\\": \\"string\\" }\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_dynamodb_attribute_definitions = types.StringAttribute{
+pub const aws_dynamodb_attribute_definitions = types.StringArrayAttribute{
     .name = "aws.dynamodb.attribute_definitions",
     .brief = "The JSON-serialized value of each item in the `AttributeDefinitions` request field.",
     .stability = .development,
@@ -126,7 +126,7 @@ pub const aws_dynamodb_attribute_definitions = types.StringAttribute{
 ///
 /// - [\"lives\", \"id\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_dynamodb_attributes_to_get = types.StringAttribute{
+pub const aws_dynamodb_attributes_to_get = types.StringArrayAttribute{
     .name = "aws.dynamodb.attributes_to_get",
     .brief = "The value of the `AttributesToGet` request parameter.",
     .stability = .development,
@@ -148,7 +148,7 @@ pub const aws_dynamodb_consistent_read = types.BooleanAttribute{
 ///
 /// - [\"{ \\"CapacityUnits\\": number, \\"GlobalSecondaryIndexes\\": { \\"string\\" : { \\"CapacityUnits\\": number, \\"ReadCapacityUnits\\": number, \\"WriteCapacityUnits\\": number } }, \\"LocalSecondaryIndexes\\": { \\"string\\" : { \\"CapacityUnits\\": number, \\"ReadCapacityUnits\\": number, \\"WriteCapacityUnits\\": number } }, \\"ReadCapacityUnits\\": number, \\"Table\\": { \\"CapacityUnits\\": number, \\"ReadCapacityUnits\\": number, \\"WriteCapacityUnits\\": number }, \\"TableName\\": \\"string\\", \\"WriteCapacityUnits\\": number }\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_dynamodb_consumed_capacity = types.StringAttribute{
+pub const aws_dynamodb_consumed_capacity = types.StringArrayAttribute{
     .name = "aws.dynamodb.consumed_capacity",
     .brief = "The JSON-serialized value of each item in the `ConsumedCapacity` response field.",
     .stability = .development,
@@ -188,7 +188,7 @@ pub const aws_dynamodb_exclusive_start_table = types.StringAttribute{
 ///
 /// - [\"{ \\"Create\\": { \\"IndexName\\": \\"string\\", \\"KeySchema\\": [ { \\"AttributeName\\": \\"string\\", \\"KeyType\\": \\"string\\" } ], \\"Projection\\": { \\"NonKeyAttributes\\": [ \\"string\\" ], \\"ProjectionType\\": \\"string\\" }, \\"ProvisionedThroughput\\": { \\"ReadCapacityUnits\\": number, \\"WriteCapacityUnits\\": number } }\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_dynamodb_global_secondary_index_updates = types.StringAttribute{
+pub const aws_dynamodb_global_secondary_index_updates = types.StringArrayAttribute{
     .name = "aws.dynamodb.global_secondary_index_updates",
     .brief = "The JSON-serialized value of each item in the `GlobalSecondaryIndexUpdates` request field.",
     .stability = .development,
@@ -201,7 +201,7 @@ pub const aws_dynamodb_global_secondary_index_updates = types.StringAttribute{
 ///
 /// - [\"{ \\"IndexName\\": \\"string\\", \\"KeySchema\\": [ { \\"AttributeName\\": \\"string\\", \\"KeyType\\": \\"string\\" } ], \\"Projection\\": { \\"NonKeyAttributes\\": [ \\"string\\" ], \\"ProjectionType\\": \\"string\\" }, \\"ProvisionedThroughput\\": { \\"ReadCapacityUnits\\": number, \\"WriteCapacityUnits\\": number } }\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_dynamodb_global_secondary_indexes = types.StringAttribute{
+pub const aws_dynamodb_global_secondary_indexes = types.StringArrayAttribute{
     .name = "aws.dynamodb.global_secondary_indexes",
     .brief = "The JSON-serialized value of each item of the `GlobalSecondaryIndexes` request field",
     .stability = .development,
@@ -253,7 +253,7 @@ pub const aws_dynamodb_limit = types.IntAttribute{
 ///
 /// - [\"{ \\"IndexArn\\": \\"string\\", \\"IndexName\\": \\"string\\", \\"IndexSizeBytes\\": number, \\"ItemCount\\": number, \\"KeySchema\\": [ { \\"AttributeName\\": \\"string\\", \\"KeyType\\": \\"string\\" } ], \\"Projection\\": { \\"NonKeyAttributes\\": [ \\"string\\" ], \\"ProjectionType\\": \\"string\\" } }\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_dynamodb_local_secondary_indexes = types.StringAttribute{
+pub const aws_dynamodb_local_secondary_indexes = types.StringArrayAttribute{
     .name = "aws.dynamodb.local_secondary_indexes",
     .brief = "The JSON-serialized value of each item of the `LocalSecondaryIndexes` request field.",
     .stability = .development,
@@ -371,7 +371,7 @@ pub const aws_dynamodb_table_count = types.IntAttribute{
 ///
 /// - [\"Users\", \"Cats\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_dynamodb_table_names = types.StringAttribute{
+pub const aws_dynamodb_table_names = types.StringArrayAttribute{
     .name = "aws.dynamodb.table_names",
     .brief = "The keys in the `RequestItems` object field.",
     .stability = .development,
@@ -582,7 +582,7 @@ pub const azure_cosmosdb_consistency_level = types.StringAttribute{
 ///
 /// - [\"North Central US\", \"Australia East\", \"Australia Southeast\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const azure_cosmosdb_operation_contacted_regions = types.StringAttribute{
+pub const azure_cosmosdb_operation_contacted_regions = types.StringArrayAttribute{
     .name = "azure.cosmosdb.operation.contacted_regions",
     .brief = "List of regions contacted during operation in the order that they were contacted. If there is more than one region listed, it indicates that the operation was performed on multiple regions i.e. cross-regional call.",
     .stability = .development,
@@ -1027,7 +1027,7 @@ pub const db_system_name = types.StringAttribute{
 ///
 /// - [\"10.0.0.1\", \"2001:0db8:85a3:0000:0000:8a2e:0370:7334\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const dns_answers = types.StringAttribute{
+pub const dns_answers = types.StringArrayAttribute{
     .name = "dns.answers",
     .brief = "List of resolved IP addresses (for DNS lookup) or a single element containing domain name (for reverse lookup).",
     .stability = .development,
@@ -1526,7 +1526,7 @@ pub const gen_ai_request_choice_count = types.IntAttribute{
 /// - [\"base64\"]
 /// - [\"float\", \"binary\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const gen_ai_request_encoding_formats = types.StringAttribute{
+pub const gen_ai_request_encoding_formats = types.StringArrayAttribute{
     .name = "gen_ai.request.encoding_formats",
     .brief = "The encoding formats requested in an embeddings operation, if specified.",
     .stability = .development,
@@ -1604,7 +1604,7 @@ pub const gen_ai_request_seed = types.IntAttribute{
 ///
 /// - [\"forest\", \"lived\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const gen_ai_request_stop_sequences = types.StringAttribute{
+pub const gen_ai_request_stop_sequences = types.StringArrayAttribute{
     .name = "gen_ai.request.stop_sequences",
     .brief = "List of sequences that the model will use to stop generating further tokens.",
     .stability = .development,
@@ -1657,7 +1657,7 @@ pub const gen_ai_request_top_p = types.DoubleAttribute{
 /// - [\"stop\"]
 /// - [\"stop\", \"length\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const gen_ai_response_finish_reasons = types.StringAttribute{
+pub const gen_ai_response_finish_reasons = types.StringArrayAttribute{
     .name = "gen_ai.response.finish_reasons",
     .brief = "Array of reasons the model stopped generating tokens, corresponding to each generation received.",
     .stability = .development,
@@ -1828,7 +1828,7 @@ pub const http_request_body_size = types.IntAttribute{
 ///
 /// - [\"application/json\"]
 /// - [\"1.2.3.4\", \"1.2.3.5\"]
-pub const http_request_header = types.StringAttribute{
+pub const http_request_header = types.StringArrayAttribute{
     .name = "http.request.header",
     .brief = "HTTP request headers, `<key>` being the normalized HTTP Header name (lowercase), the value being the header values.",
     .stability = .stable,
@@ -1907,7 +1907,7 @@ pub const http_response_body_size = types.IntAttribute{
 ///
 /// - [\"application/json\"]
 /// - [\"abc\", \"def\"]
-pub const http_response_header = types.StringAttribute{
+pub const http_response_header = types.StringArrayAttribute{
     .name = "http.response.header",
     .brief = "HTTP response headers, `<key>` being the normalized HTTP Header name (lowercase), the value being the header values.",
     .stability = .stable,
@@ -2072,7 +2072,7 @@ pub const network_type = types.StringAttribute{
 ///
 /// - [\"cmd/otecol\", \"--config=config.yaml\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const process_command_args = types.StringAttribute{
+pub const process_command_args = types.StringArrayAttribute{
     .name = "process.command_args",
     .brief = "All the command arguments (including the command/executable itself) as received by the process. On Linux-based systems (and some other Unixoid systems supporting procfs), can be set according to the list of null-delimited strings extracted from `proc/[pid]/cmdline`. For libc-based executables, this would be the full argv vector passed to `main`. SHOULD NOT be collected by default unless there is sanitization that excludes sensitive data.",
     .stability = .development,

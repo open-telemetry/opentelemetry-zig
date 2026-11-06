@@ -40,44 +40,21 @@ const types = @import("types.zig");
 /// Note: This attribute is deprecated. {{ attr.deprecated }}
 {% endif %}
 {# Generate simple attribute #}
+{# Zig type of the definition, by registry attribute type. Template types (`template[T]`) describe a
+   family of keys sharing a prefix, their values have the type of `T`. Unknown types stay strings. #}
+{% set attribute_types = {
+    "string": "StringAttribute", "int": "IntAttribute", "double": "DoubleAttribute", "boolean": "BooleanAttribute",
+    "string[]": "StringArrayAttribute", "int[]": "IntArrayAttribute", "double[]": "DoubleArrayAttribute", "boolean[]": "BooleanArrayAttribute",
+    "template[string]": "StringAttribute", "template[int]": "IntAttribute", "template[double]": "DoubleAttribute", "template[boolean]": "BooleanAttribute",
+    "template[string[]]": "StringArrayAttribute", "template[int[]]": "IntArrayAttribute", "template[double[]]": "DoubleArrayAttribute", "template[boolean[]]": "BooleanArrayAttribute",
+} %}
 {% set attr_name = attr.name | replace('.', '_') | replace('-', '_') | snake_case %}
-{% if attr.type == 'string' %}
-pub const {{ attr_name }} = types.StringAttribute{
+pub const {{ attr_name }} = types.{{ attribute_types[attr.type] if attr.type in attribute_types else 'StringAttribute' }}{
     .name = "{{ attr.name }}",
     .brief = "{{ attr.brief | replace('\\', '\\\\') | replace('"', '\\"') | replace('\n', ' ') | trim }}",
     .stability = {{ '.stable' if attr.stability == 'stable' else '.development' if attr.stability == 'development' else '.experimental' if attr.stability == 'experimental' else '.deprecated' if attr.deprecated else '.development' }},
     .requirement_level = {{ '.required' if attr.requirement_level == 'required' else '.recommended' if attr.requirement_level == 'recommended' else '.opt_in' if attr.requirement_level == 'opt_in' else '.conditionally_required' if attr.requirement_level == 'conditionally_required' else '.opt_in' }},
 };
-{% elif attr.type == 'int' %}
-pub const {{ attr_name }} = types.IntAttribute{
-    .name = "{{ attr.name }}",
-    .brief = "{{ attr.brief | replace('\\', '\\\\') | replace('"', '\\"') | replace('\n', ' ') | trim }}",
-    .stability = {{ '.stable' if attr.stability == 'stable' else '.development' if attr.stability == 'development' else '.experimental' if attr.stability == 'experimental' else '.deprecated' if attr.deprecated else '.development' }},
-    .requirement_level = {{ '.required' if attr.requirement_level == 'required' else '.recommended' if attr.requirement_level == 'recommended' else '.opt_in' if attr.requirement_level == 'opt_in' else '.conditionally_required' if attr.requirement_level == 'conditionally_required' else '.opt_in' }},
-};
-{% elif attr.type == 'double' %}
-pub const {{ attr_name }} = types.DoubleAttribute{
-    .name = "{{ attr.name }}",
-    .brief = "{{ attr.brief | replace('\\', '\\\\') | replace('"', '\\"') | replace('\n', ' ') | trim }}",
-    .stability = {{ '.stable' if attr.stability == 'stable' else '.development' if attr.stability == 'development' else '.experimental' if attr.stability == 'experimental' else '.deprecated' if attr.deprecated else '.development' }},
-    .requirement_level = {{ '.required' if attr.requirement_level == 'required' else '.recommended' if attr.requirement_level == 'recommended' else '.opt_in' if attr.requirement_level == 'opt_in' else '.conditionally_required' if attr.requirement_level == 'conditionally_required' else '.opt_in' }},
-};
-{% elif attr.type == 'boolean' %}
-pub const {{ attr_name }} = types.BooleanAttribute{
-    .name = "{{ attr.name }}",
-    .brief = "{{ attr.brief | replace('\\', '\\\\') | replace('"', '\\"') | replace('\n', ' ') | trim }}",
-    .stability = {{ '.stable' if attr.stability == 'stable' else '.development' if attr.stability == 'development' else '.experimental' if attr.stability == 'experimental' else '.deprecated' if attr.deprecated else '.development' }},
-    .requirement_level = {{ '.required' if attr.requirement_level == 'required' else '.recommended' if attr.requirement_level == 'recommended' else '.opt_in' if attr.requirement_level == 'opt_in' else '.conditionally_required' if attr.requirement_level == 'conditionally_required' else '.opt_in' }},
-};
-{% else %}
-{# Fallback to StringAttribute #}
-pub const {{ attr_name }} = types.StringAttribute{
-    .name = "{{ attr.name }}",
-    .brief = "{{ attr.brief | replace('\\', '\\\\') | replace('"', '\\"') | replace('\n', ' ') | trim }}",
-    .stability = {{ '.stable' if attr.stability == 'stable' else '.development' if attr.stability == 'development' else '.experimental' if attr.stability == 'experimental' else '.deprecated' if attr.deprecated else '.development' }},
-    .requirement_level = {{ '.required' if attr.requirement_level == 'required' else '.recommended' if attr.requirement_level == 'recommended' else '.opt_in' if attr.requirement_level == 'opt_in' else '.conditionally_required' if attr.requirement_level == 'conditionally_required' else '.opt_in' }},
-};
-{% endif %}
 
 {% endfor %}
 

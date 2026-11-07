@@ -300,7 +300,6 @@ pub fn Counter(comptime T: type) type {
         collection_start_ns: u64 = 0,
         pre_sum: bool = true,
         cardinality_limit: usize = 2000,
-        has_overflow: bool = false,
 
         /// Pre-aggregated data points when every reader and view resolves to Sum.
         aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true),
@@ -317,7 +316,6 @@ pub fn Counter(comptime T: type) type {
             return Self{
                 .pre_sum = true,
                 .cardinality_limit = 2000,
-                .has_overflow = false,
                 .aggregated_points = .empty,
                 .data_points = .empty,
                 .allocator = allocator,
@@ -365,10 +363,7 @@ pub fn Counter(comptime T: type) type {
             // and does not say whether it counts towards the limit. Like the Go and Java SDKs, it does:
             // at most `cardinality_limit - 1` regular series are kept, leaving the last slot to the overflow series.
             // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#overflow-attribute
-            if (self.cardinality_limit > 0 and
-                (self.aggregated_points.count() >= self.cardinality_limit or
-                    (!self.has_overflow and self.aggregated_points.count() >= self.cardinality_limit - 1)))
-            {
+            if (self.cardinality_limit > 0 and self.aggregated_points.count() >= self.cardinality_limit - 1) {
                 if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
                     if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
                     overflow_ptr.value += val;
@@ -398,7 +393,6 @@ pub fn Counter(comptime T: type) type {
 
                 try self.aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
                 overflow_stored = true;
-                self.has_overflow = true;
                 return;
             }
 
@@ -498,7 +492,6 @@ pub fn Counter(comptime T: type) type {
                         m.deinit(self.allocator);
                     }
                     self.aggregated_points.clearRetainingCapacity();
-                    self.has_overflow = false;
                 }
                 return .{ .int = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns) };
             } else if (!has_aggregated and has_raw) {
@@ -528,7 +521,6 @@ pub fn Counter(comptime T: type) type {
 
                 for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
                 self.aggregated_points.clearRetainingCapacity();
-                self.has_overflow = false;
 
                 for (self.data_points.items) |*m| m.deinit(self.allocator);
                 self.data_points.clearRetainingCapacity();

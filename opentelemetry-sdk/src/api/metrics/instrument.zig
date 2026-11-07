@@ -1189,22 +1189,33 @@ test "exemplar recording keeps sampled span IDs after context ends" {
     try std.testing.expectEqual(@as(f64, 2.5), sample.value.double);
 }
 
-test "counter aggregates measurements in place without growing memory" {
-    const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-
-    const meter = try mp.getMeter(.{ .name = "test-meter" });
-    var counter = try meter.createCounter(u64, .{ .name = "http.requests" });
-
-    // Record 10,000 measurements for the same route
+fn recordRequests(counter: *Counter(u64), count: usize) !void {
     const route: []const u8 = "/api/v1/users";
-    for (0..10_000) |_| {
+    for (0..count) |_| {
         try counter.add(1, .{ "http.route", route, "http.status_code", @as(i64, 200) });
     }
+}
 
+test "counter aggregates measurements in place in constant memory" {
+    const io = std.testing.io;
+
+    // Large enough for one series, far too small for thousands of raw measurements.
+    var buffer: [16 * 1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    var counter = Counter(u64).init(fixed.allocator(), io);
+    defer counter.deinit();
+
+    try recordRequests(&counter, 10_000);
     try std.testing.expectEqual(1, counter.aggregated_points.count());
     try std.testing.expectEqual(10_000, counter.aggregated_points.values()[0].value);
+
+    // Control: the same buffer cannot hold the raw measurements.
+    var raw_buffer: [16 * 1024]u8 = undefined;
+    var raw_fixed = std.heap.FixedBufferAllocator.init(&raw_buffer);
+    var raw_counter = Counter(u64).init(raw_fixed.allocator(), io);
+    defer raw_counter.deinit();
+    raw_counter.setPreSum(false);
+    try std.testing.expectError(error.OutOfMemory, recordRequests(&raw_counter, 10_000));
 
     const fetched = try counter.measurementsData(std.testing.allocator);
     defer {

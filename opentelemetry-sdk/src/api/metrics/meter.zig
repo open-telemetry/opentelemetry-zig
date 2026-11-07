@@ -283,18 +283,6 @@ pub const MeterProvider = struct {
 };
 
 fn resolvesToSumOnlyUnlocked(p: *const MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
-    if (p.views.items.len > 0) {
-        var combined_config = view.CombinedViewConfig.init(instr.kind);
-        for (p.views.items) |*v| {
-            if (v.matches(instr, scope)) {
-                combined_config.applyView(v);
-            }
-        }
-        if (combined_config.aggregation) |agg| {
-            if (agg != .Sum) return false;
-        }
-    }
-
     if (p.readers.items.len > 0) {
         for (p.readers.items) |r| {
             const agg = view.aggregationForViews(p.views.items, instr, scope, r.aggregation);
@@ -306,13 +294,6 @@ fn resolvesToSumOnlyUnlocked(p: *const MeterProvider, instr: *const Instrument, 
     }
 
     return true;
-}
-
-fn resolvesToSumOnly(provider: ?*MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
-    const p = provider orelse return true;
-    p.mx.lockUncancelable(p.io);
-    defer p.mx.unlock(p.io);
-    return resolvesToSumOnlyUnlocked(p, instr, scope);
 }
 
 /// Meter is a named instance that is used to record measurements.

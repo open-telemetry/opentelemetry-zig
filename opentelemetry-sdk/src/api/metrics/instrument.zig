@@ -361,7 +361,10 @@ pub fn Counter(comptime T: type) type {
                 return;
             }
 
-            // Check cardinality limit
+            // The spec requires creating the overflow series prior to reaching the cardinality limit,
+            // and does not say whether it counts towards the limit. Like the Go and Java SDKs, it does:
+            // at most `cardinality_limit - 1` regular series are kept, leaving the last slot to the overflow series.
+            // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#overflow-attribute
             if (self.cardinality_limit > 0 and
                 (self.aggregated_points.count() >= self.cardinality_limit or
                     (!self.has_overflow and self.aggregated_points.count() >= self.cardinality_limit - 1)))
@@ -1233,12 +1236,16 @@ test "counter enforces cardinality limit with overflow series" {
     var counter = try meter.createCounter(u64, .{ .name = "high.cardinality" });
     counter.cardinality_limit = 3;
 
+    // The overflow series is created before the limit is reached and takes one of its slots:
+    // with a limit of 3, only 2 regular series fit.
     try counter.add(1, .{ "id", @as(i64, 1) });
     try counter.add(2, .{ "id", @as(i64, 2) });
+    try std.testing.expectEqual(2, counter.aggregated_points.count());
+
+    // The 3rd distinct attribute set goes to the overflow series (otel.metric.overflow=true),
+    // and so do the following ones.
     try counter.add(3, .{ "id", @as(i64, 3) });
     try std.testing.expectEqual(3, counter.aggregated_points.count());
-
-    // 4th distinct attribute set is aggregated into the overflow series (otel.metric.overflow=true)
     try counter.add(4, .{ "id", @as(i64, 4) });
     try std.testing.expectEqual(3, counter.aggregated_points.count());
 
@@ -1255,7 +1262,7 @@ test "counter enforces cardinality limit with overflow series" {
     }
 
     try std.testing.expectEqual(3, fetched.int.len);
-    // Find overflow series
+    // The overflow series holds the sum of the measurements that did not fit: 3 + 4.
     var found_overflow = false;
     for (fetched.int) |point| {
         if (point.attributes) |attrs| {

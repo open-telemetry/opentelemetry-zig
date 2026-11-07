@@ -339,11 +339,12 @@ pub fn Counter(comptime T: type) type {
             self.data_points.deinit(self.allocator);
         }
 
-        fn recordSumPoint(self: *Self, mut_dp: DataPoint(T)) !void {
-            var dp = mut_dp;
-            var stored = false;
-            defer if (!stored) dp.deinit(self.allocator);
-
+        /// Fold `dp` into the pre-aggregated series.
+        ///
+        /// Whatever gets moved into the map is cleared from `dp`, so the caller
+        /// must always call `dp.deinit` afterwards, whether this succeeded or not:
+        /// it frees what was not moved (everything on error, the merged duplicate on success).
+        fn recordSumPoint(self: *Self, dp: *DataPoint(T)) !void {
             const val: i64 = @intCast(dp.value);
             const key = Attributes.with(dp.attributes);
             if (self.aggregated_points.getPtr(key)) |existing| {
@@ -406,7 +407,12 @@ pub fn Counter(comptime T: type) type {
                 .timestamps = dp.timestamps,
             };
             try self.aggregated_points.put(self.allocator, Attributes.with(dp.attributes), dp_i64);
-            stored = true;
+
+            // The map owns these now.
+            dp.attributes = null;
+            dp.attributes_owned = false;
+            dp.exemplar_candidate = null;
+            dp.exemplars = &.{};
         }
 
         pub fn setPreSum(self: *Self, enabled: bool) void {
@@ -417,15 +423,19 @@ pub fn Counter(comptime T: type) type {
             self.pre_sum = enabled;
 
             if (enabled) {
-                // Switching back to Sum: drain any pending raw points into aggregated_points
-                while (self.data_points.items.len > 0) {
-                    const raw_dp = self.data_points.items[0];
-                    self.recordSumPoint(raw_dp) catch {
-                        // On allocation failure, keep remaining points in data_points
-                        break;
-                    };
-                    _ = self.data_points.orderedRemove(0);
+                // Switching back to Sum: drain any pending raw points into aggregated_points.
+                // On allocation failure, the failed point and the ones after it stay in data_points.
+                const items = self.data_points.items;
+                var drained: usize = 0;
+                for (items) |*raw_dp| {
+                    self.recordSumPoint(raw_dp) catch break;
+                    drained += 1;
                 }
+                // Drained points were moved out of or merged, so only the leftovers need freeing.
+                for (items[0..drained]) |*raw_dp| raw_dp.deinit(self.allocator);
+                const remaining = items.len - drained;
+                std.mem.copyForwards(DataPoint(T), items[0..remaining], items[drained..]);
+                self.data_points.shrinkRetainingCapacity(remaining);
             }
         }
 
@@ -435,8 +445,9 @@ pub fn Counter(comptime T: type) type {
             defer self.lock.unlock(self.io);
 
             if (self.pre_sum) {
-                const dp = try DataPoint(T).new(self.allocator, delta, attributes);
-                try self.recordSumPoint(dp);
+                var dp = try DataPoint(T).new(self.allocator, delta, attributes);
+                defer dp.deinit(self.allocator);
+                try self.recordSumPoint(&dp);
             } else {
                 var dp = try DataPoint(T).new(self.allocator, delta, attributes);
                 errdefer dp.deinit(self.allocator);
@@ -451,7 +462,7 @@ pub fn Counter(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            const dp = DataPoint(T){
+            var dp = DataPoint(T){
                 .value = delta,
                 .attributes = if (attributes) |attrs|
                     try self.allocator.dupe(Attribute, attrs)
@@ -459,12 +470,12 @@ pub fn Counter(comptime T: type) type {
                     null,
             };
             if (self.pre_sum) {
-                try self.recordSumPoint(dp);
+                defer dp.deinit(self.allocator);
+                try self.recordSumPoint(&dp);
             } else {
-                var mut_dp = dp;
-                errdefer mut_dp.deinit(self.allocator);
-                try mut_dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, mut_dp);
+                errdefer dp.deinit(self.allocator);
+                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                try self.data_points.append(self.allocator, dp);
             }
         }
 
@@ -1325,4 +1336,32 @@ fn testCounterAllocationFailures(allocator: std.mem.Allocator) !void {
 
 test "counter in-place aggregation handles allocation failures without leaks or double-frees" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testCounterAllocationFailures, .{});
+}
+
+fn testSwitchBackToSumAllocationFailures(allocator: std.mem.Allocator) !void {
+    const io = std.testing.io;
+    var c = Counter(u32).init(allocator, io);
+    defer c.deinit();
+    c.cardinality_limit = 3;
+
+    c.setPreSum(false);
+    try c.add(1, .{ "status", @as([]const u8, "200") });
+    try c.add(2, .{ "status", @as([]const u8, "200") });
+    try c.add(3, .{ "status", @as([]const u8, "404") });
+    try c.add(4, .{ "status", @as([]const u8, "500") });
+    try c.add(5, .{ "status", @as([]const u8, "502") });
+
+    // A failure while draining must leave the remaining raw points valid.
+    c.setPreSum(true);
+
+    var data = try c.measurementsData(allocator);
+    defer data.deinit(allocator);
+
+    var total: i64 = 0;
+    for (data.int) |point| total += point.value;
+    try std.testing.expectEqual(15, total);
+}
+
+test "switching back to Sum handles allocation failures without leaks or double-frees" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testSwitchBackToSumAllocationFailures, .{});
 }

@@ -74,8 +74,18 @@ pub const AttributeType = enum {
 
 /// A semantic convention attribute definition
 pub fn Attribute(comptime ValueType: type) type {
+    return AttributeWithValues(ValueType, void);
+}
+
+/// An attribute definition whose `well_known_values` enum lists the values the semantic
+/// conventions name for it, or `void` for an attribute that has none.
+fn AttributeWithValues(comptime ValueType: type, comptime WellKnownValues: type) type {
     return struct {
         const Self = @This();
+
+        /// The enum listing the well-known values of the attribute, `void` if it has none.
+        /// A declaration, so it is read from the type: `@TypeOf(attr).well_known_values`
+        pub const well_known_values = WellKnownValues;
 
         /// The attribute name/key
         name: []const u8,
@@ -227,53 +237,16 @@ pub const ArrayAttribute = union(enum) {
     }
 };
 
-/// Enum attribute with well-known values
+/// Attribute with well-known string values, listed by `EnumType`: every well-known value
+/// is reachable from the definition, as `@TypeOf(http_request_method).well_known_values.get`.
 pub fn EnumAttribute(comptime EnumType: type) type {
-    return struct {
-        const Self = @This();
+    return AttributeWithValues([]const u8, EnumType);
+}
 
-        /// The base attribute definition
-        base: StringAttribute,
-        /// Well-known enum values as the enum type for type safety
-        well_known_values: EnumType,
-
-        pub fn init(
-            name: []const u8,
-            brief: []const u8,
-            stability: StabilityLevel,
-            requirement_level: RequirementLevel,
-            well_known_values: EnumType,
-        ) Self {
-            return Self{
-                .base = StringAttribute.init(name, brief, stability, requirement_level),
-                .well_known_values = well_known_values,
-            };
-        }
-
-        pub fn withNote(self: Self, note: []const u8) Self {
-            var result = self;
-            result.base = result.base.withNote(note);
-            return result;
-        }
-
-        pub fn withCondition(self: Self, condition: []const u8) Self {
-            var result = self;
-            result.base = result.base.withCondition(condition);
-            return result;
-        }
-
-        pub fn withExamples(self: Self, examples: []const []const u8) Self {
-            var result = self;
-            result.base = result.base.withExamples(examples);
-            return result;
-        }
-
-        pub fn withDeprecation(self: Self, reason: []const u8) Self {
-            var result = self;
-            result.base = result.base.withDeprecation(reason);
-            return result;
-        }
-    };
+/// Attribute with well-known integer values, for the attributes whose members are numbers.
+/// `EnumType` spells them through `toInt()`.
+pub fn IntEnumAttribute(comptime EnumType: type) type {
+    return AttributeWithValues(i64, EnumType);
 }
 
 /// A semantic convention group containing related attributes
@@ -448,6 +421,46 @@ test "Attribute with note and condition" {
 
     try std.testing.expectEqualStrings("This is a note", attr.note.?);
     try std.testing.expectEqualStrings("If something is true", attr.requirement_condition.?);
+}
+
+test "EnumAttribute has the shape of a plain attribute and exposes the whole enum" {
+    const Method = enum {
+        get,
+        post,
+
+        pub fn toString(self: @This()) []const u8 {
+            return switch (self) {
+                .get => "GET",
+                .post => "POST",
+            };
+        }
+    };
+    const attr = EnumAttribute(Method).init("test.method", "A method", .stable, .recommended);
+
+    try std.testing.expectEqualStrings("test.method", attr.name);
+    try std.testing.expectEqual(StabilityLevel.stable, attr.stability);
+    try std.testing.expectEqual(Method, @TypeOf(attr).well_known_values);
+    try std.testing.expectEqualStrings("POST", @TypeOf(attr).well_known_values.post.toString());
+    try std.testing.expectEqual(void, StringAttribute.well_known_values);
+}
+
+test "IntEnumAttribute holds integer values" {
+    const Generation = enum {
+        gen0,
+        gen1,
+
+        pub fn toInt(self: @This()) i64 {
+            return switch (self) {
+                .gen0 => 0,
+                .gen1 => 1,
+            };
+        }
+    };
+    const attr = IntEnumAttribute(Generation).init("test.gen", "A generation", .development, .recommended)
+        .withExamples(&.{ 0, 1 });
+
+    try std.testing.expectEqual(@as(i64, 1), @TypeOf(attr).well_known_values.gen1.toInt());
+    try std.testing.expectEqual(@as(i64, 1), attr.examples.?[1]);
 }
 
 test "StabilityLevel string conversion" {

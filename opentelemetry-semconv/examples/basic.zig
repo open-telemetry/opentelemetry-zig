@@ -7,8 +7,8 @@ const semconv = @import("opentelemetry-semconv");
 pub fn main() !void {
     // Accessing attributes from the attribute namespace
     const http_method = semconv.attribute.http_request_method;
-    std.debug.assert(std.mem.eql(u8, http_method.base.name, "http.request.method"));
-    std.debug.assert(http_method.base.stability == .stable);
+    std.debug.assert(std.mem.eql(u8, http_method.name, "http.request.method"));
+    std.debug.assert(http_method.stability == .stable);
 
     // Attribute with enum values
     const method_get = semconv.attribute.http_request_methodValue.get;

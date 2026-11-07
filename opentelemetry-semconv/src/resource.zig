@@ -147,7 +147,7 @@ pub const aws_eks_cluster_arn = types.StringAttribute{
 ///
 /// - [\"arn:aws:logs:us-west-1:123456789012:log-group:/aws/my/group:*\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_log_group_arns = types.StringAttribute{
+pub const aws_log_group_arns = types.StringArrayAttribute{
     .name = "aws.log.group.arns",
     .brief = "The Amazon Resource Name(s) (ARN) of the AWS log group(s).",
     .stability = .development,
@@ -160,7 +160,7 @@ pub const aws_log_group_arns = types.StringAttribute{
 ///
 /// - [\"/aws/lambda/my-function\", \"opentelemetry-service\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_log_group_names = types.StringAttribute{
+pub const aws_log_group_names = types.StringArrayAttribute{
     .name = "aws.log.group.names",
     .brief = "The name(s) of the AWS log group(s) an application is writing to.",
     .stability = .development,
@@ -173,7 +173,7 @@ pub const aws_log_group_names = types.StringAttribute{
 ///
 /// - [\"arn:aws:logs:us-west-1:123456789012:log-group:/aws/my/group:log-stream:logs/main/10838bed-421f-43ef-870a-f43feacbbb5b\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_log_stream_arns = types.StringAttribute{
+pub const aws_log_stream_arns = types.StringArrayAttribute{
     .name = "aws.log.stream.arns",
     .brief = "The ARN(s) of the AWS log stream(s).",
     .stability = .development,
@@ -186,7 +186,7 @@ pub const aws_log_stream_arns = types.StringAttribute{
 ///
 /// - [\"logs/main/10838bed-421f-43ef-870a-f43feacbbb5b\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const aws_log_stream_names = types.StringAttribute{
+pub const aws_log_stream_names = types.StringArrayAttribute{
     .name = "aws.log.stream.names",
     .brief = "The name(s) of the AWS log stream(s) an application is writing to.",
     .stability = .development,
@@ -199,7 +199,7 @@ pub const aws_log_stream_names = types.StringAttribute{
 ///
 /// - [\" Not A;Brand 99\", \"Chromium 99\", \"Chrome 99\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const browser_brands = types.StringAttribute{
+pub const browser_brands = types.StringArrayAttribute{
     .name = "browser.brands",
     .brief = "Array of brand name and version separated by a space",
     .stability = .development,
@@ -554,7 +554,7 @@ pub const container_command = types.StringAttribute{
 ///
 /// - [\"otelcontribcol\", \"--config\", \"config.yaml\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const container_command_args = types.StringAttribute{
+pub const container_command_args = types.StringArrayAttribute{
     .name = "container.command_args",
     .brief = "All the command arguments (including the command/executable itself) run by the container.",
     .stability = .development,
@@ -619,7 +619,7 @@ pub const container_image_name = types.StringAttribute{
 ///
 /// - [\"example@sha256:afcc7f1ac1b49db317a7196c902e61c6c3c4607d63599ee1a82d702d249a0ccb\", \"internal.registry.example.com:5000/example@sha256:b69959407d21e8a062e0416bf13405bb2b71ed7a84dde4158ebafacfa06f5578\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const container_image_repo_digests = types.StringAttribute{
+pub const container_image_repo_digests = types.StringArrayAttribute{
     .name = "container.image.repo_digests",
     .brief = "Repo digests of the container image as provided by the container runtime.",
     .stability = .development,
@@ -632,7 +632,7 @@ pub const container_image_repo_digests = types.StringAttribute{
 ///
 /// - [\"v1.27.1\", \"3.5.7-0\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const container_image_tags = types.StringAttribute{
+pub const container_image_tags = types.StringArrayAttribute{
     .name = "container.image.tags",
     .brief = "Container image tags. An example can be found in [Docker Image Inspect](https://docs.docker.com/engine/api/v1.43/#tag/Image/operation/ImageInspect). Should be only the `<tag>` section of the full name for example from `registry.example.com/my-org/my-image:<tag>`.",
     .stability = .development,
@@ -1149,7 +1149,7 @@ pub const host_image_version = types.StringAttribute{
 ///
 /// - [\"192.168.1.140\", \"fe80::abc2:4a28:737a:609e\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const host_ip = types.StringAttribute{
+pub const host_ip = types.StringArrayAttribute{
     .name = "host.ip",
     .brief = "Available IP addresses of the host, excluding loopback interfaces.",
     .stability = .development,
@@ -1162,7 +1162,7 @@ pub const host_ip = types.StringAttribute{
 ///
 /// - [\"AC-DE-48-23-45-67\", \"AC-DE-48-23-45-67-01-9F\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const host_mac = types.StringAttribute{
+pub const host_mac = types.StringArrayAttribute{
     .name = "host.mac",
     .brief = "Available MAC addresses of the host, excluding loopback interfaces.",
     .stability = .development,
@@ -1988,7 +1988,7 @@ pub const process_command = types.StringAttribute{
 ///
 /// - [\"cmd/otecol\", \"--config=config.yaml\"]
 /// Note: This attribute is experimental and may change in the future.
-pub const process_command_args = types.StringAttribute{
+pub const process_command_args = types.StringArrayAttribute{
     .name = "process.command_args",
     .brief = "All the command arguments (including the command/executable itself) as received by the process. On Linux-based systems (and some other Unixoid systems supporting procfs), can be set according to the list of null-delimited strings extracted from `proc/[pid]/cmdline`. For libc-based executables, this would be the full argv vector passed to `main`. SHOULD NOT be collected by default unless there is sanitization that excludes sensitive data.",
     .stability = .development,

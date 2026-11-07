@@ -63,24 +63,22 @@ fn isString(comptime T: type) bool {
 
 /// The key of an attribute, either spelled out or taken from a semantic convention
 /// attribute definition of the opentelemetry-semconv module. Definitions are matched
-/// structurally, so the SDK does not depend on that module: a plain `name` field is a
-/// `types.Attribute`, a `base.name` one is a `types.EnumAttribute`.
+/// structurally, so the SDK does not depend on that module: every definition, with or
+/// without well-known values, has a `name` field.
 fn keyOf(definition: anytype) []const u8 {
     const T = @TypeOf(definition);
     if (comptime isString(T)) return definition;
-    if (comptime @typeInfo(T) == .@"struct") {
-        if (comptime @hasField(T, "name")) return definition.name;
-        if (comptime @hasField(T, "base")) return definition.base.name;
-    }
+    if (comptime @typeInfo(T) == .@"struct" and @hasField(T, "name")) return definition.name;
     @compileError("attribute key must be a string or a semantic convention attribute definition, found " ++ @typeName(T));
 }
 
 /// The enum a semantic convention enum attribute definition draws its well-known values
 /// from, or null for any other kind of key. Matched structurally like `keyOf`, on the
-/// `well_known_values` field of `types.EnumAttribute`.
+/// `well_known_values` declaration of `types.EnumAttribute`, which is `void` for the
+/// definitions that have no well-known values.
 fn wellKnownEnum(comptime T: type) ?type {
-    if (@typeInfo(T) != .@"struct" or !@hasField(T, "well_known_values")) return null;
-    const E = @FieldType(T, "well_known_values");
+    if (@typeInfo(T) != .@"struct" or !@hasDecl(T, "well_known_values")) return null;
+    const E = T.well_known_values;
     return if (@typeInfo(E) == .@"enum") E else null;
 }
 
@@ -212,8 +210,8 @@ pub fn flatten(data: anytype) [flatCount(@TypeOf(data))]Attribute {
 }
 
 test "fromPairs takes the key from a semantic convention definition" {
-    // Shape of the opentelemetry-semconv types: a plain definition carries the name
-    // directly, an enum one carries it in `base`, and its values spell themselves.
+    // Shape of the opentelemetry-semconv types: every definition carries its name directly,
+    // an enum one also names its enum of well-known values, which spell themselves.
     const Definition = struct { name: []const u8, stability: enum { stable } };
     const Method = enum {
         get,
@@ -225,12 +223,13 @@ test "fromPairs takes the key from a semantic convention definition" {
             };
         }
     };
-    const EnumDefinition = struct { base: Definition, well_known_values: Method };
-
-    const http_request_method: EnumDefinition = .{
-        .base = .{ .name = "http.request.method", .stability = .stable },
-        .well_known_values = .get,
+    const EnumDefinition = struct {
+        name: []const u8,
+        stability: enum { stable },
+        pub const well_known_values = Method;
     };
+
+    const http_request_method: EnumDefinition = .{ .name = "http.request.method", .stability = .stable };
     const http_response_status_code: Definition = .{ .name = "http.response.status_code", .stability = .stable };
 
     const attrs = fromPairs(.{
@@ -263,18 +262,14 @@ test "fromPairs resolves an enum literal against the enum of its key" {
             };
         }
     };
-    const Definition = struct { name: []const u8 };
-    const EnumDefinition = struct { base: Definition, well_known_values: Method };
+    const EnumDefinition = struct {
+        name: []const u8,
+        pub const well_known_values = Method;
+    };
 
-    const http_request_method: EnumDefinition = .{
-        .base = .{ .name = "http.request.method" },
-        .well_known_values = .get,
-    };
+    const http_request_method: EnumDefinition = .{ .name = "http.request.method" };
     // An open set: the definition has well-known values, but any string is allowed.
-    const error_type: EnumDefinition = .{
-        .base = .{ .name = "error.type" },
-        .well_known_values = .get,
-    };
+    const error_type: EnumDefinition = .{ .name = "error.type" };
 
     // A literal is comptime-only, which makes it a comptime field of the pairs tuple;
     // runtime values in the other pairs are unaffected.

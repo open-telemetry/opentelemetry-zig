@@ -299,7 +299,7 @@ pub fn Counter(comptime T: type) type {
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
         collection_start_ns: u64 = 0,
         pre_sum: bool = true,
-        cardinality_limit: usize = 2000,
+        cardinality_limit: usize,
 
         /// Pre-aggregated data points when every reader and view resolves to Sum.
         aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true),

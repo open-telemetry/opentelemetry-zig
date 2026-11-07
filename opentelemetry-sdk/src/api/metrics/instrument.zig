@@ -344,11 +344,14 @@ pub fn Counter(comptime T: type) type {
         /// Whatever gets moved into the map is cleared from `dp`, so the caller
         /// must always call `dp.deinit` afterwards, whether this succeeded or not:
         /// it frees what was not moved (everything on error, the merged duplicate on success).
-        fn recordSumPoint(self: *Self, dp: *DataPoint(T)) !void {
+        ///
+        /// `capture_exemplar` is false for points that were already recorded: their exemplar
+        /// candidate was captured, or filtered out, in the context of the original measurement.
+        fn recordSumPoint(self: *Self, dp: *DataPoint(T), capture_exemplar: bool) !void {
             const val: i64 = @intCast(dp.value);
             const key = Attributes.with(dp.attributes);
             if (self.aggregated_points.getPtr(key)) |existing| {
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
                 existing.value += val;
                 if (dp.exemplar_candidate) |sample| {
                     if (existing.exemplar_candidate) |*prev| prev.deinit(self.allocator);
@@ -364,7 +367,7 @@ pub fn Counter(comptime T: type) type {
                     (!self.has_overflow and self.aggregated_points.count() >= self.cardinality_limit - 1)))
             {
                 if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
-                    try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                    if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
                     overflow_ptr.value += val;
                     if (dp.exemplar_candidate) |sample| {
                         if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
@@ -384,7 +387,7 @@ pub fn Counter(comptime T: type) type {
                 var overflow_stored = false;
                 defer if (!overflow_stored) overflow_dp.deinit(self.allocator);
 
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
                 if (dp.exemplar_candidate) |sample| {
                     overflow_dp.exemplar_candidate = sample;
                     dp.exemplar_candidate = null;
@@ -396,7 +399,7 @@ pub fn Counter(comptime T: type) type {
                 return;
             }
 
-            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+            if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
 
             const dp_i64 = DataPoint(i64){
                 .value = val,
@@ -428,7 +431,7 @@ pub fn Counter(comptime T: type) type {
                 const items = self.data_points.items;
                 var drained: usize = 0;
                 for (items) |*raw_dp| {
-                    self.recordSumPoint(raw_dp) catch break;
+                    self.recordSumPoint(raw_dp, false) catch break;
                     drained += 1;
                 }
                 // Drained points were moved out of or merged, so only the leftovers need freeing.
@@ -447,7 +450,7 @@ pub fn Counter(comptime T: type) type {
             if (self.pre_sum) {
                 var dp = try DataPoint(T).new(self.allocator, delta, attributes);
                 defer dp.deinit(self.allocator);
-                try self.recordSumPoint(&dp);
+                try self.recordSumPoint(&dp, true);
             } else {
                 var dp = try DataPoint(T).new(self.allocator, delta, attributes);
                 errdefer dp.deinit(self.allocator);
@@ -471,7 +474,7 @@ pub fn Counter(comptime T: type) type {
             };
             if (self.pre_sum) {
                 defer dp.deinit(self.allocator);
-                try self.recordSumPoint(&dp);
+                try self.recordSumPoint(&dp, true);
             } else {
                 errdefer dp.deinit(self.allocator);
                 try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
@@ -1364,4 +1367,49 @@ fn testSwitchBackToSumAllocationFailures(allocator: std.mem.Allocator) !void {
 
 test "switching back to Sum handles allocation failures without leaks or double-frees" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testSwitchBackToSumAllocationFailures, .{});
+}
+
+test "switching back to Sum keeps the exemplars captured at record time" {
+    const io = std.testing.io;
+    var c = Counter(u64).init(std.testing.allocator, io);
+    defer c.deinit();
+
+    c.setPreSum(false);
+    c.exemplar_filter = .always_on;
+    try c.add(7, .{ "route", @as([]const u8, "/sampled") });
+    c.exemplar_filter = .always_off;
+    try c.add(3, .{ "route", @as([]const u8, "/filtered") });
+
+    // The filter in effect while draining must not matter.
+    c.exemplar_filter = .always_off;
+    c.setPreSum(true);
+
+    var data = try c.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(2, data.int.len);
+    for (data.int) |point| {
+        switch (point.value) {
+            7 => try std.testing.expectEqual(@as(i64, 7), point.exemplar_candidate.?.value.int),
+            3 => try std.testing.expect(point.exemplar_candidate == null),
+            else => return error.UnexpectedPoint,
+        }
+    }
+}
+
+test "switching back to Sum does not invent exemplars for filtered measurements" {
+    const io = std.testing.io;
+    var c = Counter(u64).init(std.testing.allocator, io);
+    defer c.deinit();
+
+    c.setPreSum(false);
+    c.exemplar_filter = .always_off;
+    try c.add(3, .{ "route", @as([]const u8, "/filtered") });
+
+    c.exemplar_filter = .always_on;
+    c.setPreSum(true);
+
+    var data = try c.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(1, data.int.len);
+    try std.testing.expect(data.int[0].exemplar_candidate == null);
 }

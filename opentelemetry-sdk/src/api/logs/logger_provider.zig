@@ -1025,9 +1025,8 @@ test "Logger.emitStructured flattens nested body fields and keeps attributes sep
     const logger = try provider.getLogger(scope);
 
     // Semantic convention fields go in the attributes, the event payload in the body.
-    // Their names are spelled out here because the SDK does not depend on the semconv
-    // module; applications pass its definitions to fromPairs instead, as the
-    // examples/logs/structured.zig example does.
+    // Their names are spelled out here; applications pass the definitions of the semconv
+    // module to fromPairs instead, as the examples/logs/structured.zig example does.
     const attrs = attributesFromPairs(.{
         .{ "http.request.method", "GET" },
         .{ "http.response.status_code", 200 },

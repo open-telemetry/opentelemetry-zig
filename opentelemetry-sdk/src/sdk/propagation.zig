@@ -223,6 +223,7 @@ test "PropagatorRegistry initialization with baggage" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .{},
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -245,6 +246,7 @@ test "PropagatorRegistry initialization with multiple propagators" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .{},
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -267,6 +269,7 @@ test "PropagatorRegistry with none" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .{},
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -289,6 +292,7 @@ test "CompositePropagator inject and extract baggage" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .{},
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -335,6 +339,7 @@ test "CompositePropagator with baggage disabled" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .{},
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -372,6 +377,7 @@ test "CompositePropagator fields list" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .{},
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -432,6 +438,7 @@ fn testConfig(allocator: std.mem.Allocator, propagators: []const TracePropagator
     return Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .{},
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,

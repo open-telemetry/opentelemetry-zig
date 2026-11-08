@@ -1,17 +1,66 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const build_info = @import("build_info");
+const semconv = @import("opentelemetry-semconv");
 const Attribute = @import("../attributes.zig").Attribute;
+const fromPairs = @import("../attributes.zig").fromPairs;
 const Configuration = @import("config.zig").Configuration;
 const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").PercentDecodedCommaSeparatedAssignmentIterator;
+
+const os_type: []const u8 = switch (builtin.os.tag) {
+    .macos, .ios, .tvos, .watchos => "darwin",
+    .dragonfly => "dragonflybsd",
+    .illumos => "solaris",
+    else => @tagName(builtin.os.tag),
+};
+
+const host_arch: []const u8 = switch (builtin.cpu.arch) {
+    .x86_64 => "amd64",
+    .aarch64 => "arm64",
+    .arm => "arm32",
+    .powerpc => "ppc32",
+    .powerpc64, .powerpc64le => "ppc64",
+    else => @tagName(builtin.cpu.arch),
+};
+
+/// SDK identity attributes, provided by the "sdk" detector.
+const sdk_attributes = fromPairs(.{
+    .{ semconv.attribute.telemetry_sdk_name, build_info.name },
+    // Not one of the well-known languages of the semantic conventions, which is an open set.
+    .{ semconv.attribute.telemetry_sdk_language, "zig" },
+    .{ semconv.attribute.telemetry_sdk_version, build_info.version },
+});
+
+/// Attributes provided by the "os" detector.
+const os_attributes = fromPairs(.{
+    .{ semconv.attribute.os_type, os_type },
+});
+
+/// Attributes provided by the "host" detector.
+const host_attributes = fromPairs(.{
+    .{ semconv.attribute.host_arch, host_arch },
+});
+
+/// Attributes provided by the "process" detector.
+const process_attributes = fromPairs(.{
+    .{ semconv.attribute.process_runtime_name, "zig" },
+    .{ semconv.attribute.process_runtime_version, builtin.zig_version_string },
+});
 
 /// Build resource attributes from configuration
 /// Combines OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
 pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuration) ![]Attribute {
+    const d = config.resource_detectors;
     const has_service_name = config.service_name != null;
+    const detected = (if (d.sdk) sdk_attributes.len else 0) +
+        (if (d.os) os_attributes.len else 0) +
+        (if (d.host) host_attributes.len else 0) +
+        (if (d.process) process_attributes.len else 0);
 
     // `parseResourceAttributes` reserves its own capacity, so this only covers
-    // the service.name entry below: its append then cannot fail and orphan a
-    // duped attribute.
-    var attributes: std.ArrayList(Attribute) = try .initCapacity(allocator, @intFromBool(has_service_name));
+    // the detected attributes and the service.name entry below: their appends
+    // then cannot fail and orphan a duped attribute.
+    var attributes: std.ArrayList(Attribute) = try .initCapacity(allocator, detected + @intFromBool(has_service_name));
     errdefer {
         for (attributes.items) |attr| {
             allocator.free(attr.key);
@@ -22,12 +71,23 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
         attributes.deinit(allocator);
     }
 
+    if (d.sdk) for (sdk_attributes) |attr| {
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
+    };
+    if (d.os) for (os_attributes) |attr| {
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
+    };
+    if (d.host) for (host_attributes) |attr| {
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
+    };
+    if (d.process) for (process_attributes) |attr| {
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
+    };
+
     // Add service.name if configured
     if (config.service_name) |service_name| {
-        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, .{
-            .key = "service.name",
-            .value = .{ .string = service_name },
-        }));
+        const service_name_attribute = fromPairs(.{.{ semconv.attribute.service_name, service_name }});
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, service_name_attribute[0]));
     }
 
     // Parse and add resource attributes
@@ -72,7 +132,7 @@ fn parseResourceAttributes(
         }
 
         // Skip service.name if OTEL_SERVICE_NAME is set (it takes precedence)
-        if (skip_service_name and std.mem.eql(u8, entry.name, "service.name")) continue;
+        if (skip_service_name and std.mem.eql(u8, entry.name, semconv.attribute.service_name.name)) continue;
 
         attributes.appendAssumeCapacity(try Attribute.dupe(allocator, .{
             .key = entry.name,
@@ -140,10 +200,10 @@ pub fn mergeResources(
 test "buildFromConfig with service name only" {
     const allocator = std.testing.allocator;
 
-    // Create config with service name
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = "my-service",
         .resource_attributes = null,
         .log_level = .info,
@@ -157,7 +217,7 @@ test "buildFromConfig with service name only" {
     defer freeResource(allocator, resource);
 
     try std.testing.expectEqual(@as(usize, 1), resource.len);
-    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource[0].key);
     try std.testing.expectEqualStrings("my-service", resource[0].value.string);
 }
 
@@ -167,6 +227,7 @@ test "buildFromConfig with resource attributes only" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
         .resource_attributes = "key1=value1,key2=value2",
         .log_level = .info,
@@ -192,8 +253,9 @@ test "buildFromConfig with both service name and resource attributes" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = "test-service",
-        .resource_attributes = "deployment.environment=production,host.name=server-1",
+        .resource_attributes = "deployment.environment.name=production,host.name=server-1",
         .log_level = .info,
         .trace_propagators = &.{},
         .trace_config = undefined,
@@ -205,11 +267,11 @@ test "buildFromConfig with both service name and resource attributes" {
     defer freeResource(allocator, resource);
 
     try std.testing.expectEqual(@as(usize, 3), resource.len);
-    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource[0].key);
     try std.testing.expectEqualStrings("test-service", resource[0].value.string);
-    try std.testing.expectEqualStrings("deployment.environment", resource[1].key);
+    try std.testing.expectEqualStrings(semconv.attribute.deployment_environment_name.name, resource[1].key);
     try std.testing.expectEqualStrings("production", resource[1].value.string);
-    try std.testing.expectEqualStrings("host.name", resource[2].key);
+    try std.testing.expectEqualStrings(semconv.attribute.host_name.name, resource[2].key);
     try std.testing.expectEqualStrings("server-1", resource[2].value.string);
 }
 
@@ -219,6 +281,7 @@ test "parseResourceAttributes with whitespace and empty values" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
         .resource_attributes = " key1 = value1 , key2=value2,  ,key3=",
         .log_level = .info,
@@ -241,12 +304,13 @@ test "parseResourceAttributes with whitespace and empty values" {
     try std.testing.expectEqualStrings("", resource[2].value.string);
 }
 
-test "buildFromConfig with no resource configuration" {
+test "buildFromConfig with every detector disabled" {
     const allocator = std.testing.allocator;
 
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -259,8 +323,89 @@ test "buildFromConfig with no resource configuration" {
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    // Should return empty slice
     try std.testing.expectEqual(@as(usize, 0), resource.len);
+}
+
+test "buildFromConfig runs every detector by default" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .{},
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    const expected_len = sdk_attributes.len + os_attributes.len + host_attributes.len + process_attributes.len;
+    try std.testing.expectEqual(expected_len, resource.len);
+    try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_name.name, resource[0].key);
+    try std.testing.expectEqualStrings("opentelemetry", resource[0].value.string);
+    try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_language.name, resource[1].key);
+    try std.testing.expectEqualStrings("zig", resource[1].value.string);
+    try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_version.name, resource[2].key);
+    try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[3].key);
+    try std.testing.expectEqualStrings(semconv.attribute.host_arch.name, resource[4].key);
+    try std.testing.expectEqualStrings(semconv.attribute.process_runtime_name.name, resource[5].key);
+    try std.testing.expectEqualStrings("zig", resource[5].value.string);
+    try std.testing.expectEqualStrings(semconv.attribute.process_runtime_version.name, resource[6].key);
+    try std.testing.expectEqualStrings(builtin.zig_version_string, resource[6].value.string);
+}
+
+test "buildFromConfig with a single detector opted out" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .{ .sdk = false },
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(os_attributes.len + host_attributes.len + process_attributes.len, resource.len);
+    try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.host_arch.name, resource[1].key);
+    try std.testing.expectEqualStrings(semconv.attribute.process_runtime_name.name, resource[2].key);
+}
+
+test "buildFromConfig with a single detector opted in" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .{ .sdk = false, .host = false, .process = false },
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(os_attributes.len, resource.len);
+    try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[0].key);
 }
 
 test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
@@ -269,6 +414,7 @@ test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = "override-service",
         .resource_attributes = "service.name=original-service,key1=value1",
         .log_level = .info,
@@ -281,11 +427,10 @@ test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    // Should have 2 attributes: service.name (override) and key1
     try std.testing.expectEqual(@as(usize, 2), resource.len);
 
     // service.name should be from OTEL_SERVICE_NAME
-    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource[0].key);
     try std.testing.expectEqualStrings("override-service", resource[0].value.string);
 
     // key1 should be from OTEL_RESOURCE_ATTRIBUTES
@@ -299,6 +444,7 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES when OTEL_SERVICE_NAME not set"
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
         .resource_attributes = "service.name=from-resource-attrs,key1=value1",
         .log_level = .info,
@@ -311,11 +457,10 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES when OTEL_SERVICE_NAME not set"
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    // Should have 2 attributes
     try std.testing.expectEqual(@as(usize, 2), resource.len);
 
     // service.name should be from OTEL_RESOURCE_ATTRIBUTES
-    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource[0].key);
     try std.testing.expectEqualStrings("from-resource-attrs", resource[0].value.string);
 
     try std.testing.expectEqualStrings("key1", resource[1].key);
@@ -328,6 +473,8 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES survives resource building" {
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
     try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "service.name=checkout,host.name=server-1");
+    // Keep the detectors out of the way, they have their own tests.
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "none");
 
     const config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();
@@ -337,9 +484,9 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES survives resource building" {
 
     // service.name is resolved once in the configuration, so it is emitted exactly once.
     try std.testing.expectEqual(@as(usize, 2), resource.len);
-    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource[0].key);
     try std.testing.expectEqualStrings("checkout", resource[0].value.string);
-    try std.testing.expectEqualStrings("host.name", resource[1].key);
+    try std.testing.expectEqualStrings(semconv.attribute.host_name.name, resource[1].key);
     try std.testing.expectEqualStrings("server-1", resource[1].value.string);
 }
 
@@ -348,6 +495,8 @@ test "service.name defaults to unknown_service when nothing is configured" {
 
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
+    // Keep the detectors out of the way, they have their own tests.
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "none");
 
     const config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();
@@ -356,52 +505,52 @@ test "service.name defaults to unknown_service when nothing is configured" {
     defer freeResource(allocator, resource);
 
     try std.testing.expectEqual(@as(usize, 1), resource.len);
-    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource[0].key);
     try std.testing.expect(std.mem.startsWith(u8, resource[0].value.string, "unknown_service"));
 }
 
 test "mergeResources with distinct attributes" {
     const allocator = std.testing.allocator;
 
-    const res1 = [_]Attribute{
-        .{ .key = "service.name", .value = .{ .string = "auth-service" } },
-        .{ .key = "service.version", .value = .{ .string = "1.0.0" } },
-    };
-    const res2 = [_]Attribute{
-        .{ .key = "deployment.environment", .value = .{ .string = "production" } },
-    };
+    const res1 = fromPairs(.{
+        .{ semconv.attribute.service_name, "auth-service" },
+        .{ semconv.attribute.service_version, "1.0.0" },
+    });
+    const res2 = fromPairs(.{
+        .{ semconv.attribute.deployment_environment_name, "production" },
+    });
 
     const merged = (try mergeResources(allocator, &res1, &res2)).?;
     defer freeResource(allocator, merged);
 
     try std.testing.expectEqual(@as(usize, 3), merged.len);
-    try std.testing.expectEqualStrings("service.name", merged[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, merged[0].key);
     try std.testing.expectEqualStrings("auth-service", merged[0].value.string);
-    try std.testing.expectEqualStrings("service.version", merged[1].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_version.name, merged[1].key);
     try std.testing.expectEqualStrings("1.0.0", merged[1].value.string);
-    try std.testing.expectEqualStrings("deployment.environment", merged[2].key);
+    try std.testing.expectEqualStrings(semconv.attribute.deployment_environment_name.name, merged[2].key);
     try std.testing.expectEqualStrings("production", merged[2].value.string);
 }
 
 test "mergeResources deduplicates keys with res1 precedence" {
     const allocator = std.testing.allocator;
 
-    const res1 = [_]Attribute{
-        .{ .key = "service.name", .value = .{ .string = "custom-service" } },
-        .{ .key = "host.name", .value = .{ .string = "primary-host" } },
-    };
-    const res2 = [_]Attribute{
-        .{ .key = "service.name", .value = .{ .string = "default-service" } },
-        .{ .key = "region", .value = .{ .string = "us-east-1" } },
-    };
+    const res1 = fromPairs(.{
+        .{ semconv.attribute.service_name, "custom-service" },
+        .{ semconv.attribute.host_name, "primary-host" },
+    });
+    const res2 = fromPairs(.{
+        .{ semconv.attribute.service_name, "default-service" },
+        .{ "region", "us-east-1" },
+    });
 
     const merged = (try mergeResources(allocator, &res1, &res2)).?;
     defer freeResource(allocator, merged);
 
     try std.testing.expectEqual(@as(usize, 3), merged.len);
-    try std.testing.expectEqualStrings("service.name", merged[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, merged[0].key);
     try std.testing.expectEqualStrings("custom-service", merged[0].value.string);
-    try std.testing.expectEqualStrings("host.name", merged[1].key);
+    try std.testing.expectEqualStrings(semconv.attribute.host_name.name, merged[1].key);
     try std.testing.expectEqualStrings("primary-host", merged[1].value.string);
     try std.testing.expectEqualStrings("region", merged[2].key);
     try std.testing.expectEqualStrings("us-east-1", merged[2].value.string);
@@ -441,8 +590,9 @@ test "parseResourceAttributes percent-decodes keys and values" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
+        .resource_detectors = .none,
         .service_name = null,
-        .resource_attributes = "deployment.environment=prod%20east,custom%2Etag=val%2C1,equation=a%3Db,path=%2Fvar%2Flog,math=1+1,literal%2=kept",
+        .resource_attributes = "deployment.environment.name=prod%20east,custom%2Etag=val%2C1,equation=a%3Db,path=%2Fvar%2Flog,math=1+1,literal%2=kept",
         .log_level = .info,
         .trace_propagators = &.{},
         .trace_config = undefined,
@@ -454,7 +604,7 @@ test "parseResourceAttributes percent-decodes keys and values" {
     defer freeResource(allocator, resource);
 
     try std.testing.expectEqual(@as(usize, 6), resource.len);
-    try std.testing.expectEqualStrings("deployment.environment", resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.deployment_environment_name.name, resource[0].key);
     try std.testing.expectEqualStrings("prod east", resource[0].value.string);
 
     try std.testing.expectEqualStrings("custom.tag", resource[1].key);
@@ -479,6 +629,8 @@ test "service.name percent-decoded from OTEL_RESOURCE_ATTRIBUTES in Configuratio
     var env_map = std.process.Environ.Map.init(allocator);
     defer env_map.deinit();
     try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "service.name=my%20special%20service,host=localhost");
+    // Keep the detectors out of the way, they have their own tests.
+    try env_map.put("OTEL_EXPERIMENTAL_RESOURCE_DETECTORS", "none");
 
     const config = try Configuration.init(allocator, std.testing.io, &env_map);
     defer config.deinit();
@@ -489,7 +641,7 @@ test "service.name percent-decoded from OTEL_RESOURCE_ATTRIBUTES in Configuratio
     defer freeResource(allocator, resource);
 
     try std.testing.expectEqual(@as(usize, 2), resource.len);
-    try std.testing.expectEqualStrings("service.name", resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource[0].key);
     try std.testing.expectEqualStrings("my special service", resource[0].value.string);
     try std.testing.expectEqualStrings("host", resource[1].key);
     try std.testing.expectEqualStrings("localhost", resource[1].value.string);

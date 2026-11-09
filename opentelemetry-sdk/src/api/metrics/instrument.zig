@@ -298,14 +298,25 @@ pub fn Counter(comptime T: type) type {
         lock: std.Io.Mutex,
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
         collection_start_ns: u64 = 0,
+        pre_sum: bool = true,
+        cardinality_limit: usize,
 
-        /// Record data points for the counter.
-        /// The list of measurements will be used when reading the data during a collection cycle.
-        /// The list is cleared after each collection cycle.
+        /// Pre-aggregated data points when every reader and view resolves to Sum.
+        aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true),
+
+        /// Raw data points kept as fallback when any reader or view resolves to non-Sum (e.g. LastValue, Histogram, Drop).
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
+
+        const overflow_attrs = [_]Attribute{
+            .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
+        };
+        const overflow_key = Attributes.with(@constCast(&overflow_attrs));
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
+                .pre_sum = true,
+                .cardinality_limit = 2000,
+                .aggregated_points = .empty,
                 .data_points = .empty,
                 .allocator = allocator,
                 .io = io,
@@ -315,10 +326,117 @@ pub fn Counter(comptime T: type) type {
         }
 
         fn deinit(self: *Self) void {
+            for (self.aggregated_points.values()) |*m| {
+                m.deinit(self.allocator);
+            }
+            self.aggregated_points.deinit(self.allocator);
+
             for (self.data_points.items) |*m| {
                 m.deinit(self.allocator);
             }
             self.data_points.deinit(self.allocator);
+        }
+
+        /// Fold `dp` into the pre-aggregated series.
+        ///
+        /// Whatever gets moved into the map is cleared from `dp`, so the caller
+        /// must always call `dp.deinit` afterwards, whether this succeeded or not:
+        /// it frees what was not moved (everything on error, the merged duplicate on success).
+        ///
+        /// `capture_exemplar` is false for points that were already recorded: their exemplar
+        /// candidate was captured, or filtered out, in the context of the original measurement.
+        fn recordSumPoint(self: *Self, dp: *DataPoint(T), capture_exemplar: bool) !void {
+            const val: i64 = @intCast(dp.value);
+            const key = Attributes.with(dp.attributes);
+            if (self.aggregated_points.getPtr(key)) |existing| {
+                if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                existing.value += val;
+                if (dp.exemplar_candidate) |sample| {
+                    if (existing.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                    existing.exemplar_candidate = sample;
+                    dp.exemplar_candidate = null;
+                }
+                return;
+            }
+
+            // The spec requires creating the overflow series prior to reaching the cardinality limit,
+            // and does not say whether it counts towards the limit. Like the Go and Java SDKs, it does:
+            // at most `cardinality_limit - 1` regular series are kept, leaving the last slot to the overflow series.
+            // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#overflow-attribute
+            if (self.cardinality_limit > 0 and self.aggregated_points.count() >= self.cardinality_limit - 1) {
+                if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
+                    if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                    overflow_ptr.value += val;
+                    if (dp.exemplar_candidate) |sample| {
+                        if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                        overflow_ptr.exemplar_candidate = sample;
+                        dp.exemplar_candidate = null;
+                    }
+                    return;
+                }
+
+                log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                const overflow_slice = try self.allocator.dupe(Attribute, &overflow_attrs);
+                var overflow_dp = DataPoint(i64){
+                    .value = val,
+                    .attributes = overflow_slice,
+                    .attributes_owned = false,
+                };
+                var overflow_stored = false;
+                defer if (!overflow_stored) overflow_dp.deinit(self.allocator);
+
+                if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                if (dp.exemplar_candidate) |sample| {
+                    overflow_dp.exemplar_candidate = sample;
+                    dp.exemplar_candidate = null;
+                }
+
+                try self.aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
+                overflow_stored = true;
+                return;
+            }
+
+            if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+
+            const dp_i64 = DataPoint(i64){
+                .value = val,
+                .attributes = dp.attributes,
+                .attributes_owned = dp.attributes_owned,
+                .exemplar_candidate = dp.exemplar_candidate,
+                .exemplars = dp.exemplars,
+                .timestamps = dp.timestamps,
+            };
+            try self.aggregated_points.put(self.allocator, Attributes.with(dp.attributes), dp_i64);
+
+            // The map owns these now.
+            dp.attributes = null;
+            dp.attributes_owned = false;
+            dp.exemplar_candidate = null;
+            dp.exemplars = &.{};
+        }
+
+        pub fn setPreSum(self: *Self, enabled: bool) void {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            if (self.pre_sum == enabled) return;
+            self.pre_sum = enabled;
+
+            if (enabled) {
+                // Switching back to Sum: drain any pending raw points into aggregated_points.
+                // On allocation failure, the failed point and the ones after it stay in data_points.
+                const items = self.data_points.items;
+                var drained: usize = 0;
+                for (items) |*raw_dp| {
+                    self.recordSumPoint(raw_dp, false) catch break;
+                    drained += 1;
+                }
+                // Drained points were moved out of or merged, so only the leftovers need freeing.
+                for (items[0..drained]) |*raw_dp| raw_dp.deinit(self.allocator);
+                const remaining = items.len - drained;
+                std.mem.copyForwards(DataPoint(T), items[0..remaining], items[drained..]);
+                self.data_points.shrinkRetainingCapacity(remaining);
+            }
         }
 
         /// Add the given delta to the counter, using the provided attributes.
@@ -326,10 +444,16 @@ pub fn Counter(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            var dp = try DataPoint(T).new(self.allocator, delta, attributes);
-            errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-            try self.data_points.append(self.allocator, dp);
+            if (self.pre_sum) {
+                var dp = try DataPoint(T).new(self.allocator, delta, attributes);
+                defer dp.deinit(self.allocator);
+                try self.recordSumPoint(&dp, true);
+            } else {
+                var dp = try DataPoint(T).new(self.allocator, delta, attributes);
+                errdefer dp.deinit(self.allocator);
+                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                try self.data_points.append(self.allocator, dp);
+            }
         }
 
         /// Add the given delta to the counter with a pre-built attribute slice.
@@ -345,28 +469,65 @@ pub fn Counter(comptime T: type) type {
                 else
                     null,
             };
-            errdefer dp.deinit(self.allocator);
-            try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-            try self.data_points.append(self.allocator, dp);
+            if (self.pre_sum) {
+                defer dp.deinit(self.allocator);
+                try self.recordSumPoint(&dp, true);
+            } else {
+                errdefer dp.deinit(self.allocator);
+                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
+                try self.data_points.append(self.allocator, dp);
+            }
         }
 
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
-            // We have to clear up the data points after we return a copy of them.
-            // this resets the state of the instrument, allowing to record more datapoints
-            // until the next collection cycle.
-            defer {
-                for (self.data_points.items) |*m| {
-                    m.deinit(self.allocator);
+
+            const has_aggregated = self.aggregated_points.count() > 0;
+            const has_raw = self.data_points.items.len > 0;
+
+            if (has_aggregated and !has_raw) {
+                defer {
+                    for (self.aggregated_points.values()) |*m| {
+                        m.deinit(self.allocator);
+                    }
+                    self.aggregated_points.clearRetainingCapacity();
                 }
+                return .{ .int = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns) };
+            } else if (!has_aggregated and has_raw) {
+                defer {
+                    for (self.data_points.items) |*m| {
+                        m.deinit(self.allocator);
+                    }
+                    self.data_points.clearRetainingCapacity();
+                }
+                return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
+            } else if (has_aggregated and has_raw) {
+                const agg_copied = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns);
+                errdefer {
+                    for (agg_copied) |*p| p.deinit(allocator);
+                    allocator.free(agg_copied);
+                }
+                const raw_copied = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns);
+                errdefer {
+                    for (raw_copied) |*p| p.deinit(allocator);
+                    allocator.free(raw_copied);
+                }
+                const combined = try allocator.alloc(DataPoint(i64), agg_copied.len + raw_copied.len);
+                @memcpy(combined[0..agg_copied.len], agg_copied);
+                @memcpy(combined[agg_copied.len..], raw_copied);
+                allocator.free(agg_copied);
+                allocator.free(raw_copied);
+
+                for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
+                self.aggregated_points.clearRetainingCapacity();
+
+                for (self.data_points.items) |*m| m.deinit(self.allocator);
                 self.data_points.clearRetainingCapacity();
-            }
-            switch (T) {
-                u16, u32, u64, i16, i32, i64 => {
-                    return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-                },
-                else => unreachable,
+
+                return .{ .int = combined };
+            } else {
+                return .{ .int = try allocator.alloc(DataPoint(i64), 0) };
             }
         }
     };
@@ -564,7 +725,7 @@ test "meter can create counter instrument and record increase without attributes
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
     try counter.add(10, .{});
-    std.debug.assert(counter.data_points.items.len == 1);
+    std.debug.assert(counter.aggregated_points.count() == 1);
 }
 
 test "meter can create counter instrument and record increase with attributes" {
@@ -581,16 +742,16 @@ test "meter can create counter instrument and record increase with attributes" {
     try counter.add(100, .{});
     try counter.add(1000, .{});
 
-    std.debug.assert(counter.data_points.items.len == 2);
-    std.debug.assert(counter.data_points.items[0].value == 100);
-    std.debug.assert(counter.data_points.items[1].value == 1000);
+    // In record-time sum aggregation, identical attributes aggregate into 1 point
+    std.debug.assert(counter.aggregated_points.count() == 1);
+    std.debug.assert(counter.aggregated_points.values()[0].value == 1100);
 
     const val1: []const u8 = "some-value";
     const val2: []const u8 = "another-value";
 
     try counter.add(2, .{ "some-key", val1, "another-key", val2 });
-    std.debug.assert(counter.data_points.items.len == 3);
-    std.debug.assert(counter.data_points.items[2].value == 2);
+    std.debug.assert(counter.aggregated_points.count() == 2);
+    std.debug.assert(counter.aggregated_points.values()[1].value == 2);
 }
 
 test "histogram records value without explicit buckets" {
@@ -749,19 +910,13 @@ test "upDownCounter instrument records and stores value" {
     try counter.add(10, .{});
     try counter.add(-5, .{});
     try counter.add(-4, .{});
-    std.debug.assert(counter.data_points.items.len == 3);
-
-    // Validate the number stored is correct.
-    // Empty attributes produce a null key.
-    var summed: i32 = 0;
-    for (counter.data_points.items) |m| {
-        summed += m.value;
-    }
-    std.debug.assert(summed == 1);
+    std.debug.assert(counter.aggregated_points.count() == 1);
+    try std.testing.expectEqual(1, counter.aggregated_points.values()[0].value);
 
     try counter.add(1, .{ "some-key", @as(i64, 42) });
 
-    std.debug.assert(counter.data_points.items.len == 4);
+    std.debug.assert(counter.aggregated_points.count() == 2);
+    try std.testing.expectEqual(1, counter.aggregated_points.values()[1].value);
 }
 
 test "instrument in meter and instrument in data are the same" {
@@ -788,7 +943,7 @@ test "instrument in meter and instrument in data are the same" {
     if (meter.instruments.get(id)) |instrument| {
         std.debug.assert(instrument.kind == Kind.Counter);
 
-        const counter_value = instrument.data.Counter_u64.data_points.pop() orelse unreachable;
+        const counter_value = instrument.data.Counter_u64.aggregated_points.get(Attributes.with(null)) orelse unreachable;
         try std.testing.expectEqual(100, counter_value.value);
     } else {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.scope.name });
@@ -950,6 +1105,7 @@ test "instrument cleans up internal state when datapoints are fetched" {
         std.testing.allocator.free(fetched.int);
     }
     // Assert that we have 1 data point: the first added by the test thread.
+    try std.testing.expectEqual(0, c.aggregated_points.count());
     try std.testing.expectEqual(0, c.data_points.items.len);
 }
 
@@ -1008,6 +1164,7 @@ test "exemplar recording snapshots caller attributes before draining" {
     try std.testing.expectEqualStrings("first", sample.filtered_attributes[0].value.string);
     try std.testing.expect(sample.time_ns >= before and sample.time_ns <= after);
     try std.testing.expectEqual(@as(i64, 7), sample.value.int);
+    try std.testing.expectEqual(@as(usize, 0), counter.aggregated_points.count());
     try std.testing.expectEqual(@as(usize, 0), counter.data_points.items.len);
 }
 
@@ -1030,4 +1187,239 @@ test "exemplar recording keeps sampled span IDs after context ends" {
     try std.testing.expectEqualSlices(u8, &@as([16]u8, @splat(1)), &sample.trace_id.?);
     try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(2)), &sample.span_id.?);
     try std.testing.expectEqual(@as(f64, 2.5), sample.value.double);
+}
+
+fn recordRequests(counter: *Counter(u64), count: usize) !void {
+    const route: []const u8 = "/api/v1/users";
+    for (0..count) |_| {
+        try counter.add(1, .{ "http.route", route, "http.status_code", @as(i64, 200) });
+    }
+}
+
+test "counter aggregates measurements in place in constant memory" {
+    const io = std.testing.io;
+
+    // Large enough for one series, far too small for thousands of raw measurements.
+    var buffer: [16 * 1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    var counter = Counter(u64).init(fixed.allocator(), io);
+    defer counter.deinit();
+
+    try recordRequests(&counter, 10_000);
+    try std.testing.expectEqual(1, counter.aggregated_points.count());
+    try std.testing.expectEqual(10_000, counter.aggregated_points.values()[0].value);
+
+    // Control: the same buffer cannot hold the raw measurements.
+    var raw_buffer: [16 * 1024]u8 = undefined;
+    var raw_fixed = std.heap.FixedBufferAllocator.init(&raw_buffer);
+    var raw_counter = Counter(u64).init(raw_fixed.allocator(), io);
+    defer raw_counter.deinit();
+    raw_counter.setPreSum(false);
+    try std.testing.expectError(error.OutOfMemory, recordRequests(&raw_counter, 10_000));
+
+    const fetched = try counter.measurementsData(std.testing.allocator);
+    defer {
+        for (fetched.int) |*m| {
+            m.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(fetched.int);
+    }
+
+    try std.testing.expectEqual(1, fetched.int.len);
+    try std.testing.expectEqual(10_000, fetched.int[0].value);
+    try std.testing.expectEqual(0, counter.aggregated_points.count());
+}
+
+test "counter enforces cardinality limit with overflow series" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+    var counter = try meter.createCounter(u64, .{ .name = "high.cardinality" });
+    counter.cardinality_limit = 3;
+
+    // The overflow series is created before the limit is reached and takes one of its slots:
+    // with a limit of 3, only 2 regular series fit.
+    try counter.add(1, .{ "id", @as(i64, 1) });
+    try counter.add(2, .{ "id", @as(i64, 2) });
+    try std.testing.expectEqual(2, counter.aggregated_points.count());
+
+    // The 3rd distinct attribute set goes to the overflow series (otel.metric.overflow=true),
+    // and so do the following ones.
+    try counter.add(3, .{ "id", @as(i64, 3) });
+    try std.testing.expectEqual(3, counter.aggregated_points.count());
+    try counter.add(4, .{ "id", @as(i64, 4) });
+    try std.testing.expectEqual(3, counter.aggregated_points.count());
+
+    // Existing attribute sets can still be updated
+    try counter.add(10, .{ "id", @as(i64, 1) });
+    try std.testing.expectEqual(11, counter.aggregated_points.values()[0].value);
+
+    const fetched = try counter.measurementsData(std.testing.allocator);
+    defer {
+        for (fetched.int) |*m| {
+            m.deinit(std.testing.allocator);
+        }
+        std.testing.allocator.free(fetched.int);
+    }
+
+    try std.testing.expectEqual(3, fetched.int.len);
+    // The overflow series holds the sum of the measurements that did not fit: 3 + 4.
+    var found_overflow = false;
+    for (fetched.int) |point| {
+        if (point.attributes) |attrs| {
+            for (attrs) |attr| {
+                if (std.mem.eql(u8, attr.key, "otel.metric.overflow")) {
+                    found_overflow = true;
+                    try std.testing.expectEqual(@as(i64, 7), point.value);
+                }
+            }
+        }
+    }
+    try std.testing.expect(found_overflow);
+}
+
+test "counter falls back to raw data points when non-Sum view is configured" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    // Register a view specifying ExplicitBucketHistogram for this counter
+    const view_mod = @import("../../sdk/metrics/view.zig");
+    try mp.addView(view_mod.View{
+        .instrument_selector = .{ .name = "histogram_counter" },
+        .aggregation = .{ .ExplicitBucketHistogram = .{} },
+        .temporality = .Cumulative,
+    });
+
+    var meter = try mp.getMeter(.{ .name = "test-fallback" });
+    const counter = try meter.createCounter(u64, .{ .name = "histogram_counter" });
+
+    // Counter must have pre_sum disabled because view does not resolve to Sum
+    try std.testing.expect(!counter.pre_sum);
+
+    try counter.add(10, .{ "status", @as([]const u8, "200") });
+    try counter.add(20, .{ "status", @as([]const u8, "200") });
+
+    // Measurements are retained as raw items in data_points
+    try std.testing.expectEqual(@as(usize, 2), counter.data_points.items.len);
+    try std.testing.expectEqual(@as(usize, 0), counter.aggregated_points.count());
+
+    var data = try counter.measurementsData(allocator);
+    defer data.deinit(allocator);
+    try std.testing.expectEqual(@as(usize, 2), data.int.len);
+    try std.testing.expectEqual(@as(i64, 10), data.int[0].value);
+    try std.testing.expectEqual(@as(i64, 20), data.int[1].value);
+}
+
+test "counter running total stored as i64 does not overflow small types" {
+    const io = std.testing.io;
+    var counter = Counter(u16).init(std.testing.allocator, io);
+    defer counter.deinit();
+
+    // Adding 50,000 twice to a u16 counter (u16 max is 65,535)
+    try counter.add(50_000, .{ "key", @as([]const u8, "val") });
+    try counter.add(50_000, .{ "key", @as([]const u8, "val") });
+
+    try std.testing.expectEqual(1, counter.aggregated_points.count());
+    try std.testing.expectEqual(@as(i64, 100_000), counter.aggregated_points.values()[0].value);
+
+    var data = try counter.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(i64, 100_000), data.int[0].value);
+}
+
+fn testCounterAllocationFailures(allocator: std.mem.Allocator) !void {
+    const io = std.testing.io;
+    var c = Counter(u32).init(allocator, io);
+    defer c.deinit();
+    c.cardinality_limit = 2;
+
+    try c.add(10, .{ "status", @as([]const u8, "200") });
+    try c.add(5, .{ "status", @as([]const u8, "200") });
+    try c.add(20, .{ "status", @as([]const u8, "404") });
+    try c.add(30, .{ "status", @as([]const u8, "500") });
+    try c.add(40, .{ "status", @as([]const u8, "502") });
+
+    var data = try c.measurementsData(allocator);
+    defer data.deinit(allocator);
+}
+
+test "counter in-place aggregation handles allocation failures without leaks or double-frees" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testCounterAllocationFailures, .{});
+}
+
+fn testSwitchBackToSumAllocationFailures(allocator: std.mem.Allocator) !void {
+    const io = std.testing.io;
+    var c = Counter(u32).init(allocator, io);
+    defer c.deinit();
+    c.cardinality_limit = 3;
+
+    c.setPreSum(false);
+    try c.add(1, .{ "status", @as([]const u8, "200") });
+    try c.add(2, .{ "status", @as([]const u8, "200") });
+    try c.add(3, .{ "status", @as([]const u8, "404") });
+    try c.add(4, .{ "status", @as([]const u8, "500") });
+    try c.add(5, .{ "status", @as([]const u8, "502") });
+
+    // A failure while draining must leave the remaining raw points valid.
+    c.setPreSum(true);
+
+    var data = try c.measurementsData(allocator);
+    defer data.deinit(allocator);
+
+    var total: i64 = 0;
+    for (data.int) |point| total += point.value;
+    try std.testing.expectEqual(15, total);
+}
+
+test "switching back to Sum handles allocation failures without leaks or double-frees" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testSwitchBackToSumAllocationFailures, .{});
+}
+
+test "switching back to Sum keeps the exemplars captured at record time" {
+    const io = std.testing.io;
+    var c = Counter(u64).init(std.testing.allocator, io);
+    defer c.deinit();
+
+    c.setPreSum(false);
+    c.exemplar_filter = .always_on;
+    try c.add(7, .{ "route", @as([]const u8, "/sampled") });
+    c.exemplar_filter = .always_off;
+    try c.add(3, .{ "route", @as([]const u8, "/filtered") });
+
+    // The filter in effect while draining must not matter.
+    c.exemplar_filter = .always_off;
+    c.setPreSum(true);
+
+    var data = try c.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(2, data.int.len);
+    for (data.int) |point| {
+        switch (point.value) {
+            7 => try std.testing.expectEqual(@as(i64, 7), point.exemplar_candidate.?.value.int),
+            3 => try std.testing.expect(point.exemplar_candidate == null),
+            else => return error.UnexpectedPoint,
+        }
+    }
+}
+
+test "switching back to Sum does not invent exemplars for filtered measurements" {
+    const io = std.testing.io;
+    var c = Counter(u64).init(std.testing.allocator, io);
+    defer c.deinit();
+
+    c.setPreSum(false);
+    c.exemplar_filter = .always_off;
+    try c.add(3, .{ "route", @as([]const u8, "/filtered") });
+
+    c.exemplar_filter = .always_on;
+    c.setPreSum(true);
+
+    var data = try c.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(1, data.int.len);
+    try std.testing.expect(data.int[0].exemplar_candidate == null);
 }

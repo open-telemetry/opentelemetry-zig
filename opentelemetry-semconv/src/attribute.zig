@@ -19,14 +19,11 @@ pub const android_app_stateValue = enum {
 
 /// This attribute represents the state of the application.
 pub const android_app_state = types.EnumAttribute(android_app_stateValue){
-    .base = types.StringAttribute{
-        .name = "android.app.state",
-        .brief = "This attribute represents the state of the application.",
-        .note = "The Android lifecycle states are defined in [Activity lifecycle callbacks](https://developer.android.com/guide/components/activities/activity-lifecycle#lc), and from which the `OS identifiers` are derived.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = android_app_stateValue.created,
+    .name = "android.app.state",
+    .brief = "This attribute represents the state of the application.",
+    .note = "The Android lifecycle states are defined in [Activity lifecycle callbacks](https://developer.android.com/guide/components/activities/activity-lifecycle#lc), and from which the `OS identifiers` are derived.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Uniquely identifies the framework API revision offered by a version (`os.version`) of the android operating system. More information can be found [here](https://developer.android.com/guide/topics/manifest/uses-sdk-element#ApiLevels).
 pub const android_os_api_level = types.StringAttribute{
@@ -50,13 +47,10 @@ pub const android_stateValue = enum {
 
 /// Deprecated. Use `android.app.state` body field instead.
 pub const android_state = types.EnumAttribute(android_stateValue){
-    .base = types.StringAttribute{
-        .name = "android.state",
-        .brief = "Deprecated. Use `android.app.state` body field instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = android_stateValue.created,
+    .name = "android.state",
+    .brief = "Deprecated. Use `android.app.state` body field instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// A unique identifier representing the installation of an application on a specific device
 pub const app_installation_id = types.StringAttribute{
@@ -67,14 +61,14 @@ pub const app_installation_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The x (horizontal) coordinate of a screen coordinate, in screen pixels.
-pub const app_screen_coordinate_x = types.StringAttribute{
+pub const app_screen_coordinate_x = types.IntAttribute{
     .name = "app.screen.coordinate.x",
     .brief = "The x (horizontal) coordinate of a screen coordinate, in screen pixels.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The y (vertical) component of a screen coordinate, in screen pixels.
-pub const app_screen_coordinate_y = types.StringAttribute{
+pub const app_screen_coordinate_y = types.IntAttribute{
     .name = "app.screen.coordinate.y",
     .brief = "The y (vertical) component of a screen coordinate, in screen pixels.",
     .stability = .development,
@@ -164,13 +158,10 @@ pub const aspnetcore_diagnostics_exception_resultValue = enum {
 
 /// ASP.NET Core exception middleware handling result
 pub const aspnetcore_diagnostics_exception_result = types.EnumAttribute(aspnetcore_diagnostics_exception_resultValue){
-    .base = types.StringAttribute{
-        .name = "aspnetcore.diagnostics.exception.result",
-        .brief = "ASP.NET Core exception middleware handling result",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = aspnetcore_diagnostics_exception_resultValue.handled,
+    .name = "aspnetcore.diagnostics.exception.result",
+    .brief = "ASP.NET Core exception middleware handling result",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Full type name of the [`IExceptionHandler`](https://learn.microsoft.com/dotnet/api/microsoft.aspnetcore.diagnostics.iexceptionhandler) implementation that handled the exception.
 pub const aspnetcore_diagnostics_handler_type = types.StringAttribute{
@@ -203,23 +194,20 @@ pub const aspnetcore_rate_limiting_resultValue = enum {
 
 /// Rate-limiting result, shows whether the lease was acquired or contains a rejection reason
 pub const aspnetcore_rate_limiting_result = types.EnumAttribute(aspnetcore_rate_limiting_resultValue){
-    .base = types.StringAttribute{
-        .name = "aspnetcore.rate_limiting.result",
-        .brief = "Rate-limiting result, shows whether the lease was acquired or contains a rejection reason",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = aspnetcore_rate_limiting_resultValue.acquired,
+    .name = "aspnetcore.rate_limiting.result",
+    .brief = "Rate-limiting result, shows whether the lease was acquired or contains a rejection reason",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Flag indicating if request was handled by the application pipeline.
-pub const aspnetcore_request_is_unhandled = types.StringAttribute{
+pub const aspnetcore_request_is_unhandled = types.BooleanAttribute{
     .name = "aspnetcore.request.is_unhandled",
     .brief = "Flag indicating if request was handled by the application pipeline.",
     .stability = .stable,
     .requirement_level = .recommended,
 };
 /// A value that indicates whether the matched route is a fallback route.
-pub const aspnetcore_routing_is_fallback = types.StringAttribute{
+pub const aspnetcore_routing_is_fallback = types.BooleanAttribute{
     .name = "aspnetcore.routing.is_fallback",
     .brief = "A value that indicates whether the matched route is a fallback route.",
     .stability = .stable,
@@ -238,13 +226,10 @@ pub const aspnetcore_routing_match_statusValue = enum {
 
 /// Match result - success or failure
 pub const aspnetcore_routing_match_status = types.EnumAttribute(aspnetcore_routing_match_statusValue){
-    .base = types.StringAttribute{
-        .name = "aspnetcore.routing.match_status",
-        .brief = "Match result - success or failure",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = aspnetcore_routing_match_statusValue.success,
+    .name = "aspnetcore.routing.match_status",
+    .brief = "Match result - success or failure",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// The unique identifier of the AWS Bedrock Guardrail. A [guardrail](https://docs.aws.amazon.com/bedrock/latest/userguide/guardrails.html) helps safeguard and prevent unwanted behavior from model responses or user messages.
 pub const aws_bedrock_guardrail_id = types.StringAttribute{
@@ -261,35 +246,35 @@ pub const aws_bedrock_knowledge_base_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The JSON-serialized value of each item in the `AttributeDefinitions` request field.
-pub const aws_dynamodb_attribute_definitions = types.StringAttribute{
+pub const aws_dynamodb_attribute_definitions = types.StringArrayAttribute{
     .name = "aws.dynamodb.attribute_definitions",
     .brief = "The JSON-serialized value of each item in the `AttributeDefinitions` request field.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The value of the `AttributesToGet` request parameter.
-pub const aws_dynamodb_attributes_to_get = types.StringAttribute{
+pub const aws_dynamodb_attributes_to_get = types.StringArrayAttribute{
     .name = "aws.dynamodb.attributes_to_get",
     .brief = "The value of the `AttributesToGet` request parameter.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The value of the `ConsistentRead` request parameter.
-pub const aws_dynamodb_consistent_read = types.StringAttribute{
+pub const aws_dynamodb_consistent_read = types.BooleanAttribute{
     .name = "aws.dynamodb.consistent_read",
     .brief = "The value of the `ConsistentRead` request parameter.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The JSON-serialized value of each item in the `ConsumedCapacity` response field.
-pub const aws_dynamodb_consumed_capacity = types.StringAttribute{
+pub const aws_dynamodb_consumed_capacity = types.StringArrayAttribute{
     .name = "aws.dynamodb.consumed_capacity",
     .brief = "The JSON-serialized value of each item in the `ConsumedCapacity` response field.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The value of the `Count` response parameter.
-pub const aws_dynamodb_count = types.StringAttribute{
+pub const aws_dynamodb_count = types.IntAttribute{
     .name = "aws.dynamodb.count",
     .brief = "The value of the `Count` response parameter.",
     .stability = .development,
@@ -303,14 +288,14 @@ pub const aws_dynamodb_exclusive_start_table = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The JSON-serialized value of each item in the `GlobalSecondaryIndexUpdates` request field.
-pub const aws_dynamodb_global_secondary_index_updates = types.StringAttribute{
+pub const aws_dynamodb_global_secondary_index_updates = types.StringArrayAttribute{
     .name = "aws.dynamodb.global_secondary_index_updates",
     .brief = "The JSON-serialized value of each item in the `GlobalSecondaryIndexUpdates` request field.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The JSON-serialized value of each item of the `GlobalSecondaryIndexes` request field
-pub const aws_dynamodb_global_secondary_indexes = types.StringAttribute{
+pub const aws_dynamodb_global_secondary_indexes = types.StringArrayAttribute{
     .name = "aws.dynamodb.global_secondary_indexes",
     .brief = "The JSON-serialized value of each item of the `GlobalSecondaryIndexes` request field",
     .stability = .development,
@@ -331,14 +316,14 @@ pub const aws_dynamodb_item_collection_metrics = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The value of the `Limit` request parameter.
-pub const aws_dynamodb_limit = types.StringAttribute{
+pub const aws_dynamodb_limit = types.IntAttribute{
     .name = "aws.dynamodb.limit",
     .brief = "The value of the `Limit` request parameter.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The JSON-serialized value of each item of the `LocalSecondaryIndexes` request field.
-pub const aws_dynamodb_local_secondary_indexes = types.StringAttribute{
+pub const aws_dynamodb_local_secondary_indexes = types.StringArrayAttribute{
     .name = "aws.dynamodb.local_secondary_indexes",
     .brief = "The JSON-serialized value of each item of the `LocalSecondaryIndexes` request field.",
     .stability = .development,
@@ -352,35 +337,35 @@ pub const aws_dynamodb_projection = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The value of the `ProvisionedThroughput.ReadCapacityUnits` request parameter.
-pub const aws_dynamodb_provisioned_read_capacity = types.StringAttribute{
+pub const aws_dynamodb_provisioned_read_capacity = types.DoubleAttribute{
     .name = "aws.dynamodb.provisioned_read_capacity",
     .brief = "The value of the `ProvisionedThroughput.ReadCapacityUnits` request parameter.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The value of the `ProvisionedThroughput.WriteCapacityUnits` request parameter.
-pub const aws_dynamodb_provisioned_write_capacity = types.StringAttribute{
+pub const aws_dynamodb_provisioned_write_capacity = types.DoubleAttribute{
     .name = "aws.dynamodb.provisioned_write_capacity",
     .brief = "The value of the `ProvisionedThroughput.WriteCapacityUnits` request parameter.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The value of the `ScanIndexForward` request parameter.
-pub const aws_dynamodb_scan_forward = types.StringAttribute{
+pub const aws_dynamodb_scan_forward = types.BooleanAttribute{
     .name = "aws.dynamodb.scan_forward",
     .brief = "The value of the `ScanIndexForward` request parameter.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The value of the `ScannedCount` response parameter.
-pub const aws_dynamodb_scanned_count = types.StringAttribute{
+pub const aws_dynamodb_scanned_count = types.IntAttribute{
     .name = "aws.dynamodb.scanned_count",
     .brief = "The value of the `ScannedCount` response parameter.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The value of the `Segment` request parameter.
-pub const aws_dynamodb_segment = types.StringAttribute{
+pub const aws_dynamodb_segment = types.IntAttribute{
     .name = "aws.dynamodb.segment",
     .brief = "The value of the `Segment` request parameter.",
     .stability = .development,
@@ -394,21 +379,21 @@ pub const aws_dynamodb_select = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The number of items in the `TableNames` response parameter.
-pub const aws_dynamodb_table_count = types.StringAttribute{
+pub const aws_dynamodb_table_count = types.IntAttribute{
     .name = "aws.dynamodb.table_count",
     .brief = "The number of items in the `TableNames` response parameter.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The keys in the `RequestItems` object field.
-pub const aws_dynamodb_table_names = types.StringAttribute{
+pub const aws_dynamodb_table_names = types.StringArrayAttribute{
     .name = "aws.dynamodb.table_names",
     .brief = "The keys in the `RequestItems` object field.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The value of the `TotalSegments` request parameter.
-pub const aws_dynamodb_total_segments = types.StringAttribute{
+pub const aws_dynamodb_total_segments = types.IntAttribute{
     .name = "aws.dynamodb.total_segments",
     .brief = "The value of the `TotalSegments` request parameter.",
     .stability = .development,
@@ -441,13 +426,10 @@ pub const aws_ecs_launchtypeValue = enum {
 
 /// The [launch type](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/launch_types.html) for an ECS task.
 pub const aws_ecs_launchtype = types.EnumAttribute(aws_ecs_launchtypeValue){
-    .base = types.StringAttribute{
-        .name = "aws.ecs.launchtype",
-        .brief = "The [launch type](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/launch_types.html) for an ECS task.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = aws_ecs_launchtypeValue.ec2,
+    .name = "aws.ecs.launchtype",
+    .brief = "The [launch type](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/launch_types.html) for an ECS task.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The ARN of a running [ECS task](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/ecs-account-settings.html#ecs-resource-ids).
 pub const aws_ecs_task_arn = types.StringAttribute{
@@ -514,7 +496,7 @@ pub const aws_lambda_resource_mapping_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The Amazon Resource Name(s) (ARN) of the AWS log group(s).
-pub const aws_log_group_arns = types.StringAttribute{
+pub const aws_log_group_arns = types.StringArrayAttribute{
     .name = "aws.log.group.arns",
     .brief = "The Amazon Resource Name(s) (ARN) of the AWS log group(s).",
     .note = "See the [log group ARN format documentation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/iam-access-control-overview-cwl.html#CWL_ARN_Format).",
@@ -522,7 +504,7 @@ pub const aws_log_group_arns = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The name(s) of the AWS log group(s) an application is writing to.
-pub const aws_log_group_names = types.StringAttribute{
+pub const aws_log_group_names = types.StringArrayAttribute{
     .name = "aws.log.group.names",
     .brief = "The name(s) of the AWS log group(s) an application is writing to.",
     .note = "Multiple log groups must be supported for cases like multi-container applications, where a single application has sidecar containers, and each write to their own log group.",
@@ -530,7 +512,7 @@ pub const aws_log_group_names = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The ARN(s) of the AWS log stream(s).
-pub const aws_log_stream_arns = types.StringAttribute{
+pub const aws_log_stream_arns = types.StringArrayAttribute{
     .name = "aws.log.stream.arns",
     .brief = "The ARN(s) of the AWS log stream(s).",
     .note = "See the [log stream ARN format documentation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/logs/iam-access-control-overview-cwl.html#CWL_ARN_Format). One log group can contain several log streams, so these ARNs necessarily identify both a log group and a log stream.",
@@ -538,7 +520,7 @@ pub const aws_log_stream_arns = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The name(s) of the AWS log stream(s) an application is writing to.
-pub const aws_log_stream_names = types.StringAttribute{
+pub const aws_log_stream_names = types.StringArrayAttribute{
     .name = "aws.log.stream.names",
     .brief = "The name(s) of the AWS log stream(s) an application is writing to.",
     .stability = .development,
@@ -584,7 +566,7 @@ pub const aws_s3_key = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The part number of the part being uploaded in a multipart-upload operation. This is a positive integer between 1 and 10,000.
-pub const aws_s3_part_number = types.StringAttribute{
+pub const aws_s3_part_number = types.IntAttribute{
     .name = "aws.s3.part_number",
     .brief = "The part number of the part being uploaded in a multipart-upload operation. This is a positive integer between 1 and 10,000.",
     .note = "The `part_number` attribute is only applicable to the [upload-part](https://docs.aws.amazon.com/cli/latest/reference/s3api/upload-part.html) and [upload-part-copy](https://docs.aws.amazon.com/cli/latest/reference/s3api/upload-part-copy.html) operations. The `part_number` attribute corresponds to the `--part-number` parameter of the [upload-part operation within the S3 API](https://docs.aws.amazon.com/cli/latest/reference/s3api/upload-part.html).",
@@ -668,13 +650,10 @@ pub const azure_cosmosdb_connection_modeValue = enum {
 
 /// Cosmos client connection mode.
 pub const azure_cosmosdb_connection_mode = types.EnumAttribute(azure_cosmosdb_connection_modeValue){
-    .base = types.StringAttribute{
-        .name = "azure.cosmosdb.connection.mode",
-        .brief = "Cosmos client connection mode.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = azure_cosmosdb_connection_modeValue.gateway,
+    .name = "azure.cosmosdb.connection.mode",
+    .brief = "Cosmos client connection mode.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const azure_cosmosdb_consistency_levelValue = enum {
     strong,
@@ -695,16 +674,13 @@ pub const azure_cosmosdb_consistency_levelValue = enum {
 
 /// Account or request [consistency level](https://learn.microsoft.com/azure/cosmos-db/consistency-levels).
 pub const azure_cosmosdb_consistency_level = types.EnumAttribute(azure_cosmosdb_consistency_levelValue){
-    .base = types.StringAttribute{
-        .name = "azure.cosmosdb.consistency.level",
-        .brief = "Account or request [consistency level](https://learn.microsoft.com/azure/cosmos-db/consistency-levels).",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = azure_cosmosdb_consistency_levelValue.strong,
+    .name = "azure.cosmosdb.consistency.level",
+    .brief = "Account or request [consistency level](https://learn.microsoft.com/azure/cosmos-db/consistency-levels).",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// List of regions contacted during operation in the order that they were contacted. If there is more than one region listed, it indicates that the operation was performed on multiple regions i.e. cross-regional call.
-pub const azure_cosmosdb_operation_contacted_regions = types.StringAttribute{
+pub const azure_cosmosdb_operation_contacted_regions = types.StringArrayAttribute{
     .name = "azure.cosmosdb.operation.contacted_regions",
     .brief = "List of regions contacted during operation in the order that they were contacted. If there is more than one region listed, it indicates that the operation was performed on multiple regions i.e. cross-regional call.",
     .note = "Region name matches the format of `displayName` in [Azure Location API](https://learn.microsoft.com/rest/api/subscription/subscriptions/list-locations?view=rest-subscription-2021-10-01&tabs=HTTP#location)",
@@ -712,21 +688,21 @@ pub const azure_cosmosdb_operation_contacted_regions = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The number of request units consumed by the operation.
-pub const azure_cosmosdb_operation_request_charge = types.StringAttribute{
+pub const azure_cosmosdb_operation_request_charge = types.DoubleAttribute{
     .name = "azure.cosmosdb.operation.request_charge",
     .brief = "The number of request units consumed by the operation.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Request payload size in bytes.
-pub const azure_cosmosdb_request_body_size = types.StringAttribute{
+pub const azure_cosmosdb_request_body_size = types.IntAttribute{
     .name = "azure.cosmosdb.request.body.size",
     .brief = "Request payload size in bytes.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Cosmos DB sub status code.
-pub const azure_cosmosdb_response_sub_status_code = types.StringAttribute{
+pub const azure_cosmosdb_response_sub_status_code = types.IntAttribute{
     .name = "azure.cosmosdb.response.sub_status_code",
     .brief = "Cosmos DB sub status code.",
     .stability = .development,
@@ -747,7 +723,7 @@ pub const azure_service_request_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Array of brand name and version separated by a space
-pub const browser_brands = types.StringAttribute{
+pub const browser_brands = types.StringArrayAttribute{
     .name = "browser.brands",
     .brief = "Array of brand name and version separated by a space",
     .note = "This value is intended to be taken from the [UA client hints API](https://wicg.github.io/ua-client-hints/#interface) (`navigator.userAgentData.brands`).",
@@ -763,7 +739,7 @@ pub const browser_language = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// A boolean that is true if the browser is running on a mobile device
-pub const browser_mobile = types.StringAttribute{
+pub const browser_mobile = types.BooleanAttribute{
     .name = "browser.mobile",
     .brief = "A boolean that is true if the browser is running on a mobile device",
     .note = "This value is intended to be taken from the [UA client hints API](https://wicg.github.io/ua-client-hints/#interface) (`navigator.userAgentData.mobile`). If unavailable, this attribute SHOULD be left unset.",
@@ -809,13 +785,10 @@ pub const cassandra_consistency_levelValue = enum {
 
 /// The consistency level of the query. Based on consistency values from [CQL](https://docs.datastax.com/en/cassandra-oss/3.0/cassandra/dml/dmlConfigConsistency.html).
 pub const cassandra_consistency_level = types.EnumAttribute(cassandra_consistency_levelValue){
-    .base = types.StringAttribute{
-        .name = "cassandra.consistency.level",
-        .brief = "The consistency level of the query. Based on consistency values from [CQL](https://docs.datastax.com/en/cassandra-oss/3.0/cassandra/dml/dmlConfigConsistency.html).",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cassandra_consistency_levelValue.all,
+    .name = "cassandra.consistency.level",
+    .brief = "The consistency level of the query. Based on consistency values from [CQL](https://docs.datastax.com/en/cassandra-oss/3.0/cassandra/dml/dmlConfigConsistency.html).",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The data center of the coordinating node for a query.
 pub const cassandra_coordinator_dc = types.StringAttribute{
@@ -832,21 +805,21 @@ pub const cassandra_coordinator_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The fetch size used for paging, i.e. how many rows will be returned at once.
-pub const cassandra_page_size = types.StringAttribute{
+pub const cassandra_page_size = types.IntAttribute{
     .name = "cassandra.page.size",
     .brief = "The fetch size used for paging, i.e. how many rows will be returned at once.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Whether or not the query is idempotent.
-pub const cassandra_query_idempotent = types.StringAttribute{
+pub const cassandra_query_idempotent = types.BooleanAttribute{
     .name = "cassandra.query.idempotent",
     .brief = "Whether or not the query is idempotent.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The number of times a query was speculatively executed. Not set or `0` if the query was not executed speculatively.
-pub const cassandra_speculative_execution_count = types.StringAttribute{
+pub const cassandra_speculative_execution_count = types.IntAttribute{
     .name = "cassandra.speculative_execution.count",
     .brief = "The number of times a query was speculatively executed. Not set or `0` if the query was not executed speculatively.",
     .stability = .development,
@@ -867,13 +840,10 @@ pub const cicd_pipeline_action_nameValue = enum {
 
 /// The kind of action a pipeline run is performing.
 pub const cicd_pipeline_action_name = types.EnumAttribute(cicd_pipeline_action_nameValue){
-    .base = types.StringAttribute{
-        .name = "cicd.pipeline.action.name",
-        .brief = "The kind of action a pipeline run is performing.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cicd_pipeline_action_nameValue.build,
+    .name = "cicd.pipeline.action.name",
+    .brief = "The kind of action a pipeline run is performing.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The human readable name of the pipeline within a CI/CD system.
 pub const cicd_pipeline_name = types.StringAttribute{
@@ -903,13 +873,10 @@ pub const cicd_pipeline_resultValue = enum {
 
 /// The result of a pipeline run.
 pub const cicd_pipeline_result = types.EnumAttribute(cicd_pipeline_resultValue){
-    .base = types.StringAttribute{
-        .name = "cicd.pipeline.result",
-        .brief = "The result of a pipeline run.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cicd_pipeline_resultValue.success,
+    .name = "cicd.pipeline.result",
+    .brief = "The result of a pipeline run.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The unique identifier of a pipeline run within a CI/CD system.
 pub const cicd_pipeline_run_id = types.StringAttribute{
@@ -933,13 +900,10 @@ pub const cicd_pipeline_run_stateValue = enum {
 
 /// The pipeline run goes through these states during its lifecycle.
 pub const cicd_pipeline_run_state = types.EnumAttribute(cicd_pipeline_run_stateValue){
-    .base = types.StringAttribute{
-        .name = "cicd.pipeline.run.state",
-        .brief = "The pipeline run goes through these states during its lifecycle.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cicd_pipeline_run_stateValue.pending,
+    .name = "cicd.pipeline.run.state",
+    .brief = "The pipeline run goes through these states during its lifecycle.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The [URL](https://wikipedia.org/wiki/URL) of the pipeline run, providing the complete address in order to locate and identify the pipeline run.
 pub const cicd_pipeline_run_url_full = types.StringAttribute{
@@ -983,13 +947,10 @@ pub const cicd_pipeline_task_run_resultValue = enum {
 
 /// The result of a task run.
 pub const cicd_pipeline_task_run_result = types.EnumAttribute(cicd_pipeline_task_run_resultValue){
-    .base = types.StringAttribute{
-        .name = "cicd.pipeline.task.run.result",
-        .brief = "The result of a task run.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cicd_pipeline_task_run_resultValue.success,
+    .name = "cicd.pipeline.task.run.result",
+    .brief = "The result of a task run.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The [URL](https://wikipedia.org/wiki/URL) of the pipeline task run, providing the complete address in order to locate and identify the pipeline task run.
 pub const cicd_pipeline_task_run_url_full = types.StringAttribute{
@@ -1013,13 +974,10 @@ pub const cicd_pipeline_task_typeValue = enum {
 
 /// The type of the task within a pipeline.
 pub const cicd_pipeline_task_type = types.EnumAttribute(cicd_pipeline_task_typeValue){
-    .base = types.StringAttribute{
-        .name = "cicd.pipeline.task.type",
-        .brief = "The type of the task within a pipeline.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cicd_pipeline_task_typeValue.build,
+    .name = "cicd.pipeline.task.type",
+    .brief = "The type of the task within a pipeline.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The name of a component of the CICD system.
 pub const cicd_system_component = types.StringAttribute{
@@ -1057,13 +1015,10 @@ pub const cicd_worker_stateValue = enum {
 
 /// The state of a CICD worker / agent.
 pub const cicd_worker_state = types.EnumAttribute(cicd_worker_stateValue){
-    .base = types.StringAttribute{
-        .name = "cicd.worker.state",
-        .brief = "The state of a CICD worker / agent.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cicd_worker_stateValue.available,
+    .name = "cicd.worker.state",
+    .brief = "The state of a CICD worker / agent.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The [URL](https://wikipedia.org/wiki/URL) of the worker, providing the complete address in order to locate and identify the worker.
 pub const cicd_worker_url_full = types.StringAttribute{
@@ -1081,7 +1036,7 @@ pub const client_address = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Client port number.
-pub const client_port = types.StringAttribute{
+pub const client_port = types.IntAttribute{
     .name = "client.port",
     .brief = "Client port number.",
     .note = "When observed from the server side, and when communicating through an intermediary, `client.port` SHOULD represent the client port behind any intermediaries,  for example proxies, if it's available.",
@@ -1172,14 +1127,11 @@ pub const cloud_platformValue = enum {
 
 /// The cloud platform in use.
 pub const cloud_platform = types.EnumAttribute(cloud_platformValue){
-    .base = types.StringAttribute{
-        .name = "cloud.platform",
-        .brief = "The cloud platform in use.",
-        .note = "The prefix of the service SHOULD match the one specified in `cloud.provider`.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cloud_platformValue.alibaba_cloud_ecs,
+    .name = "cloud.platform",
+    .brief = "The cloud platform in use.",
+    .note = "The prefix of the service SHOULD match the one specified in `cloud.provider`.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const cloud_providerValue = enum {
     alibaba_cloud,
@@ -1206,13 +1158,10 @@ pub const cloud_providerValue = enum {
 
 /// Name of the cloud provider.
 pub const cloud_provider = types.EnumAttribute(cloud_providerValue){
-    .base = types.StringAttribute{
-        .name = "cloud.provider",
-        .brief = "Name of the cloud provider.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cloud_providerValue.alibaba_cloud,
+    .name = "cloud.provider",
+    .brief = "Name of the cloud provider.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The geographical region within a cloud provider. When associated with a resource, this attribute specifies the region where the resource operates. When calling services or APIs deployed on a cloud, this attribute identifies the region where the called destination is deployed.
 pub const cloud_region = types.StringAttribute{
@@ -1354,14 +1303,14 @@ pub const cloudfoundry_system_instance_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `code.column.number`
-pub const code_column = types.StringAttribute{
+pub const code_column = types.IntAttribute{
     .name = "code.column",
     .brief = "Deprecated, use `code.column.number`",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The column number in `code.file.path` best representing the operation. It SHOULD point within the code unit named in `code.function.name`. This attribute MUST NOT be used on the Profile signal since the data is already captured in 'message Line'. This constraint is imposed to prevent redundancy and maintain data integrity.
-pub const code_column_number = types.StringAttribute{
+pub const code_column_number = types.IntAttribute{
     .name = "code.column.number",
     .brief = "The column number in `code.file.path` best representing the operation. It SHOULD point within the code unit named in `code.function.name`. This attribute MUST NOT be used on the Profile signal since the data is already captured in 'message Line'. This constraint is imposed to prevent redundancy and maintain data integrity.",
     .stability = .stable,
@@ -1397,14 +1346,14 @@ pub const code_function_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The line number in `code.file.path` best representing the operation. It SHOULD point within the code unit named in `code.function.name`. This attribute MUST NOT be used on the Profile signal since the data is already captured in 'message Line'. This constraint is imposed to prevent redundancy and maintain data integrity.
-pub const code_line_number = types.StringAttribute{
+pub const code_line_number = types.IntAttribute{
     .name = "code.line.number",
     .brief = "The line number in `code.file.path` best representing the operation. It SHOULD point within the code unit named in `code.function.name`. This attribute MUST NOT be used on the Profile signal since the data is already captured in 'message Line'. This constraint is imposed to prevent redundancy and maintain data integrity.",
     .stability = .stable,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `code.line.number` instead
-pub const code_lineno = types.StringAttribute{
+pub const code_lineno = types.IntAttribute{
     .name = "code.lineno",
     .brief = "Deprecated, use `code.line.number` instead",
     .stability = .development,
@@ -1433,7 +1382,7 @@ pub const container_command = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// All the command arguments (including the command/executable itself) run by the container.
-pub const container_command_args = types.StringAttribute{
+pub const container_command_args = types.StringArrayAttribute{
     .name = "container.command_args",
     .brief = "All the command arguments (including the command/executable itself) run by the container.",
     .stability = .development,
@@ -1461,13 +1410,10 @@ pub const container_cpu_stateValue = enum {
 
 /// Deprecated, use `cpu.mode` instead.
 pub const container_cpu_state = types.EnumAttribute(container_cpu_stateValue){
-    .base = types.StringAttribute{
-        .name = "container.cpu.state",
-        .brief = "Deprecated, use `cpu.mode` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = container_cpu_stateValue.user,
+    .name = "container.cpu.state",
+    .brief = "Deprecated, use `cpu.mode` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The name of the CSI ([Container Storage Interface](https://github.com/container-storage-interface/spec)) plugin used by the volume.
 pub const container_csi_plugin_name = types.StringAttribute{
@@ -1508,7 +1454,7 @@ pub const container_image_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Repo digests of the container image as provided by the container runtime.
-pub const container_image_repo_digests = types.StringAttribute{
+pub const container_image_repo_digests = types.StringArrayAttribute{
     .name = "container.image.repo_digests",
     .brief = "Repo digests of the container image as provided by the container runtime.",
     .note = "[Docker](https://docs.docker.com/engine/api/v1.43/#tag/Image/operation/ImageInspect) and [CRI](https://github.com/kubernetes/cri-api/blob/c75ef5b473bbe2d0a4fc92f82235efd665ea8e9f/pkg/apis/runtime/v1/api.proto#L1237-L1238) report those under the `RepoDigests` field.",
@@ -1516,7 +1462,7 @@ pub const container_image_repo_digests = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Container image tags. An example can be found in [Docker Image Inspect](https://docs.docker.com/engine/api/v1.43/#tag/Image/operation/ImageInspect). Should be only the `<tag>` section of the full name for example from `registry.example.com/my-org/my-image:<tag>`.
-pub const container_image_tags = types.StringAttribute{
+pub const container_image_tags = types.StringArrayAttribute{
     .name = "container.image.tags",
     .brief = "Container image tags. An example can be found in [Docker Image Inspect](https://docs.docker.com/engine/api/v1.43/#tag/Image/operation/ImageInspect). Should be only the `<tag>` section of the full name for example from `registry.example.com/my-org/my-image:<tag>`.",
     .stability = .development,
@@ -1552,7 +1498,7 @@ pub const container_runtime = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The logical CPU number [0..n-1]
-pub const cpu_logical_number = types.StringAttribute{
+pub const cpu_logical_number = types.IntAttribute{
     .name = "cpu.logical_number",
     .brief = "The logical CPU number [0..n-1]",
     .stability = .development,
@@ -1583,36 +1529,30 @@ pub const cpu_modeValue = enum {
 
 /// The mode of the CPU
 pub const cpu_mode = types.EnumAttribute(cpu_modeValue){
-    .base = types.StringAttribute{
-        .name = "cpu.mode",
-        .brief = "The mode of the CPU",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cpu_modeValue.user,
+    .name = "cpu.mode",
+    .brief = "The mode of the CPU",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const cpython_gc_generationValue = enum {
     generation_0,
     generation_1,
     generation_2,
-    pub fn toString(self: @This()) []const u8 {
+    pub fn toInt(self: @This()) i64 {
         return switch (self) {
-            .generation_0 => "0",
-            .generation_1 => "1",
-            .generation_2 => "2",
+            .generation_0 => 0,
+            .generation_1 => 1,
+            .generation_2 => 2,
         };
     }
 };
 
 /// Value of the garbage collector collection generation.
-pub const cpython_gc_generation = types.EnumAttribute(cpython_gc_generationValue){
-    .base = types.StringAttribute{
-        .name = "cpython.gc.generation",
-        .brief = "Value of the garbage collector collection generation.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = cpython_gc_generationValue.generation_0,
+pub const cpython_gc_generation = types.IntEnumAttribute(cpython_gc_generationValue){
+    .name = "cpython.gc.generation",
+    .brief = "Value of the garbage collector collection generation.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const db_cassandra_consistency_levelValue = enum {
     all,
@@ -1645,13 +1585,10 @@ pub const db_cassandra_consistency_levelValue = enum {
 
 /// Deprecated, use `cassandra.consistency.level` instead.
 pub const db_cassandra_consistency_level = types.EnumAttribute(db_cassandra_consistency_levelValue){
-    .base = types.StringAttribute{
-        .name = "db.cassandra.consistency_level",
-        .brief = "Deprecated, use `cassandra.consistency.level` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = db_cassandra_consistency_levelValue.all,
+    .name = "db.cassandra.consistency_level",
+    .brief = "Deprecated, use `cassandra.consistency.level` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `cassandra.coordinator.dc` instead.
 pub const db_cassandra_coordinator_dc = types.StringAttribute{
@@ -1668,21 +1605,21 @@ pub const db_cassandra_coordinator_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `cassandra.query.idempotent` instead.
-pub const db_cassandra_idempotence = types.StringAttribute{
+pub const db_cassandra_idempotence = types.BooleanAttribute{
     .name = "db.cassandra.idempotence",
     .brief = "Deprecated, use `cassandra.query.idempotent` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `cassandra.page.size` instead.
-pub const db_cassandra_page_size = types.StringAttribute{
+pub const db_cassandra_page_size = types.IntAttribute{
     .name = "db.cassandra.page_size",
     .brief = "Deprecated, use `cassandra.page.size` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `cassandra.speculative_execution.count` instead.
-pub const db_cassandra_speculative_execution_count = types.StringAttribute{
+pub const db_cassandra_speculative_execution_count = types.IntAttribute{
     .name = "db.cassandra.speculative_execution_count",
     .brief = "Deprecated, use `cassandra.speculative_execution.count` instead.",
     .stability = .development,
@@ -1715,13 +1652,10 @@ pub const db_client_connection_stateValue = enum {
 
 /// The state of a connection in the pool
 pub const db_client_connection_state = types.EnumAttribute(db_client_connection_stateValue){
-    .base = types.StringAttribute{
-        .name = "db.client.connection.state",
-        .brief = "The state of a connection in the pool",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = db_client_connection_stateValue.idle,
+    .name = "db.client.connection.state",
+    .brief = "The state of a connection in the pool",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `db.client.connection.pool.name` instead.
 pub const db_client_connections_pool_name = types.StringAttribute{
@@ -1743,13 +1677,10 @@ pub const db_client_connections_stateValue = enum {
 
 /// Deprecated, use `db.client.connection.state` instead.
 pub const db_client_connections_state = types.EnumAttribute(db_client_connections_stateValue){
-    .base = types.StringAttribute{
-        .name = "db.client.connections.state",
-        .brief = "Deprecated, use `db.client.connection.state` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = db_client_connections_stateValue.idle,
+    .name = "db.client.connections.state",
+    .brief = "Deprecated, use `db.client.connection.state` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The name of a collection (table, container) within the database.
 pub const db_collection_name = types.StringAttribute{
@@ -1786,13 +1717,10 @@ pub const db_cosmosdb_connection_modeValue = enum {
 
 /// Deprecated, use `azure.cosmosdb.connection.mode` instead.
 pub const db_cosmosdb_connection_mode = types.EnumAttribute(db_cosmosdb_connection_modeValue){
-    .base = types.StringAttribute{
-        .name = "db.cosmosdb.connection_mode",
-        .brief = "Deprecated, use `azure.cosmosdb.connection.mode` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = db_cosmosdb_connection_modeValue.gateway,
+    .name = "db.cosmosdb.connection_mode",
+    .brief = "Deprecated, use `azure.cosmosdb.connection.mode` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const db_cosmosdb_consistency_levelValue = enum {
     strong,
@@ -1813,13 +1741,10 @@ pub const db_cosmosdb_consistency_levelValue = enum {
 
 /// Deprecated, use `cosmosdb.consistency.level` instead.
 pub const db_cosmosdb_consistency_level = types.EnumAttribute(db_cosmosdb_consistency_levelValue){
-    .base = types.StringAttribute{
-        .name = "db.cosmosdb.consistency_level",
-        .brief = "Deprecated, use `cosmosdb.consistency.level` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = db_cosmosdb_consistency_levelValue.strong,
+    .name = "db.cosmosdb.consistency_level",
+    .brief = "Deprecated, use `cosmosdb.consistency.level` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `db.collection.name` instead.
 pub const db_cosmosdb_container = types.StringAttribute{
@@ -1867,44 +1792,41 @@ pub const db_cosmosdb_operation_typeValue = enum {
 
 /// Deprecated, no replacement at this time.
 pub const db_cosmosdb_operation_type = types.EnumAttribute(db_cosmosdb_operation_typeValue){
-    .base = types.StringAttribute{
-        .name = "db.cosmosdb.operation_type",
-        .brief = "Deprecated, no replacement at this time.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = db_cosmosdb_operation_typeValue.batch,
+    .name = "db.cosmosdb.operation_type",
+    .brief = "Deprecated, no replacement at this time.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `azure.cosmosdb.operation.contacted_regions` instead.
-pub const db_cosmosdb_regions_contacted = types.StringAttribute{
+pub const db_cosmosdb_regions_contacted = types.StringArrayAttribute{
     .name = "db.cosmosdb.regions_contacted",
     .brief = "Deprecated, use `azure.cosmosdb.operation.contacted_regions` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `azure.cosmosdb.operation.request_charge` instead.
-pub const db_cosmosdb_request_charge = types.StringAttribute{
+pub const db_cosmosdb_request_charge = types.DoubleAttribute{
     .name = "db.cosmosdb.request_charge",
     .brief = "Deprecated, use `azure.cosmosdb.operation.request_charge` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `azure.cosmosdb.request.body.size` instead.
-pub const db_cosmosdb_request_content_length = types.StringAttribute{
+pub const db_cosmosdb_request_content_length = types.IntAttribute{
     .name = "db.cosmosdb.request_content_length",
     .brief = "Deprecated, use `azure.cosmosdb.request.body.size` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `db.response.status_code` instead.
-pub const db_cosmosdb_status_code = types.StringAttribute{
+pub const db_cosmosdb_status_code = types.IntAttribute{
     .name = "db.cosmosdb.status_code",
     .brief = "Deprecated, use `db.response.status_code` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `azure.cosmosdb.response.sub_status_code` instead.
-pub const db_cosmosdb_sub_status_code = types.StringAttribute{
+pub const db_cosmosdb_sub_status_code = types.IntAttribute{
     .name = "db.cosmosdb.sub_status_code",
     .brief = "Deprecated, use `azure.cosmosdb.response.sub_status_code` instead.",
     .stability = .development,
@@ -1982,7 +1904,7 @@ pub const db_operation = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The number of queries included in a batch operation.
-pub const db_operation_batch_size = types.StringAttribute{
+pub const db_operation_batch_size = types.IntAttribute{
     .name = "db.operation.batch.size",
     .brief = "The number of queries included in a batch operation.",
     .note = "Operations are only considered batches when they contain two or more operations, and so `db.operation.batch.size` SHOULD never be `1`.",
@@ -2030,14 +1952,14 @@ pub const db_query_text = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `db.namespace` instead.
-pub const db_redis_database_index = types.StringAttribute{
+pub const db_redis_database_index = types.IntAttribute{
     .name = "db.redis.database_index",
     .brief = "Deprecated, use `db.namespace` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Number of rows returned by the operation.
-pub const db_response_returned_rows = types.StringAttribute{
+pub const db_response_returned_rows = types.IntAttribute{
     .name = "db.response.returned_rows",
     .brief = "Number of rows returned by the operation.",
     .stability = .development,
@@ -2190,13 +2112,10 @@ pub const db_systemValue = enum {
 
 /// Deprecated, use `db.system.name` instead.
 pub const db_system = types.EnumAttribute(db_systemValue){
-    .base = types.StringAttribute{
-        .name = "db.system",
-        .brief = "Deprecated, use `db.system.name` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = db_systemValue.other_sql,
+    .name = "db.system",
+    .brief = "Deprecated, use `db.system.name` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const db_system_nameValue = enum {
     other_sql,
@@ -2289,14 +2208,11 @@ pub const db_system_nameValue = enum {
 
 /// The database management system (DBMS) product as identified by the client instrumentation.
 pub const db_system_name = types.EnumAttribute(db_system_nameValue){
-    .base = types.StringAttribute{
-        .name = "db.system.name",
-        .brief = "The database management system (DBMS) product as identified by the client instrumentation.",
-        .note = "The actual DBMS may differ from the one identified by the client. For example, when using PostgreSQL client libraries to connect to a CockroachDB, the `db.system.name` is set to `postgresql` based on the instrumentation's best knowledge.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = db_system_nameValue.other_sql,
+    .name = "db.system.name",
+    .brief = "The database management system (DBMS) product as identified by the client instrumentation.",
+    .note = "The actual DBMS may differ from the one identified by the client. For example, when using PostgreSQL client libraries to connect to a CockroachDB, the `db.system.name` is set to `postgresql` based on the instrumentation's best knowledge.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Deprecated, no replacement at this time.
 pub const db_user = types.StringAttribute{
@@ -2347,13 +2263,10 @@ pub const deployment_statusValue = enum {
 
 /// The status of the deployment.
 pub const deployment_status = types.EnumAttribute(deployment_statusValue){
-    .base = types.StringAttribute{
-        .name = "deployment.status",
-        .brief = "The status of the deployment.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = deployment_statusValue.failed,
+    .name = "deployment.status",
+    .brief = "The status of the deployment.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Destination address - domain name if available without reverse DNS lookup; otherwise, IP address or Unix domain socket name.
 pub const destination_address = types.StringAttribute{
@@ -2364,7 +2277,7 @@ pub const destination_address = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Destination port number
-pub const destination_port = types.StringAttribute{
+pub const destination_port = types.IntAttribute{
     .name = "destination.port",
     .brief = "Destination port number",
     .stability = .development,
@@ -2415,16 +2328,13 @@ pub const disk_io_directionValue = enum {
 
 /// The disk IO operation direction.
 pub const disk_io_direction = types.EnumAttribute(disk_io_directionValue){
-    .base = types.StringAttribute{
-        .name = "disk.io.direction",
-        .brief = "The disk IO operation direction.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = disk_io_directionValue.read,
+    .name = "disk.io.direction",
+    .brief = "The disk IO operation direction.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The list of IPv4 or IPv6 addresses resolved during DNS lookup.
-pub const dns_answers = types.StringAttribute{
+pub const dns_answers = types.StringArrayAttribute{
     .name = "dns.answers",
     .brief = "The list of IPv4 or IPv6 addresses resolved during DNS lookup.",
     .stability = .development,
@@ -2457,13 +2367,10 @@ pub const dotnet_gc_heap_generationValue = enum {
 
 /// Name of the garbage collector managed heap generation.
 pub const dotnet_gc_heap_generation = types.EnumAttribute(dotnet_gc_heap_generationValue){
-    .base = types.StringAttribute{
-        .name = "dotnet.gc.heap.generation",
-        .brief = "Name of the garbage collector managed heap generation.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = dotnet_gc_heap_generationValue.gen0,
+    .name = "dotnet.gc.heap.generation",
+    .brief = "Name of the garbage collector managed heap generation.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Represents the human-readable identifier of the node/instance to which a request was routed.
 pub const elasticsearch_node_name = types.StringAttribute{
@@ -2521,14 +2428,11 @@ pub const error_typeValue = enum {
 
 /// Describes a class of error the operation ended with.
 pub const error_type = types.EnumAttribute(error_typeValue){
-    .base = types.StringAttribute{
-        .name = "error.type",
-        .brief = "Describes a class of error the operation ended with.",
-        .note = "The `error.type` SHOULD be predictable, and SHOULD have low cardinality.  When `error.type` is set to a type (e.g., an exception type), its canonical class name identifying the type within the artifact SHOULD be used.  Instrumentations SHOULD document the list of errors they report.  The cardinality of `error.type` within one instrumentation library SHOULD be low. Telemetry consumers that aggregate data from multiple instrumentation libraries and applications should be prepared for `error.type` to have high cardinality at query time when no additional filters are applied.  If the operation has completed successfully, instrumentations SHOULD NOT set `error.type`.  If a specific domain defines its own set of error identifiers (such as HTTP or gRPC status codes), it's RECOMMENDED to:  - Use a domain-specific attribute - Set `error.type` to capture all errors, regardless of whether they are defined within the domain-specific set or not.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = error_typeValue.other,
+    .name = "error.type",
+    .brief = "Describes a class of error the operation ended with.",
+    .note = "The `error.type` SHOULD be predictable, and SHOULD have low cardinality.  When `error.type` is set to a type (e.g., an exception type), its canonical class name identifying the type within the artifact SHOULD be used.  Instrumentations SHOULD document the list of errors they report.  The cardinality of `error.type` within one instrumentation library SHOULD be low. Telemetry consumers that aggregate data from multiple instrumentation libraries and applications should be prepared for `error.type` to have high cardinality at query time when no additional filters are applied.  If the operation has completed successfully, instrumentations SHOULD NOT set `error.type`.  If a specific domain defines its own set of error identifiers (such as HTTP or gRPC status codes), it's RECOMMENDED to:  - Use a domain-specific attribute - Set `error.type` to capture all errors, regardless of whether they are defined within the domain-specific set or not.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Identifies the class / type of event.
 pub const event_name = types.StringAttribute{
@@ -2538,7 +2442,7 @@ pub const event_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Indicates that the exception is escaping the scope of the span.
-pub const exception_escaped = types.StringAttribute{
+pub const exception_escaped = types.BooleanAttribute{
     .name = "exception.escaped",
     .brief = "Indicates that the exception is escaping the scope of the span.",
     .stability = .stable,
@@ -2566,7 +2470,7 @@ pub const exception_type = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// A boolean that is true if the serverless function is executed for the first time (aka cold-start).
-pub const faas_coldstart = types.StringAttribute{
+pub const faas_coldstart = types.BooleanAttribute{
     .name = "faas.coldstart",
     .brief = "A boolean that is true if the serverless function is executed for the first time (aka cold-start).",
     .stability = .development,
@@ -2608,13 +2512,10 @@ pub const faas_document_operationValue = enum {
 
 /// Describes the type of the operation that was performed on the data.
 pub const faas_document_operation = types.EnumAttribute(faas_document_operationValue){
-    .base = types.StringAttribute{
-        .name = "faas.document.operation",
-        .brief = "Describes the type of the operation that was performed on the data.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = faas_document_operationValue.insert,
+    .name = "faas.document.operation",
+    .brief = "Describes the type of the operation that was performed on the data.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// A string containing the time when the data was accessed in the [ISO 8601](https://www.iso.org/iso-8601-date-and-time-format.html) format expressed in [UTC](https://www.w3.org/TR/NOTE-datetime).
 pub const faas_document_time = types.StringAttribute{
@@ -2665,14 +2566,11 @@ pub const faas_invoked_providerValue = enum {
 
 /// The cloud provider of the invoked function.
 pub const faas_invoked_provider = types.EnumAttribute(faas_invoked_providerValue){
-    .base = types.StringAttribute{
-        .name = "faas.invoked_provider",
-        .brief = "The cloud provider of the invoked function.",
-        .note = "SHOULD be equal to the `cloud.provider` resource attribute of the invoked function.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = faas_invoked_providerValue.alibaba_cloud,
+    .name = "faas.invoked_provider",
+    .brief = "The cloud provider of the invoked function.",
+    .note = "SHOULD be equal to the `cloud.provider` resource attribute of the invoked function.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The cloud region of the invoked function.
 pub const faas_invoked_region = types.StringAttribute{
@@ -2683,7 +2581,7 @@ pub const faas_invoked_region = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The amount of memory available to the serverless function converted to Bytes.
-pub const faas_max_memory = types.StringAttribute{
+pub const faas_max_memory = types.IntAttribute{
     .name = "faas.max_memory",
     .brief = "The amount of memory available to the serverless function converted to Bytes.",
     .note = "It's recommended to set this attribute since e.g. too little memory can easily stop a Java AWS Lambda function from working correctly. On AWS Lambda, the environment variable `AWS_LAMBDA_FUNCTION_MEMORY_SIZE` provides this information (which must be multiplied by 1,048,576).",
@@ -2724,13 +2622,10 @@ pub const faas_triggerValue = enum {
 
 /// Type of the trigger which caused this function invocation.
 pub const faas_trigger = types.EnumAttribute(faas_triggerValue){
-    .base = types.StringAttribute{
-        .name = "faas.trigger",
-        .brief = "Type of the trigger which caused this function invocation.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = faas_triggerValue.datasource,
+    .name = "faas.trigger",
+    .brief = "Type of the trigger which caused this function invocation.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The immutable version of the function being executed.
 pub const faas_version = types.StringAttribute{
@@ -2781,13 +2676,10 @@ pub const feature_flag_evaluation_reasonValue = enum {
 
 /// Deprecated, use `feature_flag.result.reason` instead.
 pub const feature_flag_evaluation_reason = types.EnumAttribute(feature_flag_evaluation_reasonValue){
-    .base = types.StringAttribute{
-        .name = "feature_flag.evaluation.reason",
-        .brief = "Deprecated, use `feature_flag.result.reason` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = feature_flag_evaluation_reasonValue.static,
+    .name = "feature_flag.evaluation.reason",
+    .brief = "Deprecated, use `feature_flag.result.reason` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The lookup key of the feature flag.
 pub const feature_flag_key = types.StringAttribute{
@@ -2830,13 +2722,10 @@ pub const feature_flag_result_reasonValue = enum {
 
 /// The reason code which shows how a feature flag value was determined.
 pub const feature_flag_result_reason = types.EnumAttribute(feature_flag_result_reasonValue){
-    .base = types.StringAttribute{
-        .name = "feature_flag.result.reason",
-        .brief = "The reason code which shows how a feature flag value was determined.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = feature_flag_result_reasonValue.static,
+    .name = "feature_flag.result.reason",
+    .brief = "The reason code which shows how a feature flag value was determined.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The evaluated value of the feature flag.
 pub const feature_flag_result_value = types.StringAttribute{
@@ -2884,7 +2773,7 @@ pub const file_accessed = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Array of file attributes.
-pub const file_attributes = types.StringAttribute{
+pub const file_attributes = types.StringArrayAttribute{
     .name = "file.attributes",
     .brief = "Array of file attributes.",
     .note = "Attributes names depend on the OS or file system. Here’s a non-exhaustive list of values expected for this attribute: `archive`, `compressed`, `directory`, `encrypted`, `execute`, `hidden`, `immutable`, `journaled`, `read`, `readonly`, `symbolic link`, `system`, `temporary`, `write`.",
@@ -2994,7 +2883,7 @@ pub const file_path = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// File size in bytes.
-pub const file_size = types.StringAttribute{
+pub const file_size = types.IntAttribute{
     .name = "file.size",
     .brief = "File size in bytes.",
     .stability = .development,
@@ -3046,14 +2935,11 @@ pub const gcp_apphub_service_criticality_typeValue = enum {
 
 /// Criticality of a service indicates its importance to the business.
 pub const gcp_apphub_service_criticality_type = types.EnumAttribute(gcp_apphub_service_criticality_typeValue){
-    .base = types.StringAttribute{
-        .name = "gcp.apphub.service.criticality_type",
-        .brief = "Criticality of a service indicates its importance to the business.",
-        .note = "[See AppHub type enum](https://cloud.google.com/app-hub/docs/reference/rest/v1/Attributes#type)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gcp_apphub_service_criticality_typeValue.mission_critical,
+    .name = "gcp.apphub.service.criticality_type",
+    .brief = "Criticality of a service indicates its importance to the business.",
+    .note = "[See AppHub type enum](https://cloud.google.com/app-hub/docs/reference/rest/v1/Attributes#type)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const gcp_apphub_service_environment_typeValue = enum {
     production,
@@ -3072,14 +2958,11 @@ pub const gcp_apphub_service_environment_typeValue = enum {
 
 /// Environment of a service is the stage of a software lifecycle.
 pub const gcp_apphub_service_environment_type = types.EnumAttribute(gcp_apphub_service_environment_typeValue){
-    .base = types.StringAttribute{
-        .name = "gcp.apphub.service.environment_type",
-        .brief = "Environment of a service is the stage of a software lifecycle.",
-        .note = "[See AppHub environment type](https://cloud.google.com/app-hub/docs/reference/rest/v1/Attributes#type_1)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gcp_apphub_service_environment_typeValue.production,
+    .name = "gcp.apphub.service.environment_type",
+    .brief = "Environment of a service is the stage of a software lifecycle.",
+    .note = "[See AppHub environment type](https://cloud.google.com/app-hub/docs/reference/rest/v1/Attributes#type_1)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The name of the service as configured in AppHub.
 pub const gcp_apphub_service_id = types.StringAttribute{
@@ -3105,14 +2988,11 @@ pub const gcp_apphub_workload_criticality_typeValue = enum {
 
 /// Criticality of a workload indicates its importance to the business.
 pub const gcp_apphub_workload_criticality_type = types.EnumAttribute(gcp_apphub_workload_criticality_typeValue){
-    .base = types.StringAttribute{
-        .name = "gcp.apphub.workload.criticality_type",
-        .brief = "Criticality of a workload indicates its importance to the business.",
-        .note = "[See AppHub type enum](https://cloud.google.com/app-hub/docs/reference/rest/v1/Attributes#type)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gcp_apphub_workload_criticality_typeValue.mission_critical,
+    .name = "gcp.apphub.workload.criticality_type",
+    .brief = "Criticality of a workload indicates its importance to the business.",
+    .note = "[See AppHub type enum](https://cloud.google.com/app-hub/docs/reference/rest/v1/Attributes#type)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const gcp_apphub_workload_environment_typeValue = enum {
     production,
@@ -3131,14 +3011,11 @@ pub const gcp_apphub_workload_environment_typeValue = enum {
 
 /// Environment of a workload is the stage of a software lifecycle.
 pub const gcp_apphub_workload_environment_type = types.EnumAttribute(gcp_apphub_workload_environment_typeValue){
-    .base = types.StringAttribute{
-        .name = "gcp.apphub.workload.environment_type",
-        .brief = "Environment of a workload is the stage of a software lifecycle.",
-        .note = "[See AppHub environment type](https://cloud.google.com/app-hub/docs/reference/rest/v1/Attributes#type_1)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gcp_apphub_workload_environment_typeValue.production,
+    .name = "gcp.apphub.workload.environment_type",
+    .brief = "Environment of a workload is the stage of a software lifecycle.",
+    .note = "[See AppHub environment type](https://cloud.google.com/app-hub/docs/reference/rest/v1/Attributes#type_1)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The name of the workload as configured in AppHub.
 pub const gcp_apphub_workload_id = types.StringAttribute{
@@ -3163,7 +3040,7 @@ pub const gcp_cloud_run_job_execution = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The index for a task within an execution as provided by the [`CLOUD_RUN_TASK_INDEX`](https://cloud.google.com/run/docs/container-contract#jobs-env-vars) environment variable.
-pub const gcp_cloud_run_job_task_index = types.StringAttribute{
+pub const gcp_cloud_run_job_task_index = types.IntAttribute{
     .name = "gcp.cloud_run.job.task_index",
     .brief = "The index for a task within an execution as provided by the [`CLOUD_RUN_TASK_INDEX`](https://cloud.google.com/run/docs/container-contract#jobs-env-vars) environment variable.",
     .stability = .development,
@@ -3241,16 +3118,13 @@ pub const gen_ai_openai_request_response_formatValue = enum {
 
 /// Deprecated, use `gen_ai.output.type`.
 pub const gen_ai_openai_request_response_format = types.EnumAttribute(gen_ai_openai_request_response_formatValue){
-    .base = types.StringAttribute{
-        .name = "gen_ai.openai.request.response_format",
-        .brief = "Deprecated, use `gen_ai.output.type`.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gen_ai_openai_request_response_formatValue.text,
+    .name = "gen_ai.openai.request.response_format",
+    .brief = "Deprecated, use `gen_ai.output.type`.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `gen_ai.request.seed`.
-pub const gen_ai_openai_request_seed = types.StringAttribute{
+pub const gen_ai_openai_request_seed = types.IntAttribute{
     .name = "gen_ai.openai.request.seed",
     .brief = "Deprecated, use `gen_ai.request.seed`.",
     .stability = .development,
@@ -3269,13 +3143,10 @@ pub const gen_ai_openai_request_service_tierValue = enum {
 
 /// The service tier requested. May be a specific tier, default, or auto.
 pub const gen_ai_openai_request_service_tier = types.EnumAttribute(gen_ai_openai_request_service_tierValue){
-    .base = types.StringAttribute{
-        .name = "gen_ai.openai.request.service_tier",
-        .brief = "The service tier requested. May be a specific tier, default, or auto.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gen_ai_openai_request_service_tierValue.auto,
+    .name = "gen_ai.openai.request.service_tier",
+    .brief = "The service tier requested. May be a specific tier, default, or auto.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The service tier used for the response.
 pub const gen_ai_openai_response_service_tier = types.StringAttribute{
@@ -3314,14 +3185,11 @@ pub const gen_ai_operation_nameValue = enum {
 
 /// The name of the operation being performed.
 pub const gen_ai_operation_name = types.EnumAttribute(gen_ai_operation_nameValue){
-    .base = types.StringAttribute{
-        .name = "gen_ai.operation.name",
-        .brief = "The name of the operation being performed.",
-        .note = "If one of the predefined values applies, but specific system uses a different name it's RECOMMENDED to document it in the semantic conventions for specific GenAI system and use system-specific name in the instrumentation. If a different name is not documented, instrumentation libraries SHOULD use applicable predefined value.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gen_ai_operation_nameValue.chat,
+    .name = "gen_ai.operation.name",
+    .brief = "The name of the operation being performed.",
+    .note = "If one of the predefined values applies, but specific system uses a different name it's RECOMMENDED to document it in the semantic conventions for specific GenAI system and use system-specific name in the instrumentation. If a different name is not documented, instrumentation libraries SHOULD use applicable predefined value.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const gen_ai_output_typeValue = enum {
     text,
@@ -3340,14 +3208,11 @@ pub const gen_ai_output_typeValue = enum {
 
 /// Represents the content type requested by the client.
 pub const gen_ai_output_type = types.EnumAttribute(gen_ai_output_typeValue){
-    .base = types.StringAttribute{
-        .name = "gen_ai.output.type",
-        .brief = "Represents the content type requested by the client.",
-        .note = "This attribute SHOULD be used when the client requests output of a specific type. The model may return zero or more outputs of this type. This attribute specifies the output modality and not the actual output format. For example, if an image is requested, the actual output could be a URL pointing to an image file. Additional output format details may be recorded in the future in the `gen_ai.output.{type}.*` attributes.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gen_ai_output_typeValue.text,
+    .name = "gen_ai.output.type",
+    .brief = "Represents the content type requested by the client.",
+    .note = "This attribute SHOULD be used when the client requests output of a specific type. The model may return zero or more outputs of this type. This attribute specifies the output modality and not the actual output format. For example, if an image is requested, the actual output could be a URL pointing to an image file. Additional output format details may be recorded in the future in the `gen_ai.output.{type}.*` attributes.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use Event API to report prompt contents.
 pub const gen_ai_prompt = types.StringAttribute{
@@ -3357,14 +3222,14 @@ pub const gen_ai_prompt = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The target number of candidate completions to return.
-pub const gen_ai_request_choice_count = types.StringAttribute{
+pub const gen_ai_request_choice_count = types.IntAttribute{
     .name = "gen_ai.request.choice.count",
     .brief = "The target number of candidate completions to return.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The encoding formats requested in an embeddings operation, if specified.
-pub const gen_ai_request_encoding_formats = types.StringAttribute{
+pub const gen_ai_request_encoding_formats = types.StringArrayAttribute{
     .name = "gen_ai.request.encoding_formats",
     .brief = "The encoding formats requested in an embeddings operation, if specified.",
     .note = "In some GenAI systems the encoding formats are called embedding types. Also, some GenAI systems only accept a single format per request.",
@@ -3372,14 +3237,14 @@ pub const gen_ai_request_encoding_formats = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The frequency penalty setting for the GenAI request.
-pub const gen_ai_request_frequency_penalty = types.StringAttribute{
+pub const gen_ai_request_frequency_penalty = types.DoubleAttribute{
     .name = "gen_ai.request.frequency_penalty",
     .brief = "The frequency penalty setting for the GenAI request.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The maximum number of tokens the model generates for a request.
-pub const gen_ai_request_max_tokens = types.StringAttribute{
+pub const gen_ai_request_max_tokens = types.IntAttribute{
     .name = "gen_ai.request.max_tokens",
     .brief = "The maximum number of tokens the model generates for a request.",
     .stability = .development,
@@ -3393,49 +3258,49 @@ pub const gen_ai_request_model = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The presence penalty setting for the GenAI request.
-pub const gen_ai_request_presence_penalty = types.StringAttribute{
+pub const gen_ai_request_presence_penalty = types.DoubleAttribute{
     .name = "gen_ai.request.presence_penalty",
     .brief = "The presence penalty setting for the GenAI request.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Requests with same seed value more likely to return same result.
-pub const gen_ai_request_seed = types.StringAttribute{
+pub const gen_ai_request_seed = types.IntAttribute{
     .name = "gen_ai.request.seed",
     .brief = "Requests with same seed value more likely to return same result.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// List of sequences that the model will use to stop generating further tokens.
-pub const gen_ai_request_stop_sequences = types.StringAttribute{
+pub const gen_ai_request_stop_sequences = types.StringArrayAttribute{
     .name = "gen_ai.request.stop_sequences",
     .brief = "List of sequences that the model will use to stop generating further tokens.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The temperature setting for the GenAI request.
-pub const gen_ai_request_temperature = types.StringAttribute{
+pub const gen_ai_request_temperature = types.DoubleAttribute{
     .name = "gen_ai.request.temperature",
     .brief = "The temperature setting for the GenAI request.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The top_k sampling setting for the GenAI request.
-pub const gen_ai_request_top_k = types.StringAttribute{
+pub const gen_ai_request_top_k = types.DoubleAttribute{
     .name = "gen_ai.request.top_k",
     .brief = "The top_k sampling setting for the GenAI request.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The top_p sampling setting for the GenAI request.
-pub const gen_ai_request_top_p = types.StringAttribute{
+pub const gen_ai_request_top_p = types.DoubleAttribute{
     .name = "gen_ai.request.top_p",
     .brief = "The top_p sampling setting for the GenAI request.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Array of reasons the model stopped generating tokens, corresponding to each generation received.
-pub const gen_ai_response_finish_reasons = types.StringAttribute{
+pub const gen_ai_response_finish_reasons = types.StringArrayAttribute{
     .name = "gen_ai.response.finish_reasons",
     .brief = "Array of reasons the model stopped generating tokens, corresponding to each generation received.",
     .stability = .development,
@@ -3502,14 +3367,11 @@ pub const gen_ai_systemValue = enum {
 
 /// The Generative AI product as identified by the client or server instrumentation.
 pub const gen_ai_system = types.EnumAttribute(gen_ai_systemValue){
-    .base = types.StringAttribute{
-        .name = "gen_ai.system",
-        .brief = "The Generative AI product as identified by the client or server instrumentation.",
-        .note = "The `gen_ai.system` describes a family of GenAI models with specific model identified by `gen_ai.request.model` and `gen_ai.response.model` attributes.  The actual GenAI product may differ from the one identified by the client. Multiple systems, including Azure OpenAI and Gemini, are accessible by OpenAI client libraries. In such cases, the `gen_ai.system` is set to `openai` based on the instrumentation's best knowledge, instead of the actual system. The `server.address` attribute may help identify the actual system in use for `openai`.  For custom model, a custom friendly name SHOULD be used. If none of these options apply, the `gen_ai.system` SHOULD be set to `_OTHER`.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gen_ai_systemValue.openai,
+    .name = "gen_ai.system",
+    .brief = "The Generative AI product as identified by the client or server instrumentation.",
+    .note = "The `gen_ai.system` describes a family of GenAI models with specific model identified by `gen_ai.request.model` and `gen_ai.response.model` attributes.  The actual GenAI product may differ from the one identified by the client. Multiple systems, including Azure OpenAI and Gemini, are accessible by OpenAI client libraries. In such cases, the `gen_ai.system` is set to `openai` based on the instrumentation's best knowledge, instead of the actual system. The `server.address` attribute may help identify the actual system in use for `openai`.  For custom model, a custom friendly name SHOULD be used. If none of these options apply, the `gen_ai.system` SHOULD be set to `_OTHER`.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const gen_ai_token_typeValue = enum {
     input,
@@ -3526,13 +3388,10 @@ pub const gen_ai_token_typeValue = enum {
 
 /// The type of token being counted.
 pub const gen_ai_token_type = types.EnumAttribute(gen_ai_token_typeValue){
-    .base = types.StringAttribute{
-        .name = "gen_ai.token.type",
-        .brief = "The type of token being counted.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = gen_ai_token_typeValue.input,
+    .name = "gen_ai.token.type",
+    .brief = "The type of token being counted.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The tool call identifier.
 pub const gen_ai_tool_call_id = types.StringAttribute{
@@ -3564,28 +3423,28 @@ pub const gen_ai_tool_type = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `gen_ai.usage.output_tokens` instead.
-pub const gen_ai_usage_completion_tokens = types.StringAttribute{
+pub const gen_ai_usage_completion_tokens = types.IntAttribute{
     .name = "gen_ai.usage.completion_tokens",
     .brief = "Deprecated, use `gen_ai.usage.output_tokens` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The number of tokens used in the GenAI input (prompt).
-pub const gen_ai_usage_input_tokens = types.StringAttribute{
+pub const gen_ai_usage_input_tokens = types.IntAttribute{
     .name = "gen_ai.usage.input_tokens",
     .brief = "The number of tokens used in the GenAI input (prompt).",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The number of tokens used in the GenAI response (completion).
-pub const gen_ai_usage_output_tokens = types.StringAttribute{
+pub const gen_ai_usage_output_tokens = types.IntAttribute{
     .name = "gen_ai.usage.output_tokens",
     .brief = "The number of tokens used in the GenAI response (completion).",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `gen_ai.usage.input_tokens` instead.
-pub const gen_ai_usage_prompt_tokens = types.StringAttribute{
+pub const gen_ai_usage_prompt_tokens = types.IntAttribute{
     .name = "gen_ai.usage.prompt_tokens",
     .brief = "Deprecated, use `gen_ai.usage.input_tokens` instead.",
     .stability = .development,
@@ -3614,13 +3473,10 @@ pub const geo_continent_codeValue = enum {
 
 /// Two-letter code representing continent’s name.
 pub const geo_continent_code = types.EnumAttribute(geo_continent_codeValue){
-    .base = types.StringAttribute{
-        .name = "geo.continent.code",
-        .brief = "Two-letter code representing continent’s name.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = geo_continent_codeValue.af,
+    .name = "geo.continent.code",
+    .brief = "Two-letter code representing continent’s name.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Two-letter ISO Country Code ([ISO 3166-1 alpha2](https://wikipedia.org/wiki/ISO_3166-1#Codes)).
 pub const geo_country_iso_code = types.StringAttribute{
@@ -3637,14 +3493,14 @@ pub const geo_locality_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Latitude of the geo location in [WGS84](https://wikipedia.org/wiki/World_Geodetic_System#WGS84).
-pub const geo_location_lat = types.StringAttribute{
+pub const geo_location_lat = types.DoubleAttribute{
     .name = "geo.location.lat",
     .brief = "Latitude of the geo location in [WGS84](https://wikipedia.org/wiki/World_Geodetic_System#WGS84).",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Longitude of the geo location in [WGS84](https://wikipedia.org/wiki/World_Geodetic_System#WGS84).
-pub const geo_location_lon = types.StringAttribute{
+pub const geo_location_lon = types.DoubleAttribute{
     .name = "geo.location.lon",
     .brief = "Longitude of the geo location in [WGS84](https://wikipedia.org/wiki/World_Geodetic_System#WGS84).",
     .stability = .development,
@@ -3677,13 +3533,10 @@ pub const go_memory_typeValue = enum {
 
 /// The type of memory.
 pub const go_memory_type = types.EnumAttribute(go_memory_typeValue){
-    .base = types.StringAttribute{
-        .name = "go.memory.type",
-        .brief = "The type of memory.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = go_memory_typeValue.stack,
+    .name = "go.memory.type",
+    .brief = "The type of memory.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The GraphQL document being executed.
 pub const graphql_document = types.StringAttribute{
@@ -3715,13 +3568,10 @@ pub const graphql_operation_typeValue = enum {
 
 /// The type of the operation being executed.
 pub const graphql_operation_type = types.EnumAttribute(graphql_operation_typeValue){
-    .base = types.StringAttribute{
-        .name = "graphql.operation.type",
-        .brief = "The type of the operation being executed.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = graphql_operation_typeValue.query,
+    .name = "graphql.operation.type",
+    .brief = "The type of the operation being executed.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Unique identifier for the application
 pub const heroku_app_id = types.StringAttribute{
@@ -3769,16 +3619,13 @@ pub const host_archValue = enum {
 
 /// The CPU architecture the host system is running on.
 pub const host_arch = types.EnumAttribute(host_archValue){
-    .base = types.StringAttribute{
-        .name = "host.arch",
-        .brief = "The CPU architecture the host system is running on.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = host_archValue.amd64,
+    .name = "host.arch",
+    .brief = "The CPU architecture the host system is running on.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The amount of level 2 memory cache available to the processor (in Bytes).
-pub const host_cpu_cache_l2_size = types.StringAttribute{
+pub const host_cpu_cache_l2_size = types.IntAttribute{
     .name = "host.cpu.cache.l2.size",
     .brief = "The amount of level 2 memory cache available to the processor (in Bytes).",
     .stability = .development,
@@ -3849,7 +3696,7 @@ pub const host_image_version = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Available IP addresses of the host, excluding loopback interfaces.
-pub const host_ip = types.StringAttribute{
+pub const host_ip = types.StringArrayAttribute{
     .name = "host.ip",
     .brief = "Available IP addresses of the host, excluding loopback interfaces.",
     .note = "IPv4 Addresses MUST be specified in dotted-quad notation. IPv6 addresses MUST be specified in the [RFC 5952](https://www.rfc-editor.org/rfc/rfc5952.html) format.",
@@ -3857,7 +3704,7 @@ pub const host_ip = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Available MAC addresses of the host, excluding loopback interfaces.
-pub const host_mac = types.StringAttribute{
+pub const host_mac = types.StringArrayAttribute{
     .name = "host.mac",
     .brief = "Available MAC addresses of the host, excluding loopback interfaces.",
     .note = "MAC Addresses MUST be represented in [IEEE RA hexadecimal form](https://standards.ieee.org/wp-content/uploads/import/documents/tutorials/eui.pdf): as hyphen-separated octets in uppercase hexadecimal form from most to least significant.",
@@ -3898,13 +3745,10 @@ pub const http_connection_stateValue = enum {
 
 /// State of the HTTP connection in the HTTP connection pool.
 pub const http_connection_state = types.EnumAttribute(http_connection_stateValue){
-    .base = types.StringAttribute{
-        .name = "http.connection.state",
-        .brief = "State of the HTTP connection in the HTTP connection pool.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = http_connection_stateValue.active,
+    .name = "http.connection.state",
+    .brief = "State of the HTTP connection in the HTTP connection pool.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const http_flavorValue = enum {
     http_1_0,
@@ -3927,13 +3771,10 @@ pub const http_flavorValue = enum {
 
 /// Deprecated, use `network.protocol.name` instead.
 pub const http_flavor = types.EnumAttribute(http_flavorValue){
-    .base = types.StringAttribute{
-        .name = "http.flavor",
-        .brief = "Deprecated, use `network.protocol.name` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = http_flavorValue.http_1_0,
+    .name = "http.flavor",
+    .brief = "Deprecated, use `network.protocol.name` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use one of `server.address`, `client.address` or `http.request.header.host` instead, depending on the usage.
 pub const http_host = types.StringAttribute{
@@ -3950,14 +3791,14 @@ pub const http_method = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The size of the request payload body in bytes. This is the number of bytes transferred excluding headers and is often, but not always, present as the [Content-Length](https://www.rfc-editor.org/rfc/rfc9110.html#field.content-length) header. For requests using transport encoding, this should be the compressed size.
-pub const http_request_body_size = types.StringAttribute{
+pub const http_request_body_size = types.IntAttribute{
     .name = "http.request.body.size",
     .brief = "The size of the request payload body in bytes. This is the number of bytes transferred excluding headers and is often, but not always, present as the [Content-Length](https://www.rfc-editor.org/rfc/rfc9110.html#field.content-length) header. For requests using transport encoding, this should be the compressed size.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// HTTP request headers, ``key`` being the normalized HTTP Header name (lowercase), the value being the header values.
-pub const http_request_header = types.StringAttribute{
+pub const http_request_header = types.StringArrayAttribute{
     .name = "http.request.header",
     .brief = "HTTP request headers, ``key`` being the normalized HTTP Header name (lowercase), the value being the header values.",
     .note = "Instrumentations SHOULD require an explicit configuration of which headers are to be captured. Including all request headers can be a security risk - explicit configuration helps avoid leaking sensitive information.  The `User-Agent` header is already captured in the `user_agent.original` attribute. Users MAY explicitly configure instrumentations to capture them even though it is not recommended.  The attribute value MUST consist of either multiple header values as an array of strings or a single-item array containing a possibly comma-concatenated string, depending on the way the HTTP library provides access to headers.  Examples:  - A header `Content-Type: application/json` SHOULD be recorded as the `http.request.header.content-type`   attribute with value `[\"application/json\"]`. - A header `X-Forwarded-For: 1.2.3.4, 1.2.3.5` SHOULD be recorded as the `http.request.header.x-forwarded-for`   attribute with value `[\"1.2.3.4\", \"1.2.3.5\"]` or `[\"1.2.3.4, 1.2.3.5\"]` depending on the HTTP library.",
@@ -3993,14 +3834,11 @@ pub const http_request_methodValue = enum {
 
 /// HTTP request method.
 pub const http_request_method = types.EnumAttribute(http_request_methodValue){
-    .base = types.StringAttribute{
-        .name = "http.request.method",
-        .brief = "HTTP request method.",
-        .note = "HTTP request method value SHOULD be \"known\" to the instrumentation. By default, this convention defines \"known\" methods as the ones listed in [RFC9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-methods) and the PATCH method defined in [RFC5789](https://www.rfc-editor.org/rfc/rfc5789.html).  If the HTTP request method is not known to instrumentation, it MUST set the `http.request.method` attribute to `_OTHER`.  If the HTTP instrumentation could end up converting valid HTTP request methods to `_OTHER`, then it MUST provide a way to override the list of known HTTP methods. If this override is done via environment variable, then the environment variable MUST be named OTEL_INSTRUMENTATION_HTTP_KNOWN_METHODS and support a comma-separated list of case-sensitive known HTTP methods (this list MUST be a full override of the default known method, it is not a list of known methods in addition to the defaults).  HTTP method names are case-sensitive and `http.request.method` attribute value MUST match a known HTTP method name exactly. Instrumentations for specific web frameworks that consider HTTP methods to be case insensitive, SHOULD populate a canonical equivalent. Tracing instrumentations that do so, MUST also set `http.request.method_original` to the original value.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = http_request_methodValue.connect,
+    .name = "http.request.method",
+    .brief = "HTTP request method.",
+    .note = "HTTP request method value SHOULD be \"known\" to the instrumentation. By default, this convention defines \"known\" methods as the ones listed in [RFC9110](https://www.rfc-editor.org/rfc/rfc9110.html#name-methods) and the PATCH method defined in [RFC5789](https://www.rfc-editor.org/rfc/rfc5789.html).  If the HTTP request method is not known to instrumentation, it MUST set the `http.request.method` attribute to `_OTHER`.  If the HTTP instrumentation could end up converting valid HTTP request methods to `_OTHER`, then it MUST provide a way to override the list of known HTTP methods. If this override is done via environment variable, then the environment variable MUST be named OTEL_INSTRUMENTATION_HTTP_KNOWN_METHODS and support a comma-separated list of case-sensitive known HTTP methods (this list MUST be a full override of the default known method, it is not a list of known methods in addition to the defaults).  HTTP method names are case-sensitive and `http.request.method` attribute value MUST match a known HTTP method name exactly. Instrumentations for specific web frameworks that consider HTTP methods to be case insensitive, SHOULD populate a canonical equivalent. Tracing instrumentations that do so, MUST also set `http.request.method_original` to the original value.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Original HTTP method sent by the client in the request line.
 pub const http_request_method_original = types.StringAttribute{
@@ -4010,7 +3848,7 @@ pub const http_request_method_original = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The ordinal number of request resending attempt (for any reason, including redirects).
-pub const http_request_resend_count = types.StringAttribute{
+pub const http_request_resend_count = types.IntAttribute{
     .name = "http.request.resend_count",
     .brief = "The ordinal number of request resending attempt (for any reason, including redirects).",
     .note = "The resend count SHOULD be updated each time an HTTP request gets resent by the client, regardless of what was the cause of the resending (e.g. redirection, authorization failure, 503 Server Unavailable, network issues, or any other).",
@@ -4018,35 +3856,35 @@ pub const http_request_resend_count = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The total size of the request in bytes. This should be the total number of bytes sent over the wire, including the request line (HTTP/1.1), framing (HTTP/2 and HTTP/3), headers, and request body if any.
-pub const http_request_size = types.StringAttribute{
+pub const http_request_size = types.IntAttribute{
     .name = "http.request.size",
     .brief = "The total size of the request in bytes. This should be the total number of bytes sent over the wire, including the request line (HTTP/1.1), framing (HTTP/2 and HTTP/3), headers, and request body if any.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `http.request.header.content-length` instead.
-pub const http_request_content_length = types.StringAttribute{
+pub const http_request_content_length = types.IntAttribute{
     .name = "http.request_content_length",
     .brief = "Deprecated, use `http.request.header.content-length` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `http.request.body.size` instead.
-pub const http_request_content_length_uncompressed = types.StringAttribute{
+pub const http_request_content_length_uncompressed = types.IntAttribute{
     .name = "http.request_content_length_uncompressed",
     .brief = "Deprecated, use `http.request.body.size` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The size of the response payload body in bytes. This is the number of bytes transferred excluding headers and is often, but not always, present as the [Content-Length](https://www.rfc-editor.org/rfc/rfc9110.html#field.content-length) header. For requests using transport encoding, this should be the compressed size.
-pub const http_response_body_size = types.StringAttribute{
+pub const http_response_body_size = types.IntAttribute{
     .name = "http.response.body.size",
     .brief = "The size of the response payload body in bytes. This is the number of bytes transferred excluding headers and is often, but not always, present as the [Content-Length](https://www.rfc-editor.org/rfc/rfc9110.html#field.content-length) header. For requests using transport encoding, this should be the compressed size.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// HTTP response headers, ``key`` being the normalized HTTP Header name (lowercase), the value being the header values.
-pub const http_response_header = types.StringAttribute{
+pub const http_response_header = types.StringArrayAttribute{
     .name = "http.response.header",
     .brief = "HTTP response headers, ``key`` being the normalized HTTP Header name (lowercase), the value being the header values.",
     .note = "Instrumentations SHOULD require an explicit configuration of which headers are to be captured. Including all response headers can be a security risk - explicit configuration helps avoid leaking sensitive information.  Users MAY explicitly configure instrumentations to capture them even though it is not recommended.  The attribute value MUST consist of either multiple header values as an array of strings or a single-item array containing a possibly comma-concatenated string, depending on the way the HTTP library provides access to headers.  Examples:  - A header `Content-Type: application/json` header SHOULD be recorded as the `http.request.response.content-type`   attribute with value `[\"application/json\"]`. - A header `My-custom-header: abc, def` header SHOULD be recorded as the `http.response.header.my-custom-header`   attribute with value `[\"abc\", \"def\"]` or `[\"abc, def\"]` depending on the HTTP library.",
@@ -4054,28 +3892,28 @@ pub const http_response_header = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The total size of the response in bytes. This should be the total number of bytes sent over the wire, including the status line (HTTP/1.1), framing (HTTP/2 and HTTP/3), headers, and response body and trailers if any.
-pub const http_response_size = types.StringAttribute{
+pub const http_response_size = types.IntAttribute{
     .name = "http.response.size",
     .brief = "The total size of the response in bytes. This should be the total number of bytes sent over the wire, including the status line (HTTP/1.1), framing (HTTP/2 and HTTP/3), headers, and response body and trailers if any.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// [HTTP response status code](https://tools.ietf.org/html/rfc7231#section-6).
-pub const http_response_status_code = types.StringAttribute{
+pub const http_response_status_code = types.IntAttribute{
     .name = "http.response.status_code",
     .brief = "[HTTP response status code](https://tools.ietf.org/html/rfc7231#section-6).",
     .stability = .stable,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `http.response.header.content-length` instead.
-pub const http_response_content_length = types.StringAttribute{
+pub const http_response_content_length = types.IntAttribute{
     .name = "http.response_content_length",
     .brief = "Deprecated, use `http.response.header.content-length` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `http.response.body.size` instead.
-pub const http_response_content_length_uncompressed = types.StringAttribute{
+pub const http_response_content_length_uncompressed = types.IntAttribute{
     .name = "http.response_content_length_uncompressed",
     .brief = "Deprecated, use `http.response.body.size` instead.",
     .stability = .development,
@@ -4104,7 +3942,7 @@ pub const http_server_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `http.response.status_code` instead.
-pub const http_status_code = types.StringAttribute{
+pub const http_status_code = types.IntAttribute{
     .name = "http.status_code",
     .brief = "Deprecated, use `http.response.status_code` instead.",
     .stability = .development,
@@ -4167,13 +4005,10 @@ pub const hw_stateValue = enum {
 
 /// The current state of the component
 pub const hw_state = types.EnumAttribute(hw_stateValue){
-    .base = types.StringAttribute{
-        .name = "hw.state",
-        .brief = "The current state of the component",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = hw_stateValue.ok,
+    .name = "hw.state",
+    .brief = "The current state of the component",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const hw_typeValue = enum {
     battery,
@@ -4212,14 +4047,11 @@ pub const hw_typeValue = enum {
 
 /// Type of the component
 pub const hw_type = types.EnumAttribute(hw_typeValue){
-    .base = types.StringAttribute{
-        .name = "hw.type",
-        .brief = "Type of the component",
-        .note = "Describes the category of the hardware component for which `hw.state` is being reported. For example, `hw.type=temperature` along with `hw.state=degraded` would indicate that the temperature of the hardware component has been reported as `degraded`.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = hw_typeValue.battery,
+    .name = "hw.type",
+    .brief = "Type of the component",
+    .note = "Describes the category of the hardware component for which `hw.state` is being reported. For example, `hw.type=temperature` along with `hw.state=degraded` would indicate that the temperature of the hardware component has been reported as `degraded`.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const ios_app_stateValue = enum {
     active,
@@ -4240,14 +4072,11 @@ pub const ios_app_stateValue = enum {
 
 /// This attribute represents the state of the application.
 pub const ios_app_state = types.EnumAttribute(ios_app_stateValue){
-    .base = types.StringAttribute{
-        .name = "ios.app.state",
-        .brief = "This attribute represents the state of the application.",
-        .note = "The iOS lifecycle states are defined in the [UIApplicationDelegate documentation](https://developer.apple.com/documentation/uikit/uiapplicationdelegate), and from which the `OS terminology` column values are derived.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = ios_app_stateValue.active,
+    .name = "ios.app.state",
+    .brief = "This attribute represents the state of the application.",
+    .note = "The iOS lifecycle states are defined in the [UIApplicationDelegate documentation](https://developer.apple.com/documentation/uikit/uiapplicationdelegate), and from which the `OS terminology` column values are derived.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const ios_stateValue = enum {
     active,
@@ -4268,14 +4097,11 @@ pub const ios_stateValue = enum {
 
 ///
 pub const ios_state = types.EnumAttribute(ios_stateValue){
-    .base = types.StringAttribute{
-        .name = "ios.state",
-        .brief = "",
-        .note = "The iOS lifecycle states are defined in the [UIApplicationDelegate documentation](https://developer.apple.com/documentation/uikit/uiapplicationdelegate), and from which the `OS terminology` column values are derived.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = ios_stateValue.active,
+    .name = "ios.state",
+    .brief = "",
+    .note = "The iOS lifecycle states are defined in the [UIApplicationDelegate documentation](https://developer.apple.com/documentation/uikit/uiapplicationdelegate), and from which the `OS terminology` column values are derived.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Name of the buffer pool.
 pub const jvm_buffer_pool_name = types.StringAttribute{
@@ -4330,16 +4156,13 @@ pub const jvm_memory_typeValue = enum {
 
 /// The type of memory.
 pub const jvm_memory_type = types.EnumAttribute(jvm_memory_typeValue){
-    .base = types.StringAttribute{
-        .name = "jvm.memory.type",
-        .brief = "The type of memory.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = jvm_memory_typeValue.heap,
+    .name = "jvm.memory.type",
+    .brief = "The type of memory.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Whether the thread is daemon or not.
-pub const jvm_thread_daemon = types.StringAttribute{
+pub const jvm_thread_daemon = types.BooleanAttribute{
     .name = "jvm.thread.daemon",
     .brief = "Whether the thread is daemon or not.",
     .stability = .stable,
@@ -4366,13 +4189,10 @@ pub const jvm_thread_stateValue = enum {
 
 /// State of the thread.
 pub const jvm_thread_state = types.EnumAttribute(jvm_thread_stateValue){
-    .base = types.StringAttribute{
-        .name = "jvm.thread.state",
-        .brief = "State of the thread.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = jvm_thread_stateValue.new,
+    .name = "jvm.thread.state",
+    .brief = "State of the thread.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// The name of the cluster.
 pub const k8s_cluster_name = types.StringAttribute{
@@ -4397,7 +4217,7 @@ pub const k8s_container_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Number of times the container was restarted. This attribute can be used to identify a particular container (running or stopped) within a container spec.
-pub const k8s_container_restart_count = types.StringAttribute{
+pub const k8s_container_restart_count = types.IntAttribute{
     .name = "k8s.container.restart_count",
     .brief = "Number of times the container was restarted. This attribute can be used to identify a particular container (running or stopped) within a container spec.",
     .stability = .development,
@@ -4437,13 +4257,10 @@ pub const k8s_container_status_reasonValue = enum {
 
 /// The reason for the container state. Corresponds to the `reason` field of the: [K8s ContainerStateWaiting](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstatewaiting-v1-core) or [K8s ContainerStateTerminated](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstateterminated-v1-core)
 pub const k8s_container_status_reason = types.EnumAttribute(k8s_container_status_reasonValue){
-    .base = types.StringAttribute{
-        .name = "k8s.container.status.reason",
-        .brief = "The reason for the container state. Corresponds to the `reason` field of the: [K8s ContainerStateWaiting](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstatewaiting-v1-core) or [K8s ContainerStateTerminated](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstateterminated-v1-core)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = k8s_container_status_reasonValue.container_creating,
+    .name = "k8s.container.status.reason",
+    .brief = "The reason for the container state. Corresponds to the `reason` field of the: [K8s ContainerStateWaiting](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstatewaiting-v1-core) or [K8s ContainerStateTerminated](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstateterminated-v1-core)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const k8s_container_status_stateValue = enum {
     terminated,
@@ -4460,13 +4277,10 @@ pub const k8s_container_status_stateValue = enum {
 
 /// The state of the container. [K8s ContainerState](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstate-v1-core)
 pub const k8s_container_status_state = types.EnumAttribute(k8s_container_status_stateValue){
-    .base = types.StringAttribute{
-        .name = "k8s.container.status.state",
-        .brief = "The state of the container. [K8s ContainerState](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstate-v1-core)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = k8s_container_status_stateValue.terminated,
+    .name = "k8s.container.status.state",
+    .brief = "The state of the container. [K8s ContainerState](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#containerstate-v1-core)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The cronjob annotation placed on the CronJob, the ``key`` being the annotation name, the value being the annotation value.
 pub const k8s_cronjob_annotation = types.StringAttribute{
@@ -4677,14 +4491,11 @@ pub const k8s_namespace_phaseValue = enum {
 
 /// The phase of the K8s namespace.
 pub const k8s_namespace_phase = types.EnumAttribute(k8s_namespace_phaseValue){
-    .base = types.StringAttribute{
-        .name = "k8s.namespace.phase",
-        .brief = "The phase of the K8s namespace.",
-        .note = "This attribute aligns with the `phase` field of the [K8s NamespaceStatus](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#namespacestatus-v1-core)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = k8s_namespace_phaseValue.active,
+    .name = "k8s.namespace.phase",
+    .brief = "The phase of the K8s namespace.",
+    .note = "This attribute aligns with the `phase` field of the [K8s NamespaceStatus](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#namespacestatus-v1-core)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The annotation placed on the Node, the ``key`` being the annotation name, the value being the annotation value, even if the value is empty.
 pub const k8s_node_annotation = types.StringAttribute{
@@ -4709,14 +4520,11 @@ pub const k8s_node_condition_statusValue = enum {
 
 /// The status of the condition, one of True, False, Unknown.
 pub const k8s_node_condition_status = types.EnumAttribute(k8s_node_condition_statusValue){
-    .base = types.StringAttribute{
-        .name = "k8s.node.condition.status",
-        .brief = "The status of the condition, one of True, False, Unknown.",
-        .note = "This attribute aligns with the `status` field of the [NodeCondition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#nodecondition-v1-core)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = k8s_node_condition_statusValue.condition_true,
+    .name = "k8s.node.condition.status",
+    .brief = "The status of the condition, one of True, False, Unknown.",
+    .note = "This attribute aligns with the `status` field of the [NodeCondition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#nodecondition-v1-core)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const k8s_node_condition_typeValue = enum {
     ready,
@@ -4737,14 +4545,11 @@ pub const k8s_node_condition_typeValue = enum {
 
 /// The condition type of a K8s Node.
 pub const k8s_node_condition_type = types.EnumAttribute(k8s_node_condition_typeValue){
-    .base = types.StringAttribute{
-        .name = "k8s.node.condition.type",
-        .brief = "The condition type of a K8s Node.",
-        .note = "K8s Node conditions as described by [K8s documentation](https://v1-32.docs.kubernetes.io/docs/reference/node/node-status/#condition).  This attribute aligns with the `type` field of the [NodeCondition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#nodecondition-v1-core)  The set of possible values is not limited to those listed here. Managed Kubernetes environments, or custom controllers MAY introduce additional node condition types. When this occurs, the exact value as reported by the Kubernetes API SHOULD be used.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = k8s_node_condition_typeValue.ready,
+    .name = "k8s.node.condition.type",
+    .brief = "The condition type of a K8s Node.",
+    .note = "K8s Node conditions as described by [K8s documentation](https://v1-32.docs.kubernetes.io/docs/reference/node/node-status/#condition).  This attribute aligns with the `type` field of the [NodeCondition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.30/#nodecondition-v1-core)  The set of possible values is not limited to those listed here. Managed Kubernetes environments, or custom controllers MAY introduce additional node condition types. When this occurs, the exact value as reported by the Kubernetes API SHOULD be used.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The label placed on the Node, the ``key`` being the label name, the value being the label value, even if the value is empty.
 pub const k8s_node_label = types.StringAttribute{
@@ -4936,13 +4741,10 @@ pub const k8s_volume_typeValue = enum {
 
 /// The type of the K8s volume.
 pub const k8s_volume_type = types.EnumAttribute(k8s_volume_typeValue){
-    .base = types.StringAttribute{
-        .name = "k8s.volume.type",
-        .brief = "The type of the K8s volume.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = k8s_volume_typeValue.persistent_volume_claim,
+    .name = "k8s.volume.type",
+    .brief = "The type of the K8s volume.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const linux_memory_slab_stateValue = enum {
     reclaimable,
@@ -4957,13 +4759,10 @@ pub const linux_memory_slab_stateValue = enum {
 
 /// The Linux Slab memory state
 pub const linux_memory_slab_state = types.EnumAttribute(linux_memory_slab_stateValue){
-    .base = types.StringAttribute{
-        .name = "linux.memory.slab.state",
-        .brief = "The Linux Slab memory state",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = linux_memory_slab_stateValue.reclaimable,
+    .name = "linux.memory.slab.state",
+    .brief = "The Linux Slab memory state",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The basename of the file.
 pub const log_file_name = types.StringAttribute{
@@ -5006,13 +4805,10 @@ pub const log_iostreamValue = enum {
 
 /// The stream associated with the log. See below for a list of well-known values.
 pub const log_iostream = types.EnumAttribute(log_iostreamValue){
-    .base = types.StringAttribute{
-        .name = "log.iostream",
-        .brief = "The stream associated with the log. See below for a list of well-known values.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = log_iostreamValue.stdout,
+    .name = "log.iostream",
+    .brief = "The stream associated with the log. See below for a list of well-known values.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The complete original Log Record.
 pub const log_record_original = types.StringAttribute{
@@ -5038,14 +4834,14 @@ pub const mainframe_lpar_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `rpc.message.compressed_size` instead.
-pub const message_compressed_size = types.StringAttribute{
+pub const message_compressed_size = types.IntAttribute{
     .name = "message.compressed_size",
     .brief = "Deprecated, use `rpc.message.compressed_size` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `rpc.message.id` instead.
-pub const message_id = types.StringAttribute{
+pub const message_id = types.IntAttribute{
     .name = "message.id",
     .brief = "Deprecated, use `rpc.message.id` instead.",
     .stability = .development,
@@ -5064,23 +4860,20 @@ pub const message_typeValue = enum {
 
 /// Deprecated, use `rpc.message.type` instead.
 pub const message_type = types.EnumAttribute(message_typeValue){
-    .base = types.StringAttribute{
-        .name = "message.type",
-        .brief = "Deprecated, use `rpc.message.type` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = message_typeValue.sent,
+    .name = "message.type",
+    .brief = "Deprecated, use `rpc.message.type` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `rpc.message.uncompressed_size` instead.
-pub const message_uncompressed_size = types.StringAttribute{
+pub const message_uncompressed_size = types.IntAttribute{
     .name = "message.uncompressed_size",
     .brief = "Deprecated, use `rpc.message.uncompressed_size` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The number of messages sent, received, or processed in the scope of the batching operation.
-pub const messaging_batch_message_count = types.StringAttribute{
+pub const messaging_batch_message_count = types.IntAttribute{
     .name = "messaging.batch.message_count",
     .brief = "The number of messages sent, received, or processed in the scope of the batching operation.",
     .note = "Instrumentations SHOULD NOT set `messaging.batch.message_count` on spans that operate with a single message. When a messaging client library supports both batch and single-message API for the same operation, instrumentations SHOULD use `messaging.batch.message_count` for batching APIs and SHOULD NOT use it for single-message APIs.",
@@ -5103,7 +4896,7 @@ pub const messaging_consumer_group_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// A boolean that is true if the message destination is anonymous (could be unnamed or have auto-generated name).
-pub const messaging_destination_anonymous = types.StringAttribute{
+pub const messaging_destination_anonymous = types.BooleanAttribute{
     .name = "messaging.destination.anonymous",
     .brief = "A boolean that is true if the message destination is anonymous (could be unnamed or have auto-generated name).",
     .stability = .development,
@@ -5141,14 +4934,14 @@ pub const messaging_destination_template = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// A boolean that is true if the message destination is temporary and might not exist anymore after messages are processed.
-pub const messaging_destination_temporary = types.StringAttribute{
+pub const messaging_destination_temporary = types.BooleanAttribute{
     .name = "messaging.destination.temporary",
     .brief = "A boolean that is true if the message destination is temporary and might not exist anymore after messages are processed.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, no replacement at this time.
-pub const messaging_destination_publish_anonymous = types.StringAttribute{
+pub const messaging_destination_publish_anonymous = types.BooleanAttribute{
     .name = "messaging.destination_publish.anonymous",
     .brief = "Deprecated, no replacement at this time.",
     .stability = .development,
@@ -5169,14 +4962,14 @@ pub const messaging_eventhubs_consumer_group = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The UTC epoch seconds at which the message has been accepted and stored in the entity.
-pub const messaging_eventhubs_message_enqueued_time = types.StringAttribute{
+pub const messaging_eventhubs_message_enqueued_time = types.IntAttribute{
     .name = "messaging.eventhubs.message.enqueued_time",
     .brief = "The UTC epoch seconds at which the message has been accepted and stored in the entity.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The ack deadline in seconds set for the modify ack deadline request.
-pub const messaging_gcp_pubsub_message_ack_deadline = types.StringAttribute{
+pub const messaging_gcp_pubsub_message_ack_deadline = types.IntAttribute{
     .name = "messaging.gcp_pubsub.message.ack_deadline",
     .brief = "The ack deadline in seconds set for the modify ack deadline request.",
     .stability = .development,
@@ -5190,7 +4983,7 @@ pub const messaging_gcp_pubsub_message_ack_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The delivery attempt for a given message.
-pub const messaging_gcp_pubsub_message_delivery_attempt = types.StringAttribute{
+pub const messaging_gcp_pubsub_message_delivery_attempt = types.IntAttribute{
     .name = "messaging.gcp_pubsub.message.delivery_attempt",
     .brief = "The delivery attempt for a given message.",
     .stability = .development,
@@ -5211,7 +5004,7 @@ pub const messaging_kafka_consumer_group = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `messaging.destination.partition.id` instead.
-pub const messaging_kafka_destination_partition = types.StringAttribute{
+pub const messaging_kafka_destination_partition = types.IntAttribute{
     .name = "messaging.kafka.destination.partition",
     .brief = "Deprecated, use `messaging.destination.partition.id` instead.",
     .stability = .development,
@@ -5226,28 +5019,28 @@ pub const messaging_kafka_message_key = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `messaging.kafka.offset` instead.
-pub const messaging_kafka_message_offset = types.StringAttribute{
+pub const messaging_kafka_message_offset = types.IntAttribute{
     .name = "messaging.kafka.message.offset",
     .brief = "Deprecated, use `messaging.kafka.offset` instead.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// A boolean that is true if the message is a tombstone.
-pub const messaging_kafka_message_tombstone = types.StringAttribute{
+pub const messaging_kafka_message_tombstone = types.BooleanAttribute{
     .name = "messaging.kafka.message.tombstone",
     .brief = "A boolean that is true if the message is a tombstone.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The offset of a record in the corresponding Kafka partition.
-pub const messaging_kafka_offset = types.StringAttribute{
+pub const messaging_kafka_offset = types.IntAttribute{
     .name = "messaging.kafka.offset",
     .brief = "The offset of a record in the corresponding Kafka partition.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The size of the message body in bytes.
-pub const messaging_message_body_size = types.StringAttribute{
+pub const messaging_message_body_size = types.IntAttribute{
     .name = "messaging.message.body.size",
     .brief = "The size of the message body in bytes.",
     .note = "This can refer to both the compressed or uncompressed body size. If both sizes are known, the uncompressed body size should be used.",
@@ -5262,7 +5055,7 @@ pub const messaging_message_conversation_id = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The size of the message body and metadata in bytes.
-pub const messaging_message_envelope_size = types.StringAttribute{
+pub const messaging_message_envelope_size = types.IntAttribute{
     .name = "messaging.message.envelope.size",
     .brief = "The size of the message body and metadata in bytes.",
     .note = "This can refer to both the compressed or uncompressed size. If both sizes are known, the uncompressed size should be used.",
@@ -5313,14 +5106,11 @@ pub const messaging_operation_typeValue = enum {
 
 /// A string identifying the type of the messaging operation.
 pub const messaging_operation_type = types.EnumAttribute(messaging_operation_typeValue){
-    .base = types.StringAttribute{
-        .name = "messaging.operation.type",
-        .brief = "A string identifying the type of the messaging operation.",
-        .note = "If a custom value is used, it MUST be of low cardinality.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = messaging_operation_typeValue.create,
+    .name = "messaging.operation.type",
+    .brief = "A string identifying the type of the messaging operation.",
+    .note = "If a custom value is used, it MUST be of low cardinality.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// RabbitMQ message routing key.
 pub const messaging_rabbitmq_destination_routing_key = types.StringAttribute{
@@ -5330,7 +5120,7 @@ pub const messaging_rabbitmq_destination_routing_key = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// RabbitMQ message delivery tag
-pub const messaging_rabbitmq_message_delivery_tag = types.StringAttribute{
+pub const messaging_rabbitmq_message_delivery_tag = types.IntAttribute{
     .name = "messaging.rabbitmq.message.delivery_tag",
     .brief = "RabbitMQ message delivery tag",
     .stability = .development,
@@ -5356,23 +5146,20 @@ pub const messaging_rocketmq_consumption_modelValue = enum {
 
 /// Model of message consumption. This only applies to consumer spans.
 pub const messaging_rocketmq_consumption_model = types.EnumAttribute(messaging_rocketmq_consumption_modelValue){
-    .base = types.StringAttribute{
-        .name = "messaging.rocketmq.consumption_model",
-        .brief = "Model of message consumption. This only applies to consumer spans.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = messaging_rocketmq_consumption_modelValue.clustering,
+    .name = "messaging.rocketmq.consumption_model",
+    .brief = "Model of message consumption. This only applies to consumer spans.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The delay time level for delay message, which determines the message delay time.
-pub const messaging_rocketmq_message_delay_time_level = types.StringAttribute{
+pub const messaging_rocketmq_message_delay_time_level = types.IntAttribute{
     .name = "messaging.rocketmq.message.delay_time_level",
     .brief = "The delay time level for delay message, which determines the message delay time.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The timestamp in milliseconds that the delay message is expected to be delivered to consumer.
-pub const messaging_rocketmq_message_delivery_timestamp = types.StringAttribute{
+pub const messaging_rocketmq_message_delivery_timestamp = types.IntAttribute{
     .name = "messaging.rocketmq.message.delivery_timestamp",
     .brief = "The timestamp in milliseconds that the delay message is expected to be delivered to consumer.",
     .stability = .development,
@@ -5386,7 +5173,7 @@ pub const messaging_rocketmq_message_group = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Key(s) of message, another way to mark message besides message id.
-pub const messaging_rocketmq_message_keys = types.StringAttribute{
+pub const messaging_rocketmq_message_keys = types.StringArrayAttribute{
     .name = "messaging.rocketmq.message.keys",
     .brief = "Key(s) of message, another way to mark message besides message id.",
     .stability = .development,
@@ -5416,13 +5203,10 @@ pub const messaging_rocketmq_message_typeValue = enum {
 
 /// Type of message.
 pub const messaging_rocketmq_message_type = types.EnumAttribute(messaging_rocketmq_message_typeValue){
-    .base = types.StringAttribute{
-        .name = "messaging.rocketmq.message.type",
-        .brief = "Type of message.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = messaging_rocketmq_message_typeValue.normal,
+    .name = "messaging.rocketmq.message.type",
+    .brief = "Type of message.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Namespace of RocketMQ resources, resources in different namespaces are individual.
 pub const messaging_rocketmq_namespace = types.StringAttribute{
@@ -5455,23 +5239,20 @@ pub const messaging_servicebus_disposition_statusValue = enum {
 
 /// Describes the [settlement type](https://learn.microsoft.com/azure/service-bus-messaging/message-transfers-locks-settlement#peeklock).
 pub const messaging_servicebus_disposition_status = types.EnumAttribute(messaging_servicebus_disposition_statusValue){
-    .base = types.StringAttribute{
-        .name = "messaging.servicebus.disposition_status",
-        .brief = "Describes the [settlement type](https://learn.microsoft.com/azure/service-bus-messaging/message-transfers-locks-settlement#peeklock).",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = messaging_servicebus_disposition_statusValue.complete,
+    .name = "messaging.servicebus.disposition_status",
+    .brief = "Describes the [settlement type](https://learn.microsoft.com/azure/service-bus-messaging/message-transfers-locks-settlement#peeklock).",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Number of deliveries that have been attempted for this message.
-pub const messaging_servicebus_message_delivery_count = types.StringAttribute{
+pub const messaging_servicebus_message_delivery_count = types.IntAttribute{
     .name = "messaging.servicebus.message.delivery_count",
     .brief = "Number of deliveries that have been attempted for this message.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The UTC epoch seconds at which the message has been accepted and stored in the entity.
-pub const messaging_servicebus_message_enqueued_time = types.StringAttribute{
+pub const messaging_servicebus_message_enqueued_time = types.IntAttribute{
     .name = "messaging.servicebus.message.enqueued_time",
     .brief = "The UTC epoch seconds at which the message has been accepted and stored in the entity.",
     .stability = .development,
@@ -5508,14 +5289,11 @@ pub const messaging_systemValue = enum {
 
 /// The messaging system as identified by the client instrumentation.
 pub const messaging_system = types.EnumAttribute(messaging_systemValue){
-    .base = types.StringAttribute{
-        .name = "messaging.system",
-        .brief = "The messaging system as identified by the client instrumentation.",
-        .note = "The actual messaging system may differ from the one known by the client. For example, when using Kafka client libraries to communicate with Azure Event Hubs, the `messaging.system` is set to `kafka` based on the instrumentation's best knowledge.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = messaging_systemValue.activemq,
+    .name = "messaging.system",
+    .brief = "The messaging system as identified by the client instrumentation.",
+    .note = "The actual messaging system may differ from the one known by the client. For example, when using Kafka client libraries to communicate with Azure Event Hubs, the `messaging.system` is set to `kafka` based on the instrumentation's best knowledge.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `network.local.address`.
 pub const net_host_ip = types.StringAttribute{
@@ -5532,7 +5310,7 @@ pub const net_host_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `server.port`.
-pub const net_host_port = types.StringAttribute{
+pub const net_host_port = types.IntAttribute{
     .name = "net.host.port",
     .brief = "Deprecated, use `server.port`.",
     .stability = .development,
@@ -5553,7 +5331,7 @@ pub const net_peer_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `server.port` on client spans and `client.port` on server spans.
-pub const net_peer_port = types.StringAttribute{
+pub const net_peer_port = types.IntAttribute{
     .name = "net.peer.port",
     .brief = "Deprecated, use `server.port` on client spans and `client.port` on server spans.",
     .stability = .development,
@@ -5588,13 +5366,10 @@ pub const net_sock_familyValue = enum {
 
 /// Deprecated, use `network.transport` and `network.type`.
 pub const net_sock_family = types.EnumAttribute(net_sock_familyValue){
-    .base = types.StringAttribute{
-        .name = "net.sock.family",
-        .brief = "Deprecated, use `network.transport` and `network.type`.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = net_sock_familyValue.inet,
+    .name = "net.sock.family",
+    .brief = "Deprecated, use `network.transport` and `network.type`.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `network.local.address`.
 pub const net_sock_host_addr = types.StringAttribute{
@@ -5604,7 +5379,7 @@ pub const net_sock_host_addr = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `network.local.port`.
-pub const net_sock_host_port = types.StringAttribute{
+pub const net_sock_host_port = types.IntAttribute{
     .name = "net.sock.host.port",
     .brief = "Deprecated, use `network.local.port`.",
     .stability = .development,
@@ -5625,7 +5400,7 @@ pub const net_sock_peer_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Deprecated, use `network.peer.port`.
-pub const net_sock_peer_port = types.StringAttribute{
+pub const net_sock_peer_port = types.IntAttribute{
     .name = "net.sock.peer.port",
     .brief = "Deprecated, use `network.peer.port`.",
     .stability = .development,
@@ -5650,13 +5425,10 @@ pub const net_transportValue = enum {
 
 /// Deprecated, use `network.transport`.
 pub const net_transport = types.EnumAttribute(net_transportValue){
-    .base = types.StringAttribute{
-        .name = "net.transport",
-        .brief = "Deprecated, use `network.transport`.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = net_transportValue.ip_tcp,
+    .name = "net.transport",
+    .brief = "Deprecated, use `network.transport`.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The ISO 3166-1 alpha-2 2-character country code associated with the mobile carrier network.
 pub const network_carrier_icc = types.StringAttribute{
@@ -5717,14 +5489,11 @@ pub const network_connection_stateValue = enum {
 
 /// The state of network connection
 pub const network_connection_state = types.EnumAttribute(network_connection_stateValue){
-    .base = types.StringAttribute{
-        .name = "network.connection.state",
-        .brief = "The state of network connection",
-        .note = "Connection states are defined as part of the [rfc9293](https://datatracker.ietf.org/doc/html/rfc9293#section-3.3.2)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = network_connection_stateValue.closed,
+    .name = "network.connection.state",
+    .brief = "The state of network connection",
+    .note = "Connection states are defined as part of the [rfc9293](https://datatracker.ietf.org/doc/html/rfc9293#section-3.3.2)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const network_connection_subtypeValue = enum {
     gprs,
@@ -5777,13 +5546,10 @@ pub const network_connection_subtypeValue = enum {
 
 /// This describes more details regarding the connection.type. It may be the type of cell technology connection, but it could be used for describing details about a wifi connection.
 pub const network_connection_subtype = types.EnumAttribute(network_connection_subtypeValue){
-    .base = types.StringAttribute{
-        .name = "network.connection.subtype",
-        .brief = "This describes more details regarding the connection.type. It may be the type of cell technology connection, but it could be used for describing details about a wifi connection.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = network_connection_subtypeValue.gprs,
+    .name = "network.connection.subtype",
+    .brief = "This describes more details regarding the connection.type. It may be the type of cell technology connection, but it could be used for describing details about a wifi connection.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const network_connection_typeValue = enum {
     wifi,
@@ -5804,13 +5570,10 @@ pub const network_connection_typeValue = enum {
 
 /// The internet connection type.
 pub const network_connection_type = types.EnumAttribute(network_connection_typeValue){
-    .base = types.StringAttribute{
-        .name = "network.connection.type",
-        .brief = "The internet connection type.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = network_connection_typeValue.wifi,
+    .name = "network.connection.type",
+    .brief = "The internet connection type.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The network interface name.
 pub const network_interface_name = types.StringAttribute{
@@ -5832,13 +5595,10 @@ pub const network_io_directionValue = enum {
 
 /// The network IO operation direction.
 pub const network_io_direction = types.EnumAttribute(network_io_directionValue){
-    .base = types.StringAttribute{
-        .name = "network.io.direction",
-        .brief = "The network IO operation direction.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = network_io_directionValue.transmit,
+    .name = "network.io.direction",
+    .brief = "The network IO operation direction.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Local address of the network connection - IP address or Unix domain socket name.
 pub const network_local_address = types.StringAttribute{
@@ -5848,7 +5608,7 @@ pub const network_local_address = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Local port number of the network connection.
-pub const network_local_port = types.StringAttribute{
+pub const network_local_port = types.IntAttribute{
     .name = "network.local.port",
     .brief = "Local port number of the network connection.",
     .stability = .stable,
@@ -5862,7 +5622,7 @@ pub const network_peer_address = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Peer port number of the network connection.
-pub const network_peer_port = types.StringAttribute{
+pub const network_peer_port = types.IntAttribute{
     .name = "network.peer.port",
     .brief = "Peer port number of the network connection.",
     .stability = .stable,
@@ -5903,14 +5663,11 @@ pub const network_transportValue = enum {
 
 /// [OSI transport layer](https://wikipedia.org/wiki/Transport_layer) or [inter-process communication method](https://wikipedia.org/wiki/Inter-process_communication).
 pub const network_transport = types.EnumAttribute(network_transportValue){
-    .base = types.StringAttribute{
-        .name = "network.transport",
-        .brief = "[OSI transport layer](https://wikipedia.org/wiki/Transport_layer) or [inter-process communication method](https://wikipedia.org/wiki/Inter-process_communication).",
-        .note = "The value SHOULD be normalized to lowercase.  Consider always setting the transport when setting a port number, since a port number is ambiguous without knowing the transport. For example different processes could be listening on TCP port 12345 and UDP port 12345.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = network_transportValue.tcp,
+    .name = "network.transport",
+    .brief = "[OSI transport layer](https://wikipedia.org/wiki/Transport_layer) or [inter-process communication method](https://wikipedia.org/wiki/Inter-process_communication).",
+    .note = "The value SHOULD be normalized to lowercase.  Consider always setting the transport when setting a port number, since a port number is ambiguous without knowing the transport. For example different processes could be listening on TCP port 12345 and UDP port 12345.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 pub const network_typeValue = enum {
     ipv4,
@@ -5925,14 +5682,11 @@ pub const network_typeValue = enum {
 
 /// [OSI network layer](https://wikipedia.org/wiki/Network_layer) or non-OSI equivalent.
 pub const network_type = types.EnumAttribute(network_typeValue){
-    .base = types.StringAttribute{
-        .name = "network.type",
-        .brief = "[OSI network layer](https://wikipedia.org/wiki/Network_layer) or non-OSI equivalent.",
-        .note = "The value SHOULD be normalized to lowercase.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = network_typeValue.ipv4,
+    .name = "network.type",
+    .brief = "[OSI network layer](https://wikipedia.org/wiki/Network_layer) or non-OSI equivalent.",
+    .note = "The value SHOULD be normalized to lowercase.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 pub const nodejs_eventloop_stateValue = enum {
     active,
@@ -5947,13 +5701,10 @@ pub const nodejs_eventloop_stateValue = enum {
 
 /// The state of event loop time.
 pub const nodejs_eventloop_state = types.EnumAttribute(nodejs_eventloop_stateValue){
-    .base = types.StringAttribute{
-        .name = "nodejs.eventloop.state",
-        .brief = "The state of event loop time.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = nodejs_eventloop_stateValue.active,
+    .name = "nodejs.eventloop.state",
+    .brief = "The state of event loop time.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The digest of the OCI image manifest. For container images specifically is the digest by which the container image is known.
 pub const oci_manifest_digest = types.StringAttribute{
@@ -5976,14 +5727,11 @@ pub const opentracing_ref_typeValue = enum {
 
 /// Parent-child Reference type
 pub const opentracing_ref_type = types.EnumAttribute(opentracing_ref_typeValue){
-    .base = types.StringAttribute{
-        .name = "opentracing.ref_type",
-        .brief = "Parent-child Reference type",
-        .note = "The causal relationship between a child Span and a parent Span.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = opentracing_ref_typeValue.child_of,
+    .name = "opentracing.ref_type",
+    .brief = "Parent-child Reference type",
+    .note = "The causal relationship between a child Span and a parent Span.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Unique identifier for a particular build or compilation of the operating system.
 pub const os_build_id = types.StringAttribute{
@@ -6039,13 +5787,10 @@ pub const os_typeValue = enum {
 
 /// The operating system type.
 pub const os_type = types.EnumAttribute(os_typeValue){
-    .base = types.StringAttribute{
-        .name = "os.type",
-        .brief = "The operating system type.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = os_typeValue.windows,
+    .name = "os.type",
+    .brief = "The operating system type.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The version string of the operating system as defined in [Version Attributes](/docs/resource/README.md#version-attributes).
 pub const os_version = types.StringAttribute{
@@ -6103,14 +5848,11 @@ pub const otel_component_typeValue = enum {
 
 /// A name identifying the type of the OpenTelemetry component.
 pub const otel_component_type = types.EnumAttribute(otel_component_typeValue){
-    .base = types.StringAttribute{
-        .name = "otel.component.type",
-        .brief = "A name identifying the type of the OpenTelemetry component.",
-        .note = "If none of the standardized values apply, implementations SHOULD use the language-defined name of the type. E.g. for Java the fully qualified classname SHOULD be used in this case.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = otel_component_typeValue.batching_span_processor,
+    .name = "otel.component.type",
+    .brief = "A name identifying the type of the OpenTelemetry component.",
+    .note = "If none of the standardized values apply, implementations SHOULD use the language-defined name of the type. E.g. for Java the fully qualified classname SHOULD be used in this case.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated. Use the `otel.scope.name` attribute
 pub const otel_library_name = types.StringAttribute{
@@ -6155,13 +5897,10 @@ pub const otel_span_parent_originValue = enum {
 
 /// Determines whether the span has a parent span, and if so, [whether it is a remote parent](https://opentelemetry.io/docs/specs/otel/trace/api/#isremote)
 pub const otel_span_parent_origin = types.EnumAttribute(otel_span_parent_originValue){
-    .base = types.StringAttribute{
-        .name = "otel.span.parent.origin",
-        .brief = "Determines whether the span has a parent span, and if so, [whether it is a remote parent](https://opentelemetry.io/docs/specs/otel/trace/api/#isremote)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = otel_span_parent_originValue.none,
+    .name = "otel.span.parent.origin",
+    .brief = "Determines whether the span has a parent span, and if so, [whether it is a remote parent](https://opentelemetry.io/docs/specs/otel/trace/api/#isremote)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const otel_span_sampling_resultValue = enum {
     drop,
@@ -6178,13 +5917,10 @@ pub const otel_span_sampling_resultValue = enum {
 
 /// The result value of the sampler for this span
 pub const otel_span_sampling_result = types.EnumAttribute(otel_span_sampling_resultValue){
-    .base = types.StringAttribute{
-        .name = "otel.span.sampling_result",
-        .brief = "The result value of the sampler for this span",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = otel_span_sampling_resultValue.drop,
+    .name = "otel.span.sampling_result",
+    .brief = "The result value of the sampler for this span",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const otel_status_codeValue = enum {
     ok,
@@ -6199,13 +5935,10 @@ pub const otel_status_codeValue = enum {
 
 /// Name of the code, either "OK" or "ERROR". MUST NOT be set if the status code is UNSET.
 pub const otel_status_code = types.EnumAttribute(otel_status_codeValue){
-    .base = types.StringAttribute{
-        .name = "otel.status_code",
-        .brief = "Name of the code, either \"OK\" or \"ERROR\". MUST NOT be set if the status code is UNSET.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = otel_status_codeValue.ok,
+    .name = "otel.status_code",
+    .brief = "Name of the code, either \"OK\" or \"ERROR\". MUST NOT be set if the status code is UNSET.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Description of the Status if it has a value, otherwise not set.
 pub const otel_status_description = types.StringAttribute{
@@ -6227,13 +5960,10 @@ pub const stateValue = enum {
 
 /// Deprecated, use `db.client.connection.state` instead.
 pub const state = types.EnumAttribute(stateValue){
-    .base = types.StringAttribute{
-        .name = "state",
-        .brief = "Deprecated, use `db.client.connection.state` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = stateValue.idle,
+    .name = "state",
+    .brief = "Deprecated, use `db.client.connection.state` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The [`service.name`](/docs/resource/README.md#service) of the remote service. SHOULD be equal to the actual `service.name` resource attribute of the remote service if any.
 pub const peer_service = types.StringAttribute{
@@ -6250,7 +5980,7 @@ pub const pool_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Length of the process.command_args array
-pub const process_args_count = types.StringAttribute{
+pub const process_args_count = types.IntAttribute{
     .name = "process.args_count",
     .brief = "Length of the process.command_args array",
     .note = "This field can be useful for querying or performing bucket analysis on how many arguments were provided to start a process. More arguments may be an indication of suspicious activity.",
@@ -6265,7 +5995,7 @@ pub const process_command = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// All the command arguments (including the command/executable itself) as received by the process. On Linux-based systems (and some other Unixoid systems supporting procfs), can be set according to the list of null-delimited strings extracted from `proc/[pid]/cmdline`. For libc-based executables, this would be the full argv vector passed to `main`. SHOULD NOT be collected by default unless there is sanitization that excludes sensitive data.
-pub const process_command_args = types.StringAttribute{
+pub const process_command_args = types.StringArrayAttribute{
     .name = "process.command_args",
     .brief = "All the command arguments (including the command/executable itself) as received by the process. On Linux-based systems (and some other Unixoid systems supporting procfs), can be set according to the list of null-delimited strings extracted from `proc/[pid]/cmdline`. For libc-based executables, this would be the full argv vector passed to `main`. SHOULD NOT be collected by default unless there is sanitization that excludes sensitive data.",
     .stability = .development,
@@ -6291,13 +6021,10 @@ pub const process_context_switch_typeValue = enum {
 
 /// Specifies whether the context switches for this data point were voluntary or involuntary.
 pub const process_context_switch_type = types.EnumAttribute(process_context_switch_typeValue){
-    .base = types.StringAttribute{
-        .name = "process.context_switch_type",
-        .brief = "Specifies whether the context switches for this data point were voluntary or involuntary.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = process_context_switch_typeValue.voluntary,
+    .name = "process.context_switch_type",
+    .brief = "Specifies whether the context switches for this data point were voluntary or involuntary.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const process_cpu_stateValue = enum {
     system,
@@ -6314,13 +6041,10 @@ pub const process_cpu_stateValue = enum {
 
 /// Deprecated, use `cpu.mode` instead.
 pub const process_cpu_state = types.EnumAttribute(process_cpu_stateValue){
-    .base = types.StringAttribute{
-        .name = "process.cpu.state",
-        .brief = "Deprecated, use `cpu.mode` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = process_cpu_stateValue.system,
+    .name = "process.cpu.state",
+    .brief = "Deprecated, use `cpu.mode` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The date and time the process was created, in ISO 8601 format.
 pub const process_creation_time = types.StringAttribute{
@@ -6380,7 +6104,7 @@ pub const process_executable_path = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The exit code of the process.
-pub const process_exit_code = types.StringAttribute{
+pub const process_exit_code = types.IntAttribute{
     .name = "process.exit.code",
     .brief = "The exit code of the process.",
     .stability = .development,
@@ -6394,14 +6118,14 @@ pub const process_exit_time = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The PID of the process's group leader. This is also the process group ID (PGID) of the process.
-pub const process_group_leader_pid = types.StringAttribute{
+pub const process_group_leader_pid = types.IntAttribute{
     .name = "process.group_leader.pid",
     .brief = "The PID of the process's group leader. This is also the process group ID (PGID) of the process.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Whether the process is connected to an interactive shell.
-pub const process_interactive = types.StringAttribute{
+pub const process_interactive = types.BooleanAttribute{
     .name = "process.interactive",
     .brief = "Whether the process is connected to an interactive shell.",
     .stability = .development,
@@ -6435,30 +6159,27 @@ pub const process_paging_fault_typeValue = enum {
 
 /// The type of page fault for this data point. Type `major` is for major/hard page faults, and `minor` is for minor/soft page faults.
 pub const process_paging_fault_type = types.EnumAttribute(process_paging_fault_typeValue){
-    .base = types.StringAttribute{
-        .name = "process.paging.fault_type",
-        .brief = "The type of page fault for this data point. Type `major` is for major/hard page faults, and `minor` is for minor/soft page faults.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = process_paging_fault_typeValue.major,
+    .name = "process.paging.fault_type",
+    .brief = "The type of page fault for this data point. Type `major` is for major/hard page faults, and `minor` is for minor/soft page faults.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Parent Process identifier (PPID).
-pub const process_parent_pid = types.StringAttribute{
+pub const process_parent_pid = types.IntAttribute{
     .name = "process.parent_pid",
     .brief = "Parent Process identifier (PPID).",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Process identifier (PID).
-pub const process_pid = types.StringAttribute{
+pub const process_pid = types.IntAttribute{
     .name = "process.pid",
     .brief = "Process identifier (PID).",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// The real user ID (RUID) of the process.
-pub const process_real_user_id = types.StringAttribute{
+pub const process_real_user_id = types.IntAttribute{
     .name = "process.real_user.id",
     .brief = "The real user ID (RUID) of the process.",
     .stability = .development,
@@ -6493,7 +6214,7 @@ pub const process_runtime_version = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The saved user ID (SUID) of the process.
-pub const process_saved_user_id = types.StringAttribute{
+pub const process_saved_user_id = types.IntAttribute{
     .name = "process.saved_user.id",
     .brief = "The saved user ID (SUID) of the process.",
     .stability = .development,
@@ -6507,7 +6228,7 @@ pub const process_saved_user_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The PID of the process's session leader. This is also the session ID (SID) of the process.
-pub const process_session_leader_pid = types.StringAttribute{
+pub const process_session_leader_pid = types.IntAttribute{
     .name = "process.session_leader.pid",
     .brief = "The PID of the process's session leader. This is also the session ID (SID) of the process.",
     .stability = .development,
@@ -6522,7 +6243,7 @@ pub const process_title = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// The effective user ID (EUID) of the process.
-pub const process_user_id = types.StringAttribute{
+pub const process_user_id = types.IntAttribute{
     .name = "process.user.id",
     .brief = "The effective user ID (EUID) of the process.",
     .stability = .development,
@@ -6536,7 +6257,7 @@ pub const process_user_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Virtual process identifier.
-pub const process_vpid = types.StringAttribute{
+pub const process_vpid = types.IntAttribute{
     .name = "process.vpid",
     .brief = "Virtual process identifier.",
     .note = "The process ID within a PID namespace. This is not necessarily unique across all processes on the host but it is unique within the process namespace that the process exists within.",
@@ -6583,13 +6304,10 @@ pub const profile_frame_typeValue = enum {
 
 /// Describes the interpreter or compiler of a single frame.
 pub const profile_frame_type = types.EnumAttribute(profile_frame_typeValue){
-    .base = types.StringAttribute{
-        .name = "profile.frame.type",
-        .brief = "Describes the interpreter or compiler of a single frame.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = profile_frame_typeValue.dotnet,
+    .name = "profile.frame.type",
+    .brief = "Describes the interpreter or compiler of a single frame.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const rpc_connect_rpc_error_codeValue = enum {
     cancelled,
@@ -6632,16 +6350,13 @@ pub const rpc_connect_rpc_error_codeValue = enum {
 
 /// The [error codes](https://connectrpc.com//docs/protocol/#error-codes) of the Connect request. Error codes are always string values.
 pub const rpc_connect_rpc_error_code = types.EnumAttribute(rpc_connect_rpc_error_codeValue){
-    .base = types.StringAttribute{
-        .name = "rpc.connect_rpc.error_code",
-        .brief = "The [error codes](https://connectrpc.com//docs/protocol/#error-codes) of the Connect request. Error codes are always string values.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = rpc_connect_rpc_error_codeValue.cancelled,
+    .name = "rpc.connect_rpc.error_code",
+    .brief = "The [error codes](https://connectrpc.com//docs/protocol/#error-codes) of the Connect request. Error codes are always string values.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Connect request metadata, ``key`` being the normalized Connect Metadata key (lowercase), the value being the metadata values.
-pub const rpc_connect_rpc_request_metadata = types.StringAttribute{
+pub const rpc_connect_rpc_request_metadata = types.StringArrayAttribute{
     .name = "rpc.connect_rpc.request.metadata",
     .brief = "Connect request metadata, ``key`` being the normalized Connect Metadata key (lowercase), the value being the metadata values.",
     .note = "Instrumentations SHOULD require an explicit configuration of which metadata values are to be captured. Including all request metadata values can be a security risk - explicit configuration helps avoid leaking sensitive information.  For example, a property `my-custom-key` with value `[\"1.2.3.4\", \"1.2.3.5\"]` SHOULD be recorded as the `rpc.connect_rpc.request.metadata.my-custom-key` attribute with value `[\"1.2.3.4\", \"1.2.3.5\"]`",
@@ -6649,7 +6364,7 @@ pub const rpc_connect_rpc_request_metadata = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Connect response metadata, ``key`` being the normalized Connect Metadata key (lowercase), the value being the metadata values.
-pub const rpc_connect_rpc_response_metadata = types.StringAttribute{
+pub const rpc_connect_rpc_response_metadata = types.StringArrayAttribute{
     .name = "rpc.connect_rpc.response.metadata",
     .brief = "Connect response metadata, ``key`` being the normalized Connect Metadata key (lowercase), the value being the metadata values.",
     .note = "Instrumentations SHOULD require an explicit configuration of which metadata values are to be captured. Including all response metadata values can be a security risk - explicit configuration helps avoid leaking sensitive information.  For example, a property `my-custom-key` with value `\"attribute_value\"` SHOULD be recorded as the `rpc.connect_rpc.response.metadata.my-custom-key` attribute with value `[\"attribute_value\"]`",
@@ -6657,7 +6372,7 @@ pub const rpc_connect_rpc_response_metadata = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// gRPC request metadata, ``key`` being the normalized gRPC Metadata key (lowercase), the value being the metadata values.
-pub const rpc_grpc_request_metadata = types.StringAttribute{
+pub const rpc_grpc_request_metadata = types.StringArrayAttribute{
     .name = "rpc.grpc.request.metadata",
     .brief = "gRPC request metadata, ``key`` being the normalized gRPC Metadata key (lowercase), the value being the metadata values.",
     .note = "Instrumentations SHOULD require an explicit configuration of which metadata values are to be captured. Including all request metadata values can be a security risk - explicit configuration helps avoid leaking sensitive information.  For example, a property `my-custom-key` with value `[\"1.2.3.4\", \"1.2.3.5\"]` SHOULD be recorded as `rpc.grpc.request.metadata.my-custom-key` attribute with value `[\"1.2.3.4\", \"1.2.3.5\"]`",
@@ -6665,7 +6380,7 @@ pub const rpc_grpc_request_metadata = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// gRPC response metadata, ``key`` being the normalized gRPC Metadata key (lowercase), the value being the metadata values.
-pub const rpc_grpc_response_metadata = types.StringAttribute{
+pub const rpc_grpc_response_metadata = types.StringArrayAttribute{
     .name = "rpc.grpc.response.metadata",
     .brief = "gRPC response metadata, ``key`` being the normalized gRPC Metadata key (lowercase), the value being the metadata values.",
     .note = "Instrumentations SHOULD require an explicit configuration of which metadata values are to be captured. Including all response metadata values can be a security risk - explicit configuration helps avoid leaking sensitive information.  For example, a property `my-custom-key` with value `[\"attribute_value\"]` SHOULD be recorded as the `rpc.grpc.response.metadata.my-custom-key` attribute with value `[\"attribute_value\"]`",
@@ -6690,41 +6405,38 @@ pub const rpc_grpc_status_codeValue = enum {
     unavailable,
     data_loss,
     unauthenticated,
-    pub fn toString(self: @This()) []const u8 {
+    pub fn toInt(self: @This()) i64 {
         return switch (self) {
-            .ok => "0",
-            .cancelled => "1",
-            .unknown => "2",
-            .invalid_argument => "3",
-            .deadline_exceeded => "4",
-            .not_found => "5",
-            .already_exists => "6",
-            .permission_denied => "7",
-            .resource_exhausted => "8",
-            .failed_precondition => "9",
-            .aborted => "10",
-            .out_of_range => "11",
-            .unimplemented => "12",
-            .internal => "13",
-            .unavailable => "14",
-            .data_loss => "15",
-            .unauthenticated => "16",
+            .ok => 0,
+            .cancelled => 1,
+            .unknown => 2,
+            .invalid_argument => 3,
+            .deadline_exceeded => 4,
+            .not_found => 5,
+            .already_exists => 6,
+            .permission_denied => 7,
+            .resource_exhausted => 8,
+            .failed_precondition => 9,
+            .aborted => 10,
+            .out_of_range => 11,
+            .unimplemented => 12,
+            .internal => 13,
+            .unavailable => 14,
+            .data_loss => 15,
+            .unauthenticated => 16,
         };
     }
 };
 
 /// The [numeric status code](https://github.com/grpc/grpc/blob/v1.33.2/doc/statuscodes.md) of the gRPC request.
-pub const rpc_grpc_status_code = types.EnumAttribute(rpc_grpc_status_codeValue){
-    .base = types.StringAttribute{
-        .name = "rpc.grpc.status_code",
-        .brief = "The [numeric status code](https://github.com/grpc/grpc/blob/v1.33.2/doc/statuscodes.md) of the gRPC request.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = rpc_grpc_status_codeValue.ok,
+pub const rpc_grpc_status_code = types.IntEnumAttribute(rpc_grpc_status_codeValue){
+    .name = "rpc.grpc.status_code",
+    .brief = "The [numeric status code](https://github.com/grpc/grpc/blob/v1.33.2/doc/statuscodes.md) of the gRPC request.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// `error.code` property of response if it is an error response.
-pub const rpc_jsonrpc_error_code = types.StringAttribute{
+pub const rpc_jsonrpc_error_code = types.IntAttribute{
     .name = "rpc.jsonrpc.error_code",
     .brief = "`error.code` property of response if it is an error response.",
     .stability = .development,
@@ -6752,14 +6464,14 @@ pub const rpc_jsonrpc_version = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Compressed size of the message in bytes.
-pub const rpc_message_compressed_size = types.StringAttribute{
+pub const rpc_message_compressed_size = types.IntAttribute{
     .name = "rpc.message.compressed_size",
     .brief = "Compressed size of the message in bytes.",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// MUST be calculated as two different counters starting from `1` one for sent messages and one for received message.
-pub const rpc_message_id = types.StringAttribute{
+pub const rpc_message_id = types.IntAttribute{
     .name = "rpc.message.id",
     .brief = "MUST be calculated as two different counters starting from `1` one for sent messages and one for received message.",
     .note = "This way we guarantee that the values will be consistent between different implementations.",
@@ -6779,16 +6491,13 @@ pub const rpc_message_typeValue = enum {
 
 /// Whether this is a received or sent message.
 pub const rpc_message_type = types.EnumAttribute(rpc_message_typeValue){
-    .base = types.StringAttribute{
-        .name = "rpc.message.type",
-        .brief = "Whether this is a received or sent message.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = rpc_message_typeValue.sent,
+    .name = "rpc.message.type",
+    .brief = "Whether this is a received or sent message.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Uncompressed size of the message in bytes.
-pub const rpc_message_uncompressed_size = types.StringAttribute{
+pub const rpc_message_uncompressed_size = types.IntAttribute{
     .name = "rpc.message.uncompressed_size",
     .brief = "Uncompressed size of the message in bytes.",
     .stability = .development,
@@ -6829,13 +6538,10 @@ pub const rpc_systemValue = enum {
 
 /// A string identifying the remoting system. See below for a list of well-known identifiers.
 pub const rpc_system = types.EnumAttribute(rpc_systemValue){
-    .base = types.StringAttribute{
-        .name = "rpc.system",
-        .brief = "A string identifying the remoting system. See below for a list of well-known identifiers.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = rpc_systemValue.grpc,
+    .name = "rpc.system",
+    .brief = "A string identifying the remoting system. See below for a list of well-known identifiers.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// A categorization value keyword used by the entity using the rule for detection of this event
 pub const security_rule_category = types.StringAttribute{
@@ -6903,7 +6609,7 @@ pub const server_address = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Server port number.
-pub const server_port = types.StringAttribute{
+pub const server_port = types.IntAttribute{
     .name = "server.port",
     .brief = "Server port number.",
     .note = "When observed from the client side, and when communicating through an intermediary, `server.port` SHOULD represent the server port behind any intermediaries, for example proxies, if it's available.",
@@ -6970,13 +6676,10 @@ pub const signalr_connection_statusValue = enum {
 
 /// SignalR HTTP connection closure status.
 pub const signalr_connection_status = types.EnumAttribute(signalr_connection_statusValue){
-    .base = types.StringAttribute{
-        .name = "signalr.connection.status",
-        .brief = "SignalR HTTP connection closure status.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = signalr_connection_statusValue.normal_closure,
+    .name = "signalr.connection.status",
+    .brief = "SignalR HTTP connection closure status.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 pub const signalr_transportValue = enum {
     server_sent_events,
@@ -6993,13 +6696,10 @@ pub const signalr_transportValue = enum {
 
 /// [SignalR transport type](https://github.com/dotnet/aspnetcore/blob/main/src/SignalR/docs/specs/TransportProtocols.md)
 pub const signalr_transport = types.EnumAttribute(signalr_transportValue){
-    .base = types.StringAttribute{
-        .name = "signalr.transport",
-        .brief = "[SignalR transport type](https://github.com/dotnet/aspnetcore/blob/main/src/SignalR/docs/specs/TransportProtocols.md)",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = signalr_transportValue.server_sent_events,
+    .name = "signalr.transport",
+    .brief = "[SignalR transport type](https://github.com/dotnet/aspnetcore/blob/main/src/SignalR/docs/specs/TransportProtocols.md)",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// Source address - domain name if available without reverse DNS lookup; otherwise, IP address or Unix domain socket name.
 pub const source_address = types.StringAttribute{
@@ -7010,14 +6710,14 @@ pub const source_address = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Source port number
-pub const source_port = types.StringAttribute{
+pub const source_port = types.IntAttribute{
     .name = "source.port",
     .brief = "Source port number",
     .stability = .development,
     .requirement_level = .recommended,
 };
 /// Deprecated, use `cpu.logical_number` instead.
-pub const system_cpu_logical_number = types.StringAttribute{
+pub const system_cpu_logical_number = types.IntAttribute{
     .name = "system.cpu.logical_number",
     .brief = "Deprecated, use `cpu.logical_number` instead.",
     .stability = .development,
@@ -7046,13 +6746,10 @@ pub const system_cpu_stateValue = enum {
 
 /// Deprecated, use `cpu.mode` instead.
 pub const system_cpu_state = types.EnumAttribute(system_cpu_stateValue){
-    .base = types.StringAttribute{
-        .name = "system.cpu.state",
-        .brief = "Deprecated, use `cpu.mode` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_cpu_stateValue.user,
+    .name = "system.cpu.state",
+    .brief = "Deprecated, use `cpu.mode` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The device identifier
 pub const system_device = types.StringAttribute{
@@ -7090,13 +6787,10 @@ pub const system_filesystem_stateValue = enum {
 
 /// The filesystem state
 pub const system_filesystem_state = types.EnumAttribute(system_filesystem_stateValue){
-    .base = types.StringAttribute{
-        .name = "system.filesystem.state",
-        .brief = "The filesystem state",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_filesystem_stateValue.used,
+    .name = "system.filesystem.state",
+    .brief = "The filesystem state",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const system_filesystem_typeValue = enum {
     fat32,
@@ -7119,13 +6813,10 @@ pub const system_filesystem_typeValue = enum {
 
 /// The filesystem type
 pub const system_filesystem_type = types.EnumAttribute(system_filesystem_typeValue){
-    .base = types.StringAttribute{
-        .name = "system.filesystem.type",
-        .brief = "The filesystem type",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_filesystem_typeValue.fat32,
+    .name = "system.filesystem.type",
+    .brief = "The filesystem type",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const system_memory_stateValue = enum {
     used,
@@ -7146,13 +6837,10 @@ pub const system_memory_stateValue = enum {
 
 /// The memory state
 pub const system_memory_state = types.EnumAttribute(system_memory_stateValue){
-    .base = types.StringAttribute{
-        .name = "system.memory.state",
-        .brief = "The memory state",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_memory_stateValue.used,
+    .name = "system.memory.state",
+    .brief = "The memory state",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const system_network_stateValue = enum {
     close,
@@ -7187,13 +6875,10 @@ pub const system_network_stateValue = enum {
 
 /// Deprecated, use `network.connection.state` instead.
 pub const system_network_state = types.EnumAttribute(system_network_stateValue){
-    .base = types.StringAttribute{
-        .name = "system.network.state",
-        .brief = "Deprecated, use `network.connection.state` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_network_stateValue.close,
+    .name = "system.network.state",
+    .brief = "Deprecated, use `network.connection.state` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const system_paging_directionValue = enum {
     in,
@@ -7208,13 +6893,10 @@ pub const system_paging_directionValue = enum {
 
 /// The paging access direction
 pub const system_paging_direction = types.EnumAttribute(system_paging_directionValue){
-    .base = types.StringAttribute{
-        .name = "system.paging.direction",
-        .brief = "The paging access direction",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_paging_directionValue.in,
+    .name = "system.paging.direction",
+    .brief = "The paging access direction",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const system_paging_stateValue = enum {
     used,
@@ -7229,13 +6911,10 @@ pub const system_paging_stateValue = enum {
 
 /// The memory paging state
 pub const system_paging_state = types.EnumAttribute(system_paging_stateValue){
-    .base = types.StringAttribute{
-        .name = "system.paging.state",
-        .brief = "The memory paging state",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_paging_stateValue.used,
+    .name = "system.paging.state",
+    .brief = "The memory paging state",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const system_paging_typeValue = enum {
     major,
@@ -7250,13 +6929,10 @@ pub const system_paging_typeValue = enum {
 
 /// The memory paging type
 pub const system_paging_type = types.EnumAttribute(system_paging_typeValue){
-    .base = types.StringAttribute{
-        .name = "system.paging.type",
-        .brief = "The memory paging type",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_paging_typeValue.major,
+    .name = "system.paging.type",
+    .brief = "The memory paging type",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const system_process_statusValue = enum {
     running,
@@ -7275,13 +6951,10 @@ pub const system_process_statusValue = enum {
 
 /// The process state, e.g., [Linux Process State Codes](https://man7.org/linux/man-pages/man1/ps.1.html#PROCESS_STATE_CODES)
 pub const system_process_status = types.EnumAttribute(system_process_statusValue){
-    .base = types.StringAttribute{
-        .name = "system.process.status",
-        .brief = "The process state, e.g., [Linux Process State Codes](https://man7.org/linux/man-pages/man1/ps.1.html#PROCESS_STATE_CODES)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_process_statusValue.running,
+    .name = "system.process.status",
+    .brief = "The process state, e.g., [Linux Process State Codes](https://man7.org/linux/man-pages/man1/ps.1.html#PROCESS_STATE_CODES)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const system_processes_statusValue = enum {
     running,
@@ -7300,13 +6973,10 @@ pub const system_processes_statusValue = enum {
 
 /// Deprecated, use `system.process.status` instead.
 pub const system_processes_status = types.EnumAttribute(system_processes_statusValue){
-    .base = types.StringAttribute{
-        .name = "system.processes.status",
-        .brief = "Deprecated, use `system.process.status` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = system_processes_statusValue.running,
+    .name = "system.processes.status",
+    .brief = "Deprecated, use `system.process.status` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The name of the auto instrumentation agent or distribution, if used.
 pub const telemetry_distro_name = types.StringAttribute{
@@ -7356,13 +7026,10 @@ pub const telemetry_sdk_languageValue = enum {
 
 /// The language of the telemetry SDK.
 pub const telemetry_sdk_language = types.EnumAttribute(telemetry_sdk_languageValue){
-    .base = types.StringAttribute{
-        .name = "telemetry.sdk.language",
-        .brief = "The language of the telemetry SDK.",
-        .stability = .stable,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = telemetry_sdk_languageValue.cpp,
+    .name = "telemetry.sdk.language",
+    .brief = "The language of the telemetry SDK.",
+    .stability = .stable,
+    .requirement_level = .recommended,
 };
 /// The name of the telemetry SDK as defined above.
 pub const telemetry_sdk_name = types.StringAttribute{
@@ -7399,13 +7066,10 @@ pub const test_case_result_statusValue = enum {
 
 /// The status of the actual test case result from test execution.
 pub const test_case_result_status = types.EnumAttribute(test_case_result_statusValue){
-    .base = types.StringAttribute{
-        .name = "test.case.result.status",
-        .brief = "The status of the actual test case result from test execution.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = test_case_result_statusValue.pass,
+    .name = "test.case.result.status",
+    .brief = "The status of the actual test case result from test execution.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The human readable name of a [test suite](https://wikipedia.org/wiki/Test_suite).
 pub const test_suite_name = types.StringAttribute{
@@ -7435,16 +7099,13 @@ pub const test_suite_run_statusValue = enum {
 
 /// The status of the test suite run.
 pub const test_suite_run_status = types.EnumAttribute(test_suite_run_statusValue){
-    .base = types.StringAttribute{
-        .name = "test.suite.run.status",
-        .brief = "The status of the test suite run.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = test_suite_run_statusValue.success,
+    .name = "test.suite.run.status",
+    .brief = "The status of the test suite run.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Current "managed" thread ID (as opposed to OS thread ID).
-pub const thread_id = types.StringAttribute{
+pub const thread_id = types.IntAttribute{
     .name = "thread.id",
     .brief = "Current \"managed\" thread ID (as opposed to OS thread ID).",
     .stability = .development,
@@ -7473,7 +7134,7 @@ pub const tls_client_certificate = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Array of PEM-encoded certificates that make up the certificate chain offered by the client. This is usually mutually-exclusive of `client.certificate` since that value should be the first certificate in the chain.
-pub const tls_client_certificate_chain = types.StringAttribute{
+pub const tls_client_certificate_chain = types.StringArrayAttribute{
     .name = "tls.client.certificate_chain",
     .brief = "Array of PEM-encoded certificates that make up the certificate chain offered by the client. This is usually mutually-exclusive of `client.certificate` since that value should be the first certificate in the chain.",
     .stability = .development,
@@ -7543,7 +7204,7 @@ pub const tls_client_subject = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Array of ciphers offered by the client during the client hello.
-pub const tls_client_supported_ciphers = types.StringAttribute{
+pub const tls_client_supported_ciphers = types.StringArrayAttribute{
     .name = "tls.client.supported_ciphers",
     .brief = "Array of ciphers offered by the client during the client hello.",
     .stability = .development,
@@ -7557,7 +7218,7 @@ pub const tls_curve = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Boolean flag indicating if the TLS negotiation was successful and transitioned to an encrypted tunnel.
-pub const tls_established = types.StringAttribute{
+pub const tls_established = types.BooleanAttribute{
     .name = "tls.established",
     .brief = "Boolean flag indicating if the TLS negotiation was successful and transitioned to an encrypted tunnel.",
     .stability = .development,
@@ -7583,13 +7244,10 @@ pub const tls_protocol_nameValue = enum {
 
 /// Normalized lowercase protocol name parsed from original string of the negotiated [SSL/TLS protocol version](https://docs.openssl.org/1.1.1/man3/SSL_get_version/#return-values)
 pub const tls_protocol_name = types.EnumAttribute(tls_protocol_nameValue){
-    .base = types.StringAttribute{
-        .name = "tls.protocol.name",
-        .brief = "Normalized lowercase protocol name parsed from original string of the negotiated [SSL/TLS protocol version](https://docs.openssl.org/1.1.1/man3/SSL_get_version/#return-values)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = tls_protocol_nameValue.ssl,
+    .name = "tls.protocol.name",
+    .brief = "Normalized lowercase protocol name parsed from original string of the negotiated [SSL/TLS protocol version](https://docs.openssl.org/1.1.1/man3/SSL_get_version/#return-values)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Numeric part of the version parsed from the original string of the negotiated [SSL/TLS protocol version](https://docs.openssl.org/1.1.1/man3/SSL_get_version/#return-values)
 pub const tls_protocol_version = types.StringAttribute{
@@ -7599,7 +7257,7 @@ pub const tls_protocol_version = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Boolean flag indicating if this TLS connection was resumed from an existing TLS negotiation.
-pub const tls_resumed = types.StringAttribute{
+pub const tls_resumed = types.BooleanAttribute{
     .name = "tls.resumed",
     .brief = "Boolean flag indicating if this TLS connection was resumed from an existing TLS negotiation.",
     .stability = .development,
@@ -7613,7 +7271,7 @@ pub const tls_server_certificate = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Array of PEM-encoded certificates that make up the certificate chain offered by the server. This is usually mutually-exclusive of `server.certificate` since that value should be the first certificate in the chain.
-pub const tls_server_certificate_chain = types.StringAttribute{
+pub const tls_server_certificate_chain = types.StringArrayAttribute{
     .name = "tls.server.certificate_chain",
     .brief = "Array of PEM-encoded certificates that make up the certificate chain offered by the server. This is usually mutually-exclusive of `server.certificate` since that value should be the first certificate in the chain.",
     .stability = .development,
@@ -7723,7 +7381,7 @@ pub const url_path = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Port extracted from the `url.full`
-pub const url_port = types.StringAttribute{
+pub const url_port = types.IntAttribute{
     .name = "url.port",
     .brief = "Port extracted from the `url.full`",
     .stability = .development,
@@ -7812,7 +7470,7 @@ pub const user_name = types.StringAttribute{
     .requirement_level = .recommended,
 };
 /// Array of user roles at the time of the event.
-pub const user_roles = types.StringAttribute{
+pub const user_roles = types.StringArrayAttribute{
     .name = "user.roles",
     .brief = "Array of user roles at the time of the event.",
     .stability = .development,
@@ -7862,14 +7520,11 @@ pub const user_agent_synthetic_typeValue = enum {
 
 /// Specifies the category of synthetic traffic, such as tests or bots.
 pub const user_agent_synthetic_type = types.EnumAttribute(user_agent_synthetic_typeValue){
-    .base = types.StringAttribute{
-        .name = "user_agent.synthetic.type",
-        .brief = "Specifies the category of synthetic traffic, such as tests or bots.",
-        .note = "This attribute MAY be derived from the contents of the `user_agent.original` attribute. Components that populate the attribute are responsible for determining what they consider to be synthetic bot or test traffic. This attribute can either be set for self-identification purposes, or on telemetry detected to be generated as a result of a synthetic request. This attribute is useful for distinguishing between genuine client traffic and synthetic traffic generated by bots or tests.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = user_agent_synthetic_typeValue.bot,
+    .name = "user_agent.synthetic.type",
+    .brief = "Specifies the category of synthetic traffic, such as tests or bots.",
+    .note = "This attribute MAY be derived from the contents of the `user_agent.original` attribute. Components that populate the attribute are responsible for determining what they consider to be synthetic bot or test traffic. This attribute can either be set for self-identification purposes, or on telemetry detected to be generated as a result of a synthetic request. This attribute is useful for distinguishing between genuine client traffic and synthetic traffic generated by bots or tests.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Version of the user-agent extracted from original. Usually refers to the browser's version
 pub const user_agent_version = types.StringAttribute{
@@ -7896,13 +7551,10 @@ pub const v8js_gc_typeValue = enum {
 
 /// The type of garbage collection.
 pub const v8js_gc_type = types.EnumAttribute(v8js_gc_typeValue){
-    .base = types.StringAttribute{
-        .name = "v8js.gc.type",
-        .brief = "The type of garbage collection.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = v8js_gc_typeValue.major,
+    .name = "v8js.gc.type",
+    .brief = "The type of garbage collection.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const v8js_heap_space_nameValue = enum {
     new_space,
@@ -7923,14 +7575,11 @@ pub const v8js_heap_space_nameValue = enum {
 
 /// The name of the space type of heap memory.
 pub const v8js_heap_space_name = types.EnumAttribute(v8js_heap_space_nameValue){
-    .base = types.StringAttribute{
-        .name = "v8js.heap.space.name",
-        .brief = "The name of the space type of heap memory.",
-        .note = "Value can be retrieved from value `space_name` of [`v8.getHeapSpaceStatistics()`](https://nodejs.org/api/v8.html#v8getheapspacestatistics)",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = v8js_heap_space_nameValue.new_space,
+    .name = "v8js.heap.space.name",
+    .brief = "The name of the space type of heap memory.",
+    .note = "Value can be retrieved from value `space_name` of [`v8.getHeapSpaceStatistics()`](https://nodejs.org/api/v8.html#v8getheapspacestatistics)",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The ID of the change (pull request/merge request/changelist) if applicable. This is usually a unique (within repository) identifier generated by the VCS system.
 pub const vcs_change_id = types.StringAttribute{
@@ -7956,13 +7605,10 @@ pub const vcs_change_stateValue = enum {
 
 /// The state of the change (pull request/merge request/changelist).
 pub const vcs_change_state = types.EnumAttribute(vcs_change_stateValue){
-    .base = types.StringAttribute{
-        .name = "vcs.change.state",
-        .brief = "The state of the change (pull request/merge request/changelist).",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = vcs_change_stateValue.open,
+    .name = "vcs.change.state",
+    .brief = "The state of the change (pull request/merge request/changelist).",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The human readable title of the change (pull request/merge request/changelist). This title is often a brief summary of the change and may get merged in to a ref as the commit summary.
 pub const vcs_change_title = types.StringAttribute{
@@ -7984,13 +7630,10 @@ pub const vcs_line_change_typeValue = enum {
 
 /// The type of line change being measured on a branch or change.
 pub const vcs_line_change_type = types.EnumAttribute(vcs_line_change_typeValue){
-    .base = types.StringAttribute{
-        .name = "vcs.line_change.type",
-        .brief = "The type of line change being measured on a branch or change.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = vcs_line_change_typeValue.added,
+    .name = "vcs.line_change.type",
+    .brief = "The type of line change being measured on a branch or change.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The group owner within the version control system.
 pub const vcs_owner_name = types.StringAttribute{
@@ -8018,13 +7661,10 @@ pub const vcs_provider_nameValue = enum {
 
 /// The name of the version control system provider.
 pub const vcs_provider_name = types.EnumAttribute(vcs_provider_nameValue){
-    .base = types.StringAttribute{
-        .name = "vcs.provider.name",
-        .brief = "The name of the version control system provider.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = vcs_provider_nameValue.github,
+    .name = "vcs.provider.name",
+    .brief = "The name of the version control system provider.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The name of the [reference](https://git-scm.com/docs/gitglossary#def_ref) such as **branch** or **tag** in the repository.
 pub const vcs_ref_base_name = types.StringAttribute{
@@ -8055,14 +7695,11 @@ pub const vcs_ref_base_typeValue = enum {
 
 /// The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.
 pub const vcs_ref_base_type = types.EnumAttribute(vcs_ref_base_typeValue){
-    .base = types.StringAttribute{
-        .name = "vcs.ref.base.type",
-        .brief = "The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.",
-        .note = "`base` refers to the starting point of a change. For example, `main` would be the base reference of type branch if you've created a new reference of type branch from it and created new commits.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = vcs_ref_base_typeValue.branch,
+    .name = "vcs.ref.base.type",
+    .brief = "The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.",
+    .note = "`base` refers to the starting point of a change. For example, `main` would be the base reference of type branch if you've created a new reference of type branch from it and created new commits.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The name of the [reference](https://git-scm.com/docs/gitglossary#def_ref) such as **branch** or **tag** in the repository.
 pub const vcs_ref_head_name = types.StringAttribute{
@@ -8093,14 +7730,11 @@ pub const vcs_ref_head_typeValue = enum {
 
 /// The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.
 pub const vcs_ref_head_type = types.EnumAttribute(vcs_ref_head_typeValue){
-    .base = types.StringAttribute{
-        .name = "vcs.ref.head.type",
-        .brief = "The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.",
-        .note = "`head` refers to where you are right now; the current reference at a given time.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = vcs_ref_head_typeValue.branch,
+    .name = "vcs.ref.head.type",
+    .brief = "The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.",
+    .note = "`head` refers to where you are right now; the current reference at a given time.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 pub const vcs_ref_typeValue = enum {
     branch,
@@ -8115,13 +7749,10 @@ pub const vcs_ref_typeValue = enum {
 
 /// The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.
 pub const vcs_ref_type = types.EnumAttribute(vcs_ref_typeValue){
-    .base = types.StringAttribute{
-        .name = "vcs.ref.type",
-        .brief = "The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = vcs_ref_typeValue.branch,
+    .name = "vcs.ref.type",
+    .brief = "The type of the [reference](https://git-scm.com/docs/gitglossary#def_ref) in the repository.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Deprecated, use `vcs.change.id` instead.
 pub const vcs_repository_change_id = types.StringAttribute{
@@ -8172,13 +7803,10 @@ pub const vcs_repository_ref_typeValue = enum {
 
 /// Deprecated, use `vcs.ref.head.type` instead.
 pub const vcs_repository_ref_type = types.EnumAttribute(vcs_repository_ref_typeValue){
-    .base = types.StringAttribute{
-        .name = "vcs.repository.ref.type",
-        .brief = "Deprecated, use `vcs.ref.head.type` instead.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = vcs_repository_ref_typeValue.branch,
+    .name = "vcs.repository.ref.type",
+    .brief = "Deprecated, use `vcs.ref.head.type` instead.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// The [canonical URL](https://support.google.com/webmasters/answer/10347851?hl=en#:~:text=A%20canonical%20URL%20is%20the,Google%20chooses%20one%20as%20canonical.) of the repository providing the complete HTTP(S) address in order to locate and identify the repository through a browser.
 pub const vcs_repository_url_full = types.StringAttribute{
@@ -8201,13 +7829,10 @@ pub const vcs_revision_delta_directionValue = enum {
 
 /// The type of revision comparison.
 pub const vcs_revision_delta_direction = types.EnumAttribute(vcs_revision_delta_directionValue){
-    .base = types.StringAttribute{
-        .name = "vcs.revision_delta.direction",
-        .brief = "The type of revision comparison.",
-        .stability = .development,
-        .requirement_level = .recommended,
-    },
-    .well_known_values = vcs_revision_delta_directionValue.behind,
+    .name = "vcs.revision_delta.direction",
+    .brief = "The type of revision comparison.",
+    .stability = .development,
+    .requirement_level = .recommended,
 };
 /// Additional description of the web engine (e.g. detailed version and edition information).
 pub const webengine_description = types.StringAttribute{

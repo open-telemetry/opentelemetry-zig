@@ -4,11 +4,21 @@
 const std = @import("std");
 const types = @import("types.zig");
 
+{# Zig type of the definition, by registry attribute type. Template types (`template[T]`) describe a
+   family of keys sharing a prefix, their values have the type of `T`. Unknown types stay strings. #}
+{% set attribute_types = {
+    "string": "StringAttribute", "int": "IntAttribute", "double": "DoubleAttribute", "boolean": "BooleanAttribute",
+    "string[]": "StringArrayAttribute", "int[]": "IntArrayAttribute", "double[]": "DoubleArrayAttribute", "boolean[]": "BooleanArrayAttribute",
+    "template[string]": "StringAttribute", "template[int]": "IntAttribute", "template[double]": "DoubleAttribute", "template[boolean]": "BooleanAttribute",
+    "template[string[]]": "StringArrayAttribute", "template[int[]]": "IntArrayAttribute", "template[double[]]": "DoubleArrayAttribute", "template[boolean[]]": "BooleanArrayAttribute",
+} %}
+
 {% for root_ns in ctx -%}
 {%- for attr in root_ns.attributes | rejectattr("name", "in", params.excluded_attributes) %}
 {%- set attr_name = attr.name | replace('.', '_') | replace('-', '_') %}
 
 {%- if attr.type is mapping and attr.type.members is defined %}
+{%- set int_enum = attr.type.members[0].value is number %}
 pub const {{ attr_name }}Value = enum {
 {%- for member in attr.type.members %}
     {%- set member_id = member.id | replace('-', '_') | replace('.', '_') %}
@@ -19,14 +29,14 @@ pub const {{ attr_name }}Value = enum {
     {%- endif %}
 {%- endfor %}
 
-    pub fn toString(self: @This()) []const u8 {
+    pub fn {{ 'toInt' if int_enum else 'toString' }}(self: @This()) {{ 'i64' if int_enum else '[]const u8' }} {
         return switch (self) {
 {%- for member in attr.type.members %}
     {%- set member_id = member.id | replace('-', '_') | replace('.', '_') %}
     {%- if member_id in ['type', 'align', 'async', 'await', 'break', 'const', 'continue', 'defer', 'else', 'enum', 'error', 'export', 'extern', 'fn', 'for', 'if', 'inline', 'noalias', 'null', 'or', 'orelse', 'packed', 'pub', 'resume', 'return', 'struct', 'suspend', 'switch', 'test', 'threadlocal', 'try', 'union', 'unreachable', 'usingnamespace', 'var', 'volatile', 'while'] or '.' in member.id %}
-            .@"{{ member_id }}" => "{{ member.value }}",
+            .@"{{ member_id }}" => {{ member.value if int_enum else '"' ~ member.value ~ '"' }},
     {%- else %}
-            .{{ member_id }} => "{{ member.value }}",
+            .{{ member_id }} => {{ member.value if int_enum else '"' ~ member.value ~ '"' }},
     {%- endif %}
 {%- endfor %}
         };
@@ -34,23 +44,20 @@ pub const {{ attr_name }}Value = enum {
 };
 
 /// {{ attr.brief }}
-pub const {{ attr_name }} = types.EnumAttribute({{ attr_name }}Value){
-    .base = types.StringAttribute{
-        .name = "{{ attr.name }}",
-        .brief = "{{ attr.brief | replace('"', '\\"') | replace('\n', ' ') | trim }}",
-        {%- if attr.note %}
-        .note = {{ '"' + attr.note | replace('\\', '\\\\') | replace('<', '[') | replace('>', ']') | replace('"', '\\"') | replace('\n', ' ') | trim + '"' }},
-        {%- endif %}
-        .stability = {{ '.stable' if attr.stability == 'stable' else '.development' }},
-        .requirement_level = {{ '.required' if attr.requirement_level == 'required' else '.recommended' if attr.requirement_level == 'recommended' else '.opt_in' if attr.requirement_level == 'opt_in' else '.conditionally_required' if attr.requirement_level == 'conditionally_required' else '.recommended' }},
-    },
-    .well_known_values = {{ attr_name }}Value.{% set first_member = attr.type.members[0].id | replace('-', '_') | replace('.', '_') %}{% if first_member in ['type', 'align', 'async', 'await', 'break', 'const', 'continue', 'defer', 'else', 'enum', 'error', 'export', 'extern', 'fn', 'for', 'if', 'inline', 'noalias', 'null', 'or', 'orelse', 'packed', 'pub', 'resume', 'return', 'struct', 'suspend', 'switch', 'test', 'threadlocal', 'try', 'union', 'unreachable', 'usingnamespace', 'var', 'volatile', 'while'] or '.' in attr.type.members[0].id %}@"{{ first_member }}"{% else %}{{ first_member }}{% endif %},
+pub const {{ attr_name }} = types.{{ 'IntEnumAttribute' if int_enum else 'EnumAttribute' }}({{ attr_name }}Value){
+    .name = "{{ attr.name }}",
+    .brief = "{{ attr.brief | replace('"', '\\"') | replace('\n', ' ') | trim }}",
+    {%- if attr.note %}
+    .note = {{ '"' + attr.note | replace('\\', '\\\\') | replace('<', '[') | replace('>', ']') | replace('"', '\\"') | replace('\n', ' ') | trim + '"' }},
+    {%- endif %}
+    .stability = {{ '.stable' if attr.stability == 'stable' else '.development' }},
+    .requirement_level = {{ '.required' if attr.requirement_level == 'required' else '.recommended' if attr.requirement_level == 'recommended' else '.opt_in' if attr.requirement_level == 'opt_in' else '.conditionally_required' if attr.requirement_level == 'conditionally_required' else '.recommended' }},
 };
 
 {%- else %}
 
 /// {{ attr.brief }}
-pub const {{ attr_name }} = types.StringAttribute{
+pub const {{ attr_name }} = types.{{ attribute_types[attr.type] if attr.type in attribute_types else 'StringAttribute' }}{
     .name = "{{ attr.name }}",
     .brief = "{{ attr.brief | replace('"', '\\"') | replace('\n', ' ') | trim }}",
     {%- if attr.note %}

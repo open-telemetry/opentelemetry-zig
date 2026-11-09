@@ -44,11 +44,12 @@ pub fn main() !void {
     std.debug.assert(std.mem.eql(u8, status_code.name, "http.response.status_code"));
     std.debug.assert(status_code.stability == .stable);
 
-    // Attributes with well-known values nest their metadata under `.base`,
-    // and expose the values as a `<name>Value` enum.
+    // Attributes with well-known values have the same shape, and expose the values
+    // as a `<name>Value` enum, also reachable as `well_known_values` on the type.
     const method = semconv.attribute.http_request_method;
-    std.debug.assert(std.mem.eql(u8, method.base.name, "http.request.method"));
+    std.debug.assert(std.mem.eql(u8, method.name, "http.request.method"));
     std.debug.assert(std.mem.eql(u8, semconv.attribute.http_request_methodValue.get.toString(), "GET"));
+    std.debug.assert(@TypeOf(method).well_known_values == semconv.attribute.http_request_methodValue);
 
     // Metrics carry their instrument type, unit and value type.
     const duration = semconv.metric.http_server_request_duration;
@@ -64,7 +65,7 @@ pub fn main() !void {
 - `semconv.resource` — attributes used on resources (generated)
 - `semconv.trace` — attributes used on spans and events (generated)
 - `semconv.types` — the hand-written types backing all of the above:
-  `StringAttribute`, `EnumAttribute`, `Metric`, `StabilityLevel`,
+  `StringAttribute`, `IntAttribute`, `EnumAttribute`, `Metric`, `StabilityLevel`,
   `RequirementLevel`, `InstrumentType`, and friends
 
 Every definition records its `stability` (`.stable`, `.development`,

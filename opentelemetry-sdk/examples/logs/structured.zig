@@ -36,8 +36,7 @@ pub fn main(init: std.process.Init) !void {
     logger.emit(.info, "Listening for connections", .{ .attributes = &server_attrs });
 
     // 3. The same, from key-value pairs. A key can be a semantic convention definition,
-    //    which saves reaching for `.name` (or `.base.name`, for the ones with well-known
-    //    values). A definition that has well-known values also names their enum, so `.get`
+    //    which saves reaching for `.name`. A definition that has well-known values also names their enum, so `.get`
     //    below is enough to mean `semconv.attribute.http_request_methodValue.get`.
     heading("plain body, attributes from semantic conventions");
     const request_attrs = sdk.attributes.fromPairs(.{

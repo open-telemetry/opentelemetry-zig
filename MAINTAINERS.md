@@ -11,13 +11,13 @@ If you're interested in contributing and becoming a maintainer or an approver, j
 | Francesco Gualazzi | [@inge4pres](https://github.com/inge4pres)   |
 | Giovanni Panice    | [@kmos](https://github.com/kmos)             |
 | Jacob Aronoff      | [@jaronoff97](https://github.com/jaronoff97) |
+| Antoine Gagniere   | [@agagniere](https://github.com/agagniere)   |
 
 ### Approvers
 
-| Approver         |                                            |
-|------------------|--------------------------------------------|
-| Antoine Gagniere | [@agagniere](https://github.com/agagniere) |
-| Kemal Akkoyun    | [@kakkoyun](https://github.com/kakkoyun)   |
+| Approver      |                                          |
+|---------------|------------------------------------------|
+| Kemal Akkoyun | [@kakkoyun](https://github.com/kakkoyun) |
 
 ### Emeritus Maintainers
 

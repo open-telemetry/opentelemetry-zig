@@ -77,10 +77,13 @@ is added when any of its detectors is enabled:
 
 | Attribute | Detectors |
 |-----------|-----------|
-| `telemetry.sdk.name`, `telemetry.sdk.language`, `telemetry.sdk.version` | `sdk`, `comptime` |
-| `os.type` | `os`, `comptime` |
-| `host.arch` | `host`, `comptime` |
-| `process.runtime.name`, `process.runtime.version` | `process`, `comptime` |
+| `telemetry.sdk.name`, `telemetry.sdk.language`, `telemetry.sdk.version` | `sdk`, `comptime`, `required` |
+| `os.type` | `os`, `comptime`, `required` |
+| `host.arch` | `host`, `comptime`, `recommended` |
+| `process.runtime.name`, `process.runtime.version` | `process`, `comptime`, `recommended` |
+
+`required` and `recommended` select the attributes by their [requirement level](https://opentelemetry.io/docs/specs/semconv/general/attribute-requirement-level/)
+in the semantic conventions of their resource.
 
 Set `OTEL_EXPERIMENTAL_RESOURCE_DETECTORS` to a comma-separated list to keep only
 some of them, for instance `sdk,os`. `*` enables all of them and `none` disables

@@ -49,14 +49,14 @@ fn detected(tags: []const ResourceDetector, definition: anytype, value: anytype)
 /// Every attribute the detectors provide. One is added when any of its tags is an enabled
 /// detector, unless OTEL_RESOURCE_ATTRIBUTES already sets its key.
 const detected_attributes = [_]Detected{
-    detected(&.{ .sdk, .@"comptime" }, semconv.attribute.telemetry_sdk_name, build_info.name),
+    detected(&.{ .sdk, .@"comptime", .required }, semconv.attribute.telemetry_sdk_name, build_info.name),
     // Not one of the well-known languages of the semantic conventions, which is an open set.
-    detected(&.{ .sdk, .@"comptime" }, semconv.attribute.telemetry_sdk_language, "zig"),
-    detected(&.{ .sdk, .@"comptime" }, semconv.attribute.telemetry_sdk_version, build_info.version),
-    detected(&.{ .os, .@"comptime" }, semconv.attribute.os_type, os_type),
-    detected(&.{ .host, .@"comptime" }, semconv.attribute.host_arch, host_arch),
-    detected(&.{ .process, .@"comptime" }, semconv.attribute.process_runtime_name, "zig"),
-    detected(&.{ .process, .@"comptime" }, semconv.attribute.process_runtime_version, builtin.zig_version_string),
+    detected(&.{ .sdk, .@"comptime", .required }, semconv.attribute.telemetry_sdk_language, "zig"),
+    detected(&.{ .sdk, .@"comptime", .required }, semconv.attribute.telemetry_sdk_version, build_info.version),
+    detected(&.{ .os, .@"comptime", .required }, semconv.attribute.os_type, os_type),
+    detected(&.{ .host, .@"comptime", .recommended }, semconv.attribute.host_arch, host_arch),
+    detected(&.{ .process, .@"comptime", .recommended }, semconv.attribute.process_runtime_name, "zig"),
+    detected(&.{ .process, .@"comptime", .recommended }, semconv.attribute.process_runtime_version, builtin.zig_version_string),
 };
 
 /// Build resource attributes from configuration
@@ -434,6 +434,52 @@ test "buildFromConfig adds an attribute when any of its tags is enabled" {
 
     // Every attribute is known at compile time for now.
     try std.testing.expectEqual(detected_attributes.len, resource.len);
+}
+
+test "detected attributes are tagged with their requirement level" {
+    // The requirement levels of the resource definitions, which can differ from the registry's.
+    const definitions = .{
+        semconv.resource.telemetry_sdk_name,
+        semconv.resource.telemetry_sdk_language,
+        semconv.resource.telemetry_sdk_version,
+        semconv.resource.os_type,
+        semconv.resource.host_arch,
+        semconv.resource.process_runtime_name,
+        semconv.resource.process_runtime_version,
+    };
+    comptime std.debug.assert(definitions.len == detected_attributes.len);
+
+    inline for (definitions, detected_attributes) |definition, line| {
+        try std.testing.expectEqualStrings(definition.name, line.attribute.key);
+        try std.testing.expectEqual(definition.requirement_level == .required, line.tags.contains(.required));
+        try std.testing.expectEqual(definition.requirement_level == .recommended, line.tags.contains(.recommended));
+    }
+}
+
+test "buildFromConfig with the required attributes only" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .initOne(.required),
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(@as(usize, 4), resource.len);
+    try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_name.name, resource[0].key);
+    try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_language.name, resource[1].key);
+    try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_version.name, resource[2].key);
+    try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[3].key);
 }
 
 test "OTEL_RESOURCE_ATTRIBUTES overrides detected attributes" {

@@ -275,6 +275,10 @@ pub const ResourceDetector = enum {
     process,
     /// Every attribute known at compile time, which is all of them for now.
     @"comptime",
+    /// Every attribute the semantic conventions mark "Required" for its resource.
+    required,
+    /// Every attribute the semantic conventions mark "Recommended" for its resource.
+    recommended,
 };
 
 /// Global SDK Configuration
@@ -441,8 +445,8 @@ fn parseInt(comptime T: type, env_map: *const EnvMap, key: []const u8) ?T {
 /// Parse OTEL_EXPERIMENTAL_RESOURCE_DETECTORS (comma-separated detector names).
 /// Detectors are opt-out: when the variable is unset every detector runs, when it is set only the
 /// listed ones do.
-/// Recognized names: "sdk", "host", "os", "process", "comptime", "*" for every detector and
-/// "none" for no detector at all. Unknown names are ignored with a warning.
+/// Recognized names: "sdk", "host", "os", "process", "comptime", "required", "recommended", "*"
+/// for every detector and "none" for no detector at all. Unknown names are ignored with a warning.
 /// An empty value is interpreted as if the variable was unset, as mandated by the specification:
 /// https://opentelemetry.io/docs/specs/otel/configuration/sdk-environment-variables/#parsing-empty-value
 fn parseResourceDetectors(env_map: *const EnvMap) ResourceDetectors {

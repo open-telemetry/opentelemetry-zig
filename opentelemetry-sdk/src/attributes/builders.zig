@@ -65,8 +65,9 @@ fn isString(comptime T: type) bool {
 
 /// The key of an attribute, either spelled out or taken from a semantic convention
 /// attribute definition of the opentelemetry-semconv module. Definitions are matched
-/// structurally, so the SDK does not depend on that module: every definition, with or
-/// without well-known values, has a `name` field.
+/// structurally rather than by type, so that ones generated or vendored from another
+/// version of the conventions work too: every definition, with or without well-known
+/// values, has a `name` field.
 fn keyOf(definition: anytype) []const u8 {
     const T = @TypeOf(definition);
     if (comptime isString(T)) return definition;

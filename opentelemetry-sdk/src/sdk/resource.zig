@@ -7,19 +7,30 @@ const fromPairs = @import("../attributes.zig").fromPairs;
 const Configuration = @import("config.zig").Configuration;
 const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").PercentDecodedCommaSeparatedAssignmentIterator;
 
+// The well-known values MUST be used when one applies, the sets are open otherwise:
+// targets without one are reported under their Zig name.
+const OsType = @TypeOf(semconv.attribute.os_type).well_known_values;
 const os_type: []const u8 = switch (builtin.os.tag) {
-    .macos, .ios, .tvos, .watchos => "darwin",
-    .dragonfly => "dragonflybsd",
-    .illumos => "solaris",
+    .windows => OsType.windows.toString(),
+    .linux => OsType.linux.toString(),
+    .driverkit, .ios, .maccatalyst, .macos, .tvos, .visionos, .watchos => OsType.darwin.toString(),
+    .freebsd => OsType.freebsd.toString(),
+    .netbsd => OsType.netbsd.toString(),
+    .openbsd => OsType.openbsd.toString(),
+    .dragonfly => OsType.dragonflybsd.toString(),
+    .illumos => OsType.solaris.toString(),
     else => @tagName(builtin.os.tag),
 };
 
+const HostArch = @TypeOf(semconv.attribute.host_arch).well_known_values;
 const host_arch: []const u8 = switch (builtin.cpu.arch) {
-    .x86_64 => "amd64",
-    .aarch64 => "arm64",
-    .arm => "arm32",
-    .powerpc => "ppc32",
-    .powerpc64, .powerpc64le => "ppc64",
+    .x86_64 => HostArch.amd64.toString(),
+    .x86 => HostArch.x86.toString(),
+    .aarch64, .aarch64_be => HostArch.arm64.toString(),
+    .arm, .armeb, .thumb, .thumbeb => HostArch.arm32.toString(),
+    .powerpc, .powerpcle => HostArch.ppc32.toString(),
+    .powerpc64, .powerpc64le => HostArch.ppc64.toString(),
+    .s390x => HostArch.s390x.toString(),
     else => @tagName(builtin.cpu.arch),
 };
 
@@ -353,7 +364,9 @@ test "buildFromConfig runs every detector by default" {
     try std.testing.expectEqualStrings("zig", resource[1].value.string);
     try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_version.name, resource[2].key);
     try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[3].key);
+    try std.testing.expectEqualStrings(os_type, resource[3].value.string);
     try std.testing.expectEqualStrings(semconv.attribute.host_arch.name, resource[4].key);
+    try std.testing.expectEqualStrings(host_arch, resource[4].value.string);
     try std.testing.expectEqualStrings(semconv.attribute.process_runtime_name.name, resource[5].key);
     try std.testing.expectEqualStrings("zig", resource[5].value.string);
     try std.testing.expectEqualStrings(semconv.attribute.process_runtime_version.name, resource[6].key);

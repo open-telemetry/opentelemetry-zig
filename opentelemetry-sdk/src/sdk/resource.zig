@@ -5,6 +5,8 @@ const semconv = @import("opentelemetry-semconv");
 const Attribute = @import("../attributes.zig").Attribute;
 const fromPairs = @import("../attributes.zig").fromPairs;
 const Configuration = @import("config.zig").Configuration;
+const ResourceDetector = @import("config.zig").ResourceDetector;
+const ResourceDetectors = @import("config.zig").ResourceDetectors;
 const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").PercentDecodedCommaSeparatedAssignmentIterator;
 
 // The well-known values MUST be used when one applies, the sets are open otherwise:
@@ -34,44 +36,39 @@ const host_arch: []const u8 = switch (builtin.cpu.arch) {
     else => @tagName(builtin.cpu.arch),
 };
 
-/// SDK identity attributes, provided by the "sdk" detector.
-const sdk_attributes = fromPairs(.{
-    .{ semconv.attribute.telemetry_sdk_name, build_info.name },
+/// An attribute the SDK detects on its own, and the detectors it is tagged with.
+const Detected = struct {
+    tags: ResourceDetectors,
+    attribute: Attribute,
+};
+
+fn detected(tags: []const ResourceDetector, definition: anytype, value: anytype) Detected {
+    return .{ .tags = .initMany(tags), .attribute = fromPairs(.{.{ definition, value }})[0] };
+}
+
+/// Every attribute the detectors provide. One is added when any of its tags is an enabled
+/// detector, unless OTEL_RESOURCE_ATTRIBUTES already sets its key.
+const detected_attributes = [_]Detected{
+    detected(&.{ .sdk, .@"comptime" }, semconv.attribute.telemetry_sdk_name, build_info.name),
     // Not one of the well-known languages of the semantic conventions, which is an open set.
-    .{ semconv.attribute.telemetry_sdk_language, "zig" },
-    .{ semconv.attribute.telemetry_sdk_version, build_info.version },
-});
-
-/// Attributes provided by the "os" detector.
-const os_attributes = fromPairs(.{
-    .{ semconv.attribute.os_type, os_type },
-});
-
-/// Attributes provided by the "host" detector.
-const host_attributes = fromPairs(.{
-    .{ semconv.attribute.host_arch, host_arch },
-});
-
-/// Attributes provided by the "process" detector.
-const process_attributes = fromPairs(.{
-    .{ semconv.attribute.process_runtime_name, "zig" },
-    .{ semconv.attribute.process_runtime_version, builtin.zig_version_string },
-});
+    detected(&.{ .sdk, .@"comptime" }, semconv.attribute.telemetry_sdk_language, "zig"),
+    detected(&.{ .sdk, .@"comptime" }, semconv.attribute.telemetry_sdk_version, build_info.version),
+    detected(&.{ .os, .@"comptime" }, semconv.attribute.os_type, os_type),
+    detected(&.{ .host, .@"comptime" }, semconv.attribute.host_arch, host_arch),
+    detected(&.{ .process, .@"comptime" }, semconv.attribute.process_runtime_name, "zig"),
+    detected(&.{ .process, .@"comptime" }, semconv.attribute.process_runtime_version, builtin.zig_version_string),
+};
 
 /// Build resource attributes from configuration
-/// Combines OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES
+/// Combines OTEL_SERVICE_NAME, OTEL_RESOURCE_ATTRIBUTES and the attributes of the enabled
+/// detectors. The configured attributes take precedence over the detected ones.
 pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuration) ![]Attribute {
-    const d = config.resource_detectors;
     const has_service_name = config.service_name != null;
-    const detected = (if (d.sdk) sdk_attributes.len else 0) +
-        (if (d.os) os_attributes.len else 0) +
-        (if (d.host) host_attributes.len else 0) +
-        (if (d.process) process_attributes.len else 0);
 
     // `parseResourceAttributes` reserves its own capacity, so this only covers
-    // the detected attributes and the service.name entry below: their appends
-    // then cannot fail and orphan a duped attribute.
-    var attributes: std.ArrayList(Attribute) = try .initCapacity(allocator, detected + @intFromBool(has_service_name));
+    // the service.name entry below: its append then cannot fail and orphan a
+    // duped attribute.
+    var attributes: std.ArrayList(Attribute) = try .initCapacity(allocator, @intFromBool(has_service_name));
     errdefer {
         for (attributes.items) |attr| {
             allocator.free(attr.key);
@@ -81,19 +78,6 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
         }
         attributes.deinit(allocator);
     }
-
-    if (d.sdk) for (sdk_attributes) |attr| {
-        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
-    };
-    if (d.os) for (os_attributes) |attr| {
-        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
-    };
-    if (d.host) for (host_attributes) |attr| {
-        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
-    };
-    if (d.process) for (process_attributes) |attr| {
-        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, attr));
-    };
 
     // Add service.name if configured
     if (config.service_name) |service_name| {
@@ -105,6 +89,15 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
     // Skip service.name from resource_attributes if OTEL_SERVICE_NAME is set (it takes precedence)
     if (config.resource_attributes) |resource_attrs| {
         try parseResourceAttributes(allocator, resource_attrs, &attributes, has_service_name);
+    }
+
+    // Same as above, for the detected attributes.
+    try attributes.ensureUnusedCapacity(allocator, detected_attributes.len);
+    const configured = attributes.items.len;
+    for (detected_attributes) |line| {
+        if (line.tags.intersectWith(config.resource_detectors).count() == 0) continue;
+        if (containsAttributeKey(attributes.items[0..configured], line.attribute.key)) continue;
+        attributes.appendAssumeCapacity(try Attribute.dupe(allocator, line.attribute));
     }
 
     return try attributes.toOwnedSlice(allocator);
@@ -214,7 +207,7 @@ test "buildFromConfig with service name only" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .none,
+        .resource_detectors = .empty,
         .service_name = "my-service",
         .resource_attributes = null,
         .log_level = .info,
@@ -238,7 +231,7 @@ test "buildFromConfig with resource attributes only" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .none,
+        .resource_detectors = .empty,
         .service_name = null,
         .resource_attributes = "key1=value1,key2=value2",
         .log_level = .info,
@@ -264,7 +257,7 @@ test "buildFromConfig with both service name and resource attributes" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .none,
+        .resource_detectors = .empty,
         .service_name = "test-service",
         .resource_attributes = "deployment.environment.name=production,host.name=server-1",
         .log_level = .info,
@@ -292,7 +285,7 @@ test "parseResourceAttributes with whitespace and empty values" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .none,
+        .resource_detectors = .empty,
         .service_name = null,
         .resource_attributes = " key1 = value1 , key2=value2,  ,key3=",
         .log_level = .info,
@@ -321,7 +314,7 @@ test "buildFromConfig with every detector disabled" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .none,
+        .resource_detectors = .empty,
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -343,7 +336,7 @@ test "buildFromConfig runs every detector by default" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .{},
+        .resource_detectors = .full,
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -356,8 +349,7 @@ test "buildFromConfig runs every detector by default" {
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    const expected_len = sdk_attributes.len + os_attributes.len + host_attributes.len + process_attributes.len;
-    try std.testing.expectEqual(expected_len, resource.len);
+    try std.testing.expectEqual(detected_attributes.len, resource.len);
     try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_name.name, resource[0].key);
     try std.testing.expectEqualStrings("opentelemetry", resource[0].value.string);
     try std.testing.expectEqualStrings(semconv.attribute.telemetry_sdk_language.name, resource[1].key);
@@ -379,7 +371,7 @@ test "buildFromConfig with a single detector opted out" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .{ .sdk = false },
+        .resource_detectors = .init(.{ .host = true, .os = true, .process = true }),
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -392,7 +384,7 @@ test "buildFromConfig with a single detector opted out" {
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    try std.testing.expectEqual(os_attributes.len + host_attributes.len + process_attributes.len, resource.len);
+    try std.testing.expectEqual(@as(usize, 4), resource.len);
     try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[0].key);
     try std.testing.expectEqualStrings(semconv.attribute.host_arch.name, resource[1].key);
     try std.testing.expectEqualStrings(semconv.attribute.process_runtime_name.name, resource[2].key);
@@ -404,7 +396,7 @@ test "buildFromConfig with a single detector opted in" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .{ .sdk = false, .host = false, .process = false },
+        .resource_detectors = .initOne(.os),
         .service_name = null,
         .resource_attributes = null,
         .log_level = .info,
@@ -417,8 +409,78 @@ test "buildFromConfig with a single detector opted in" {
     const resource = try buildFromConfig(allocator, &config);
     defer freeResource(allocator, resource);
 
-    try std.testing.expectEqual(os_attributes.len, resource.len);
+    try std.testing.expectEqual(@as(usize, 1), resource.len);
     try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[0].key);
+}
+
+test "buildFromConfig adds an attribute when any of its tags is enabled" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .initOne(.@"comptime"),
+        .service_name = null,
+        .resource_attributes = null,
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    // Every attribute is known at compile time for now.
+    try std.testing.expectEqual(detected_attributes.len, resource.len);
+}
+
+test "OTEL_RESOURCE_ATTRIBUTES overrides detected attributes" {
+    const allocator = std.testing.allocator;
+
+    var config = Configuration{
+        .allocator = allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .init(.{ .os = true, .host = true }),
+        .service_name = null,
+        .resource_attributes = "os.type=custom",
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    const resource = try buildFromConfig(allocator, &config);
+    defer freeResource(allocator, resource);
+
+    try std.testing.expectEqual(@as(usize, 2), resource.len);
+    try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[0].key);
+    try std.testing.expectEqualStrings("custom", resource[0].value.string);
+    try std.testing.expectEqualStrings(semconv.attribute.host_arch.name, resource[1].key);
+    try std.testing.expectEqualStrings(host_arch, resource[1].value.string);
+}
+
+fn buildAndFreeResource(allocator: std.mem.Allocator, config: *const Configuration) !void {
+    freeResource(allocator, try buildFromConfig(allocator, config));
+}
+
+test "buildFromConfig cleanup on allocation failure does not leak" {
+    var config = Configuration{
+        .allocator = std.testing.allocator,
+        .sdk_disabled = false,
+        .resource_detectors = .full,
+        .service_name = "my-service",
+        .resource_attributes = "key1=value1,os.type=custom",
+        .log_level = .info,
+        .trace_propagators = &.{},
+        .trace_config = undefined,
+        .metrics_config = undefined,
+        .logs_config = undefined,
+    };
+
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, buildAndFreeResource, .{&config});
 }
 
 test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
@@ -427,7 +489,7 @@ test "OTEL_SERVICE_NAME overrides service.name from OTEL_RESOURCE_ATTRIBUTES" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .none,
+        .resource_detectors = .empty,
         .service_name = "override-service",
         .resource_attributes = "service.name=original-service,key1=value1",
         .log_level = .info,
@@ -457,7 +519,7 @@ test "service.name from OTEL_RESOURCE_ATTRIBUTES when OTEL_SERVICE_NAME not set"
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .none,
+        .resource_detectors = .empty,
         .service_name = null,
         .resource_attributes = "service.name=from-resource-attrs,key1=value1",
         .log_level = .info,
@@ -603,7 +665,7 @@ test "parseResourceAttributes percent-decodes keys and values" {
     var config = Configuration{
         .allocator = allocator,
         .sdk_disabled = false,
-        .resource_detectors = .none,
+        .resource_detectors = .empty,
         .service_name = null,
         .resource_attributes = "deployment.environment.name=prod%20east,custom%2Etag=val%2C1,equation=a%3Db,path=%2Fvar%2Flog,math=1+1,literal%2=kept",
         .log_level = .info,

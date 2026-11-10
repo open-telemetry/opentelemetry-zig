@@ -72,19 +72,21 @@ zig build sdk-run-examples -Dexamples-filter=exemplars
 
 A provider created with a `sdk.config.Configuration` builds its resource from
 `OTEL_SERVICE_NAME` and `OTEL_RESOURCE_ATTRIBUTES`, and detectors add the attributes
-the SDK knows at compile time. Every detector is enabled by default:
+the SDK knows at compile time. Every detector is enabled by default, and each attribute
+is added when any of its detectors is enabled:
 
-| Detector | Attributes |
-|----------|------------|
-| `sdk` | `telemetry.sdk.name`, `telemetry.sdk.language`, `telemetry.sdk.version` |
-| `os` | `os.type` |
-| `host` | `host.arch` |
-| `process` | `process.runtime.name`, `process.runtime.version` |
+| Attribute | Detectors |
+|-----------|-----------|
+| `telemetry.sdk.name`, `telemetry.sdk.language`, `telemetry.sdk.version` | `sdk`, `comptime` |
+| `os.type` | `os`, `comptime` |
+| `host.arch` | `host`, `comptime` |
+| `process.runtime.name`, `process.runtime.version` | `process`, `comptime` |
 
 Set `OTEL_EXPERIMENTAL_RESOURCE_DETECTORS` to a comma-separated list to keep only
 some of them, for instance `sdk,os`. `*` enables all of them and `none` disables
 all of them, leaving only the configured attributes. An empty value is the same as
-unset, and unknown names are ignored with a warning.
+unset, and unknown names are ignored with a warning. A key set in
+`OTEL_RESOURCE_ATTRIBUTES` takes precedence over the detected attribute of the same key.
 
 ### `std.log` Bridge for Seamless Migration
 

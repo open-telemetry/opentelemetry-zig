@@ -32,6 +32,8 @@ const pbcommon = proto.common_v1;
 const pbcollector_metrics = proto.collector_metrics_v1;
 const pbcollector_trace = proto.collector_trace_v1;
 const pbcollector_logs = proto.collector_logs_v1;
+const pbcollector_profiles = proto.collector_profiles_v1development;
+const pbprofiles = proto.profiles_v1development;
 
 // Fixed user-agent string for the OTLP transport.
 const UserAgent = "zig-o11y_opentelemetry-sdk/" ++ build_info.version;
@@ -118,8 +120,7 @@ pub const Signal = enum {
     metrics,
     logs,
     traces,
-    // TODO add other signals when implemented
-    // profiles,
+    profiles,
 
     const Self = @This();
 
@@ -128,6 +129,7 @@ pub const Signal = enum {
             .metrics => return "/v1/metrics",
             .logs => return "/v1/logs",
             .traces => return "/v1/traces",
+            .profiles => return "/v1development/profiles",
         }
     }
 
@@ -139,6 +141,7 @@ pub const Signal = enum {
             .metrics => return fullyQualifiedPath(pbcollector_metrics.MetricsService, "Export"),
             .logs => return fullyQualifiedPath(pbcollector_logs.LogsService, "Export"),
             .traces => return fullyQualifiedPath(pbcollector_trace.TraceService, "Export"),
+            .profiles => return fullyQualifiedPath(pbcollector_profiles.ProfilesService, "Export"),
         }
     }
 
@@ -156,8 +159,7 @@ pub const Signal = enum {
         metrics: pbcollector_metrics.ExportMetricsServiceRequest,
         logs: pbcollector_logs.ExportLogsServiceRequest,
         traces: pbcollector_trace.ExportTraceServiceRequest,
-        // TODO add other signals when implemented
-        // profiles: profiles.ExportProfilesServiceRequest,
+        profiles: pbcollector_profiles.ExportProfilesServiceRequest,
 
         fn toOwnedSlice(self: Data, allocator: std.mem.Allocator, protocol: Protocol) ![]const u8 {
             return switch (protocol) {
@@ -239,6 +241,28 @@ test "otlp Signal.Data get payload bytes" {
     defer allocator.free(payload);
 
     try std.testing.expectEqual(payload.len, 0);
+}
+
+test "otlp Signal.profiles properties and payload bytes" {
+    const allocator = std.testing.allocator;
+
+    try std.testing.expectEqualStrings("/v1development/profiles", Signal.profiles.defaulttHttpPath());
+    try std.testing.expectEqualStrings("/opentelemetry.proto.collector.profiles.v1development.ProfilesService/Export", Signal.profiles.grpcPath());
+
+    var data = Signal.Data{
+        .profiles = pbcollector_profiles.ExportProfilesServiceRequest{
+            .resource_profiles = .empty,
+        },
+    };
+    try std.testing.expectEqual(Signal.profiles, data.signal());
+
+    const proto_payload = try data.toOwnedSlice(allocator, Protocol.http_protobuf);
+    defer allocator.free(proto_payload);
+    try std.testing.expectEqual(proto_payload.len, 0);
+
+    const json_payload = try data.toOwnedSlice(allocator, Protocol.http_json);
+    defer allocator.free(json_payload);
+    try std.testing.expect(json_payload.len > 0);
 }
 
 /// Configuration options for the OTLP transport.
@@ -350,6 +374,10 @@ pub const ConfigOptions = struct {
         if (entryFromEnvMap(environ, "LOGS_ENDPOINT")) |logs| {
             const owned = try self.allocator.dupe(u8, logs);
             if (try self.custom_signal_urls.fetchPut(self.allocator, Signal.logs, owned)) |old| self.allocator.free(old.value);
+        }
+        if (entryFromEnvMap(environ, "PROFILES_ENDPOINT")) |profiles| {
+            const owned = try self.allocator.dupe(u8, profiles);
+            if (try self.custom_signal_urls.fetchPut(self.allocator, Signal.profiles, owned)) |old| self.allocator.free(old.value);
         }
         // connection configs
         if (entryFromEnvMap(environ, "COMPRESSION")) |compression| {
@@ -835,6 +863,7 @@ test "otlp config custom endpoint for singals" {
     defer map.deinit();
     try map.put("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "https://another.com:1234/traces");
     try map.put("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", "http://metrics-new:1234");
+    try map.put("OTEL_EXPORTER_OTLP_PROFILES_ENDPOINT", "http://profiles-new:1234/v1development/profiles");
     // logs are left untouched
 
     var config = try ConfigOptions.init(allocator, &map);
@@ -842,12 +871,15 @@ test "otlp config custom endpoint for singals" {
 
     const customTraces = try config.httpUrlForSignal(Signal.traces, allocator);
     const customMetrics = try config.httpUrlForSignal(Signal.metrics, allocator);
+    const customProfiles = try config.httpUrlForSignal(Signal.profiles, allocator);
     const standardLogs = try config.httpUrlForSignal(Signal.logs, allocator);
     defer allocator.free(customTraces);
     defer allocator.free(customMetrics);
+    defer allocator.free(customProfiles);
     defer allocator.free(standardLogs);
     try std.testing.expectEqualStrings("https://another.com:1234/traces", customTraces);
     try std.testing.expectEqualStrings("http://metrics-new:1234", customMetrics);
+    try std.testing.expectEqualStrings("http://profiles-new:1234/v1development/profiles", customProfiles);
     try std.testing.expectEqualStrings("http://localhost:4318/v1/logs", standardLogs);
 }
 

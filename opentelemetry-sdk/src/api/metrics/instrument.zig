@@ -911,22 +911,8 @@ pub fn Histogram(comptime T: type) type {
             state: *const ExplicitState,
             sample: ?exemplar.Exemplar,
         ) !DataPoint(HistogramDataPoint) {
-            var dp = DataPoint(HistogramDataPoint){
-                .value = .{
-                    .explicit_bounds = state.data.value.explicit_bounds,
-                    .bucket_counts = try allocator.dupe(u64, state.data.value.bucket_counts),
-                    .sum = state.data.value.sum,
-                    .count = state.data.value.count,
-                    .min = state.data.value.min,
-                    .max = state.data.value.max,
-                },
-            };
+            var dp = try state.data.deepCopy(allocator);
             errdefer dp.deinit(allocator);
-
-            if (state.data.attributes) |attrs| {
-                dp.attributes = try exemplar.Exemplar.copyAttributes(allocator, attrs);
-                dp.attributes_owned = true;
-            }
             if (sample) |s| dp.exemplar_candidate = try s.deepCopy(allocator);
             return dp;
         }
@@ -1025,31 +1011,17 @@ pub fn Histogram(comptime T: type) type {
 
                     if (first_idx) |f_i| {
                         for (val.bucket_exemplars[f_i + 1 ..]) |slot| {
-                            if (slot) |s| {
-                                const zero_counts = try allocator.alloc(u64, val.data.value.bucket_counts.len);
-                                @memset(zero_counts, 0);
-
-                                var extra_dp = DataPoint(HistogramDataPoint){
-                                    .value = .{
-                                        .explicit_bounds = val.data.value.explicit_bounds,
-                                        .bucket_counts = zero_counts,
-                                        .sum = null,
-                                        .count = 0,
-                                        .min = null,
-                                        .max = null,
-                                    },
-                                };
-                                errdefer extra_dp.deinit(allocator);
-
-                                extra_dp.attributes = if (val.data.attributes) |attrs| try exemplar.Exemplar.copyAttributes(allocator, attrs) else null;
-                                extra_dp.attributes_owned = (val.data.attributes != null);
-
-                                extra_dp.exemplar_candidate = try s.deepCopy(allocator);
-
-                                data[out_idx] = extra_dp;
-                                out_idx += 1;
-                                success_count += 1;
-                            }
+                            const s = slot orelse continue;
+                            // Carries only the exemplar; aggregate() merges it into the main point.
+                            var extra = try snapshotExplicitPoint(allocator, val, s);
+                            @memset(extra.value.bucket_counts, 0);
+                            extra.value.count = 0;
+                            extra.value.sum = null;
+                            extra.value.min = null;
+                            extra.value.max = null;
+                            data[out_idx] = extra;
+                            out_idx += 1;
+                            success_count += 1;
                         }
                     }
                 }

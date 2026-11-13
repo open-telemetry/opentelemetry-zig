@@ -303,6 +303,15 @@ pub const MeterProvider = struct {
                             h.pre_aggregate = false;
                         }
                     },
+                    inline .Gauge_i16,
+                    .Gauge_i32,
+                    .Gauge_i64,
+                    .Gauge_f32,
+                    .Gauge_f64,
+                    => |g| {
+                        const is_last_value = resolvesToLastValueOnlyUnlocked(self, instr.*, &meter.scope);
+                        g.setPreLastValue(is_last_value);
+                    },
                     else => {},
                 }
             }
@@ -344,6 +353,27 @@ fn resolvesToSumOnly(provider: ?*MeterProvider, instr: *const Instrument, scope:
     p.mx.lockUncancelable(p.io);
     defer p.mx.unlock(p.io);
     return resolvesToSumOnlyUnlocked(p, instr, scope);
+}
+
+fn resolvesToLastValueOnlyUnlocked(p: *const MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
+    if (p.readers.items.len > 0) {
+        for (p.readers.items) |r| {
+            const agg = view.aggregationForViews(p.views.items, instr, scope, r.aggregation);
+            if (agg != .LastValue) return false;
+        }
+    } else {
+        const agg = view.aggregationForViews(p.views.items, instr, scope, view.DefaultAggregation);
+        if (agg != .LastValue) return false;
+    }
+
+    return true;
+}
+
+fn resolvesToLastValueOnly(provider: ?*MeterProvider, instr: *const Instrument, scope: *const InstrumentationScope) bool {
+    const p = provider orelse return true;
+    p.mx.lockUncancelable(p.io);
+    defer p.mx.unlock(p.io);
+    return resolvesToLastValueOnlyUnlocked(p, instr, scope);
 }
 
 fn histogramAggregationsEqual(a: view.Aggregation, b: view.Aggregation) bool {
@@ -510,8 +540,18 @@ pub const Meter = struct {
             return err;
         };
         errdefer i.deinit();
+        g.cardinality_limit = self.cardinality_limit;
         g.exemplar_filter = self.exemplar_filter;
-        try self.registerInstrument(i);
+
+        if (self.provider) |p| {
+            p.mx.lockUncancelable(p.io);
+            defer p.mx.unlock(p.io);
+            g.pre_last_value = resolvesToLastValueOnlyUnlocked(p, i, &self.scope);
+            try self.registerInstrument(i);
+        } else {
+            g.pre_last_value = true;
+            try self.registerInstrument(i);
+        }
 
         return g;
     }

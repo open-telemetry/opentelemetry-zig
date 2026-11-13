@@ -905,6 +905,32 @@ pub fn Histogram(comptime T: type) type {
             }
         }
 
+        /// Caller owns the returned point; partial allocations are freed on error.
+        fn snapshotExplicitPoint(
+            allocator: std.mem.Allocator,
+            state: *const ExplicitState,
+            sample: ?exemplar.Exemplar,
+        ) !DataPoint(HistogramDataPoint) {
+            var dp = DataPoint(HistogramDataPoint){
+                .value = .{
+                    .explicit_bounds = state.data.value.explicit_bounds,
+                    .bucket_counts = try allocator.dupe(u64, state.data.value.bucket_counts),
+                    .sum = state.data.value.sum,
+                    .count = state.data.value.count,
+                    .min = state.data.value.min,
+                    .max = state.data.value.max,
+                },
+            };
+            errdefer dp.deinit(allocator);
+
+            if (state.data.attributes) |attrs| {
+                dp.attributes = try exemplar.Exemplar.copyAttributes(allocator, attrs);
+                dp.attributes_owned = true;
+            }
+            if (sample) |s| dp.exemplar_candidate = try s.deepCopy(allocator);
+            return dp;
+        }
+
         fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
@@ -989,33 +1015,11 @@ pub fn Histogram(comptime T: type) type {
 
                 var out_idx: usize = 0;
                 for (self.explicit_points.values()) |*val| {
-                    const bucket_counts_copy = try allocator.dupe(u64, val.data.value.bucket_counts);
+                    const first_idx: ?usize = for (val.bucket_exemplars, 0..) |slot, b_i| {
+                        if (slot != null) break b_i;
+                    } else null;
 
-                    var main_dp = DataPoint(HistogramDataPoint){
-                        .value = .{
-                            .explicit_bounds = val.data.value.explicit_bounds,
-                            .bucket_counts = bucket_counts_copy,
-                            .sum = val.data.value.sum,
-                            .count = val.data.value.count,
-                            .min = val.data.value.min,
-                            .max = val.data.value.max,
-                        },
-                    };
-                    errdefer main_dp.deinit(allocator);
-
-                    main_dp.attributes = if (val.data.attributes) |attrs| try exemplar.Exemplar.copyAttributes(allocator, attrs) else null;
-                    main_dp.attributes_owned = (val.data.attributes != null);
-
-                    var first_idx: ?usize = null;
-                    for (val.bucket_exemplars, 0..) |slot, b_i| {
-                        if (slot) |s| {
-                            main_dp.exemplar_candidate = try s.deepCopy(allocator);
-                            first_idx = b_i;
-                            break;
-                        }
-                    }
-
-                    data[out_idx] = main_dp;
+                    data[out_idx] = try snapshotExplicitPoint(allocator, val, if (first_idx) |f_i| val.bucket_exemplars[f_i] else null);
                     out_idx += 1;
                     success_count += 1;
 
@@ -2074,4 +2078,23 @@ fn testHistogramAllocationFailures(allocator: std.mem.Allocator) !void {
 
 test "histogram in-place aggregation handles allocation failures without leaks or double-frees" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testHistogramAllocationFailures, .{});
+}
+
+fn testHistogramBucketExemplarAllocationFailures(allocator: std.mem.Allocator) !void {
+    var h = Histogram(f64).init(allocator, std.testing.io);
+    defer h.deinit();
+    h.pre_aggregate = true;
+    h.exemplar_filter = .always_on;
+
+    // Exemplars in one series but two separate buckets make collection emit an extra exemplar point,
+    // whose allocations can fail after the main point was handed to the output slice.
+    try h.record(-5.0, .{ "status", @as([]const u8, "200") });
+    try h.record(7.0, .{ "status", @as([]const u8, "200") });
+
+    var data = try h.measurementsData(allocator);
+    defer data.deinit(allocator);
+}
+
+test "histogram bucket exemplar collection handles allocation failures without leaks or double-frees" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, testHistogramBucketExemplarAllocationFailures, .{});
 }

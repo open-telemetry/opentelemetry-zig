@@ -1239,11 +1239,15 @@ pub fn Gauge(comptime T: type) type {
 
             if (enabled) {
                 // Switching back to LastValue: drain any pending raw points into aggregated_points.
-                // On allocation failure, the failed point and the ones after it stay in data_points.
+                // On allocation failure, the failed point and the ones after it stay in data_points,
+                // and we revert pre_last_value to false so subsequent measurements preserve chronological order.
                 const items = self.data_points.items;
                 var drained: usize = 0;
                 for (items) |*raw_dp| {
-                    self.recordRawPoint(raw_dp) catch break;
+                    self.recordRawPoint(raw_dp) catch {
+                        self.pre_last_value = false;
+                        break;
+                    };
                     drained += 1;
                 }
                 // Drained points were moved out of or merged, so only the leftovers need freeing.
@@ -1256,25 +1260,15 @@ pub fn Gauge(comptime T: type) type {
 
         /// Record the given value to the gauge, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
-            if (self.pre_last_value) {
-                const ArgsType = @TypeOf(attributes);
-                const args_type_info = @typeInfo(ArgsType);
-                if (args_type_info != .@"struct") {
-                    @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
-                }
-                const count = args_type_info.@"struct".field_names.len / 2;
-                var stack_buf: [count]Attribute = undefined;
-                const attrs = Attributes.fromBuffer(&stack_buf, attributes);
-                return self.recordWithSlice(value, attrs);
-            } else {
-                self.lock.lockUncancelable(self.io);
-                defer self.lock.unlock(self.io);
-
-                var dp = try DataPoint(T).new(self.allocator, value, attributes);
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
             }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.recordWithSlice(value, attrs);
         }
 
         /// Record a value with a pre-built attribute slice.
@@ -1796,6 +1790,42 @@ test "gauge setPreLastValue drains pending raw data points" {
     gauge.setPreLastValue(true);
     try std.testing.expectEqual(@as(usize, 0), gauge.data_points.items.len);
     try std.testing.expectEqual(@as(usize, 2), gauge.aggregated_points.count());
+}
+
+test "gauge setPreLastValue failed drain reverts to raw recording mode" {
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var gauge = try meter.createGauge(i32, .{ .name = "drain-fail-gauge" });
+
+    gauge.setPreLastValue(false);
+    try gauge.record(10, .{ "color", @as([]const u8, "red") });
+    try std.testing.expectEqual(@as(usize, 1), gauge.data_points.items.len);
+
+    // Make allocations fail during drain
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    const prev_allocator = gauge.allocator;
+    gauge.allocator = failing_allocator.allocator();
+
+    // Drain fails because put/copyAttributes fails:
+    gauge.setPreLastValue(true);
+    // Mode must revert to false so new points are not inserted out of order
+    try std.testing.expectEqual(false, gauge.pre_last_value);
+    try std.testing.expectEqual(@as(usize, 1), gauge.data_points.items.len);
+
+    // Restore allocator
+    gauge.allocator = prev_allocator;
+    // Record another measurement: appends to raw data_points in chronological order
+    try gauge.record(20, .{ "color", @as([]const u8, "red") });
+    try std.testing.expectEqual(@as(usize, 2), gauge.data_points.items.len);
+
+    // Subsequent drain succeeds
+    gauge.setPreLastValue(true);
+    try std.testing.expectEqual(true, gauge.pre_last_value);
+    try std.testing.expectEqual(@as(usize, 0), gauge.data_points.items.len);
+    try std.testing.expectEqual(@as(usize, 1), gauge.aggregated_points.count());
+    try std.testing.expectEqual(@as(i64, 20), gauge.aggregated_points.values()[0].value);
 }
 
 fn testGaugeAllocationFailures(allocator: std.mem.Allocator) !void {

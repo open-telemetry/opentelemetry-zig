@@ -317,7 +317,7 @@ pub fn Counter(comptime T: type) type {
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .pre_sum = true,
-                .cardinality_limit = 2000,
+                .cardinality_limit = spec.default_cardinality_limit,
                 .aggregated_points = .empty,
                 .data_points = .empty,
                 .allocator = allocator,
@@ -574,7 +574,7 @@ pub fn Histogram(comptime T: type) type {
 
         pre_aggregate: bool = false,
         mode: Mode = .explicit,
-        cardinality_limit: usize = 2000,
+        cardinality_limit: usize = spec.default_cardinality_limit,
 
         /// Keeps track of the raw recorded values for each set of attributes.
         /// Used when pre_aggregate is false (e.g. standalone instruments or custom pipelines).
@@ -1113,7 +1113,7 @@ pub fn Gauge(comptime T: type) type {
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .pre_last_value = true,
-                .cardinality_limit = 2000,
+                .cardinality_limit = spec.default_cardinality_limit,
                 .aggregated_points = .empty,
                 .data_points = .empty,
                 .allocator = allocator,
@@ -1280,7 +1280,10 @@ pub fn Gauge(comptime T: type) type {
                 return;
             }
 
-            // Cardinality limit:
+            // The spec requires creating the overflow series prior to reaching the cardinality limit,
+            // and does not say whether it counts towards the limit. Like the Go and Java SDKs, it does:
+            // at most `cardinality_limit - 1` regular series are kept, leaving the last slot to the overflow series.
+            // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#overflow-attribute
             if (self.cardinality_limit > 0 and self.aggregated_points.count() >= self.cardinality_limit - 1) {
                 if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
                     overflow_ptr.value = val;

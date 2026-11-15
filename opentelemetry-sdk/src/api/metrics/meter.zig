@@ -200,7 +200,7 @@ pub const MeterProvider = struct {
             .exemplar_filter = if (self.sdk_disabled) .always_off else if (self.config) |cfg| cfg.metrics_config.exemplar_filter else .trace_based,
             .exemplar_sampler = .{ .allocator = self.allocator },
             .provider = self,
-            .cardinality_limit = if (self.config) |cfg| cfg.metrics_config.cardinality_limit else 2000,
+            .cardinality_limit = if (self.config) |cfg| cfg.metrics_config.cardinality_limit else spec.default_cardinality_limit,
         };
 
         const meter = try self.meters.getOrPutValue(self.allocator, scope, i);
@@ -436,7 +436,7 @@ pub const Meter = struct {
     exemplar_filter: exemplar.ExemplarFilter = .trace_based,
     exemplar_sampler: exemplar.Sampler = .{},
     provider: ?*MeterProvider = null,
-    cardinality_limit: usize = 2000,
+    cardinality_limit: usize = spec.default_cardinality_limit,
 
     mx: std.Io.Mutex = std.Io.Mutex.init,
 

@@ -485,52 +485,24 @@ pub fn Counter(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            const has_aggregated = self.aggregated_points.count() > 0;
-            const has_raw = self.data_points.items.len > 0;
+            // Both batches share one window, which only advances once the collection succeeds.
+            var agg_end_ns = self.collection_start_ns;
+            const agg_copied = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &agg_end_ns);
+            defer allocator.free(agg_copied);
+            errdefer for (agg_copied) |*p| p.deinit(allocator);
+            var raw_end_ns = self.collection_start_ns;
+            const raw_copied = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &raw_end_ns);
+            defer allocator.free(raw_copied);
+            errdefer for (raw_copied) |*p| p.deinit(allocator);
+            const combined = try std.mem.concat(allocator, DataPoint(i64), &.{ agg_copied, raw_copied });
+            self.collection_start_ns = @max(agg_end_ns, raw_end_ns);
 
-            if (has_aggregated and !has_raw) {
-                defer {
-                    for (self.aggregated_points.values()) |*m| {
-                        m.deinit(self.allocator);
-                    }
-                    self.aggregated_points.clearRetainingCapacity();
-                }
-                return .{ .int = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns) };
-            } else if (!has_aggregated and has_raw) {
-                defer {
-                    for (self.data_points.items) |*m| {
-                        m.deinit(self.allocator);
-                    }
-                    self.data_points.clearRetainingCapacity();
-                }
-                return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-            } else if (has_aggregated and has_raw) {
-                const agg_copied = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns);
-                errdefer {
-                    for (agg_copied) |*p| p.deinit(allocator);
-                    allocator.free(agg_copied);
-                }
-                const raw_copied = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns);
-                errdefer {
-                    for (raw_copied) |*p| p.deinit(allocator);
-                    allocator.free(raw_copied);
-                }
-                const combined = try allocator.alloc(DataPoint(i64), agg_copied.len + raw_copied.len);
-                @memcpy(combined[0..agg_copied.len], agg_copied);
-                @memcpy(combined[agg_copied.len..], raw_copied);
-                allocator.free(agg_copied);
-                allocator.free(raw_copied);
+            for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
+            self.aggregated_points.clearRetainingCapacity();
+            for (self.data_points.items) |*m| m.deinit(self.allocator);
+            self.data_points.clearRetainingCapacity();
 
-                for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
-                self.aggregated_points.clearRetainingCapacity();
-
-                for (self.data_points.items) |*m| m.deinit(self.allocator);
-                self.data_points.clearRetainingCapacity();
-
-                return .{ .int = combined };
-            } else {
-                return .{ .int = try allocator.alloc(DataPoint(i64), 0) };
-            }
+            return .{ .int = combined };
         }
     };
 }
@@ -1372,52 +1344,24 @@ pub fn Gauge(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            const has_aggregated = self.aggregated_points.count() > 0;
-            const has_raw = self.data_points.items.len > 0;
+            // Both batches share one window, which only advances once the collection succeeds.
+            var agg_end_ns = self.collection_start_ns;
+            const agg_copied = try copyNormalizedPoints(AggType, AggType, allocator, self.io, self.aggregated_points.values(), &agg_end_ns);
+            defer allocator.free(agg_copied);
+            errdefer for (agg_copied) |*p| p.deinit(allocator);
+            var raw_end_ns = self.collection_start_ns;
+            const raw_copied = try copyNormalizedPoints(T, AggType, allocator, self.io, self.data_points.items, &raw_end_ns);
+            defer allocator.free(raw_copied);
+            errdefer for (raw_copied) |*p| p.deinit(allocator);
+            const combined = try std.mem.concat(allocator, DataPoint(AggType), &.{ agg_copied, raw_copied });
+            self.collection_start_ns = @max(agg_end_ns, raw_end_ns);
 
-            if (has_aggregated and !has_raw) {
-                defer {
-                    for (self.aggregated_points.values()) |*m| {
-                        m.deinit(self.allocator);
-                    }
-                    self.aggregated_points.clearRetainingCapacity();
-                }
-                return wrapData(try copyNormalizedPoints(AggType, AggType, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns));
-            } else if (!has_aggregated and has_raw) {
-                defer {
-                    for (self.data_points.items) |*m| {
-                        m.deinit(self.allocator);
-                    }
-                    self.data_points.clearRetainingCapacity();
-                }
-                return wrapData(try copyNormalizedPoints(T, AggType, allocator, self.io, self.data_points.items, &self.collection_start_ns));
-            } else if (has_aggregated and has_raw) {
-                const agg_copied = try copyNormalizedPoints(AggType, AggType, allocator, self.io, self.aggregated_points.values(), &self.collection_start_ns);
-                errdefer {
-                    for (agg_copied) |*p| p.deinit(allocator);
-                    allocator.free(agg_copied);
-                }
-                const raw_copied = try copyNormalizedPoints(T, AggType, allocator, self.io, self.data_points.items, &self.collection_start_ns);
-                errdefer {
-                    for (raw_copied) |*p| p.deinit(allocator);
-                    allocator.free(raw_copied);
-                }
-                const combined = try allocator.alloc(DataPoint(AggType), agg_copied.len + raw_copied.len);
-                @memcpy(combined[0..agg_copied.len], agg_copied);
-                @memcpy(combined[agg_copied.len..], raw_copied);
-                allocator.free(agg_copied);
-                allocator.free(raw_copied);
+            for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
+            self.aggregated_points.clearRetainingCapacity();
+            for (self.data_points.items) |*m| m.deinit(self.allocator);
+            self.data_points.clearRetainingCapacity();
 
-                for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
-                self.aggregated_points.clearRetainingCapacity();
-
-                for (self.data_points.items) |*m| m.deinit(self.allocator);
-                self.data_points.clearRetainingCapacity();
-
-                return wrapData(combined);
-            } else {
-                return wrapData(try allocator.alloc(DataPoint(AggType), 0));
-            }
+            return wrapData(combined);
         }
     };
 }
@@ -1826,6 +1770,23 @@ test "gauge setPreLastValue failed drain reverts to raw recording mode" {
     try std.testing.expectEqual(@as(usize, 0), gauge.data_points.items.len);
     try std.testing.expectEqual(@as(usize, 1), gauge.aggregated_points.count());
     try std.testing.expectEqual(@as(i64, 20), gauge.aggregated_points.values()[0].value);
+}
+
+test "gauge mixed aggregated and raw points share the collection start time" {
+    const io = std.testing.io;
+    var g = Gauge(i32).init(std.testing.allocator, io);
+    defer g.deinit();
+    g.collection_start_ns = 1;
+
+    try g.record(10, .{ "color", @as([]const u8, "red") });
+    g.setPreLastValue(false);
+    try g.record(20, .{ "color", @as([]const u8, "blue") });
+
+    var data = try g.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(2, data.int.len);
+    for (data.int) |point| try std.testing.expectEqual(1, point.timestamps.?.start_time_ns);
+    try std.testing.expectEqual(@max(data.int[0].timestamps.?.time_ns, data.int[1].timestamps.?.time_ns), g.collection_start_ns);
 }
 
 fn testGaugeAllocationFailures(allocator: std.mem.Allocator) !void {
@@ -2321,6 +2282,23 @@ fn testSwitchBackToSumAllocationFailures(allocator: std.mem.Allocator) !void {
 
 test "switching back to Sum handles allocation failures without leaks or double-frees" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testSwitchBackToSumAllocationFailures, .{});
+}
+
+test "counter mixed aggregated and raw points share the collection start time" {
+    const io = std.testing.io;
+    var c = Counter(u32).init(std.testing.allocator, io);
+    defer c.deinit();
+    c.collection_start_ns = 1;
+
+    try c.add(1, .{ "status", @as([]const u8, "200") });
+    c.setPreSum(false);
+    try c.add(2, .{ "status", @as([]const u8, "404") });
+
+    var data = try c.measurementsData(std.testing.allocator);
+    defer data.deinit(std.testing.allocator);
+    try std.testing.expectEqual(2, data.int.len);
+    for (data.int) |point| try std.testing.expectEqual(1, point.timestamps.?.start_time_ns);
+    try std.testing.expectEqual(@max(data.int[0].timestamps.?.time_ns, data.int[1].timestamps.?.time_ns), c.collection_start_ns);
 }
 
 test "switching back to Sum keeps the exemplars captured at record time" {

@@ -2127,6 +2127,59 @@ test "exemplar collection windows stay stable across delta cumulative and idle c
     };
 }
 
+test "counter with pre-summed and raw points keeps spec collection windows" {
+    const allocator = std.testing.allocator;
+    for ([_]bool{ false, true }) |cumulative| {
+        var meter = Meter{ .scope = .{ .name = "mixed-windows" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+        defer meter.deinit();
+        const counter = try meter.createCounter(u64, .{ .name = "requests" });
+        const temporal = try metrics_temporality.init(allocator);
+        defer temporal.deinit();
+        var initial_start: ?u64 = null;
+        var previous_end: ?u64 = null;
+        var total: i64 = 0;
+        for (0..3) |_| {
+            counter.setPreSum(true);
+            try counter.add(1, .{ "series", @as(u64, 1) });
+            counter.setPreSum(false);
+            try counter.add(2, .{ "series", @as(u64, 1) });
+            total += 3;
+            const data = try AggregatedMetrics.fetch(allocator, &meter, &.{}, null);
+            defer {
+                for (data) |*measurement| measurement.deinit(allocator);
+                allocator.free(data);
+            }
+            try temporal.process(&data[0], if (cumulative) view.TemporalityCumulative else view.TemporalityDelta);
+            try std.testing.expectEqual(@as(usize, 1), data[0].data.int.len);
+            const point = data[0].data.int[0];
+            try std.testing.expectEqual(if (cumulative) total else 3, point.value);
+            // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#metricreader
+            const timestamps = point.timestamps.?;
+            if (initial_start == null) initial_start = timestamps.start_time_ns;
+            if (cumulative) try std.testing.expectEqual(initial_start, timestamps.start_time_ns) else if (previous_end) |end| try std.testing.expectEqual(end, timestamps.start_time_ns.?);
+            previous_end = timestamps.time_ns;
+        }
+    }
+}
+
+test "gauge with pre-aggregated and raw points reports the last measurement" {
+    const allocator = std.testing.allocator;
+    var meter = Meter{ .scope = .{ .name = "mixed-last-value" }, .instruments = .empty, .allocator = allocator, .io = std.testing.io };
+    defer meter.deinit();
+    const gauge = try meter.createGauge(i64, .{ .name = "temperature" });
+    try gauge.record(10, .{ "room", @as(u64, 1) });
+    gauge.setPreLastValue(false);
+    try gauge.record(20, .{ "room", @as(u64, 1) });
+
+    const data = try AggregatedMetrics.fetch(allocator, &meter, &.{}, null);
+    defer {
+        for (data) |*measurement| measurement.deinit(allocator);
+        allocator.free(data);
+    }
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.int.len);
+    try std.testing.expectEqual(20, data[0].data.int[0].value);
+}
+
 test "exemplar disabling an instrument after recording preserves buffered ownership" {
     const aggregations = [_]view.Aggregation{ .{ .ExplicitBucketHistogram = .{} }, .{ .ExponentialBucketHistogram = try view.ExponentialBucketHistogramConfig.init(.{}) }, .Sum, .LastValue };
     for ([_]exemplar.ExemplarFilter{ .always_off, .always_on, .trace_based }) |filter| for (aggregations) |aggregation_type| {

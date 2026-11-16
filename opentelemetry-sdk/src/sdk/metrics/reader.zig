@@ -123,7 +123,7 @@ pub const MetricReader = struct {
             // Measurements can be ported to protobuf structs during OTLP export.
             var meters = mp.meters.valueIterator();
             while (meters.next()) |meter| {
-                const measurements = AggregatedMetrics.fetch(self.allocator, meter, mp.views.items, self.aggregation) catch |err| {
+                const measurements = AggregatedMetrics.fetchForReader(self.allocator, meter, mp.views.items, self.aggregation, self) catch |err| {
                     log.err("error aggregating data points from meter {s}: {}", .{ meter.scope.name, err });
                     continue;
                 };
@@ -1287,4 +1287,259 @@ test "exemplar cumulative histograms do not replay samples on idle collection" {
         try std.testing.expectEqual(@as(u64, 1), point.value.count);
         try std.testing.expectEqual(expected_samples, point.exemplars.len);
     }
+}
+
+fn counterExplicitHistogram(kind: Kind) view.Aggregation {
+    _ = kind;
+    return .{ .ExplicitBucketHistogram = .{
+        .buckets = &.{ 2.0, 5.0, 10.0 },
+        .record_min_max = true,
+    } };
+}
+
+test "metric reader counter aggregation selector explicit bucket histogram" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+
+    var metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+    metric_exporter.aggregation = counterExplicitHistogram;
+
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const m = try mp.getMeter(.{ .name = "histogram-counter-meter" });
+    var counter = try m.createCounter(u64, .{ .name = "my-counter" });
+
+    try counter.add(1, .{});
+    try counter.add(2, .{});
+    try counter.add(3, .{});
+
+    try reader.collect();
+
+    const data = try inMem.fetch(allocator);
+    defer {
+        for (data) |*d| {
+            d.*.deinit(allocator);
+        }
+        allocator.free(data);
+    }
+
+    try std.testing.expectEqual(1, data.len);
+    try std.testing.expectEqual(1, data[0].data.histogram.len);
+    const hdp = data[0].data.histogram[0].value;
+    try std.testing.expectEqual(3, hdp.count);
+    try std.testing.expectEqual(@as(?f64, 1.0), hdp.min);
+    try std.testing.expectEqual(@as(?f64, 3.0), hdp.max);
+    try std.testing.expectEqual(@as(?f64, 6.0), hdp.sum);
+}
+
+test "multiple metric readers collect independently from same counter without interference" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    // Reader 1: default Sum aggregation
+    var inMem1 = try InMemoryExporter.init(allocator, io);
+    defer inMem1.deinit();
+    const metric_exporter1 = try MetricExporter.new(allocator, io, &inMem1.exporter);
+    var reader1 = try MetricReader.init(allocator, io, metric_exporter1);
+    defer reader1.deinit();
+    try mp.addReader(reader1);
+
+    // Reader 2: ExplicitBucketHistogram aggregation
+    var inMem2 = try InMemoryExporter.init(allocator, io);
+    defer inMem2.deinit();
+    var metric_exporter2 = try MetricExporter.new(allocator, io, &inMem2.exporter);
+    metric_exporter2.aggregation = counterExplicitHistogram;
+    var reader2 = try MetricReader.init(allocator, io, metric_exporter2);
+    defer reader2.deinit();
+    try mp.addReader(reader2);
+
+    const m = try mp.getMeter(.{ .name = "multi-reader-meter" });
+    var counter = try m.createCounter(u64, .{ .name = "shared-counter" });
+
+    // Round 1
+    try counter.add(1, .{});
+    try counter.add(2, .{});
+    try counter.add(3, .{});
+
+    // Reader 1 collects: should receive Sum = 6
+    try reader1.collect();
+    const data1 = try inMem1.fetch(allocator);
+    defer {
+        for (data1) |*d| d.deinit(allocator);
+        allocator.free(data1);
+    }
+    try std.testing.expectEqual(1, data1.len);
+    try std.testing.expectEqual(6, data1[0].data.int[0].value);
+
+    // Reader 2 collects: should receive Histogram with count=3, min=1, max=3, sum=6
+    try reader2.collect();
+    const data2 = try inMem2.fetch(allocator);
+    defer {
+        for (data2) |*d| d.deinit(allocator);
+        allocator.free(data2);
+    }
+    try std.testing.expectEqual(1, data2.len);
+    const hdp = data2[0].data.histogram[0].value;
+    try std.testing.expectEqual(3, hdp.count);
+    try std.testing.expectEqual(@as(?f64, 1.0), hdp.min);
+    try std.testing.expectEqual(@as(?f64, 3.0), hdp.max);
+    try std.testing.expectEqual(@as(?f64, 6.0), hdp.sum);
+
+    // Round 2
+    try counter.add(10, .{});
+
+    // Reader 1 collects again: cumulative sum is 16
+    try reader1.collect();
+    const data1_r2 = try inMem1.fetch(allocator);
+    defer {
+        for (data1_r2) |*d| d.deinit(allocator);
+        allocator.free(data1_r2);
+    }
+    try std.testing.expectEqual(1, data1_r2.len);
+    try std.testing.expectEqual(16, data1_r2[0].data.int[0].value);
+
+    // Reader 2 collects again: cumulative histogram count=4, sum=16, min=1, max=10
+    try reader2.collect();
+    const data2_r2 = try inMem2.fetch(allocator);
+    defer {
+        for (data2_r2) |*d| d.deinit(allocator);
+        allocator.free(data2_r2);
+    }
+    try std.testing.expectEqual(1, data2_r2.len);
+    const hdp2 = data2_r2[0].data.histogram[0].value;
+    try std.testing.expectEqual(4, hdp2.count);
+    try std.testing.expectEqual(@as(?f64, 1.0), hdp2.min);
+    try std.testing.expectEqual(@as(?f64, 10.0), hdp2.max);
+    try std.testing.expectEqual(@as(?f64, 16.0), hdp2.sum);
+}
+
+test "multiple metric readers collect independently from same gauge without interference" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    var inMem1 = try InMemoryExporter.init(allocator, io);
+    defer inMem1.deinit();
+    const metric_exporter1 = try MetricExporter.new(allocator, io, &inMem1.exporter);
+    var reader1 = try MetricReader.init(allocator, io, metric_exporter1);
+    defer reader1.deinit();
+    try mp.addReader(reader1);
+
+    var inMem2 = try InMemoryExporter.init(allocator, io);
+    defer inMem2.deinit();
+    const metric_exporter2 = try MetricExporter.new(allocator, io, &inMem2.exporter);
+    var reader2 = try MetricReader.init(allocator, io, metric_exporter2);
+    defer reader2.deinit();
+    try mp.addReader(reader2);
+
+    const m = try mp.getMeter(.{ .name = "multi-reader-gauge-meter" });
+    var gauge = try m.createGauge(f64, .{ .name = "shared-gauge" });
+
+    // Initial records
+    try gauge.record(10.5, .{});
+    try gauge.record(20.5, .{});
+
+    // Reader 1 collects: gets 20.5
+    try reader1.collect();
+    const data1 = try inMem1.fetch(allocator);
+    defer {
+        for (data1) |*d| d.deinit(allocator);
+        allocator.free(data1);
+    }
+    try std.testing.expectEqual(1, data1.len);
+    try std.testing.expectEqual(20.5, data1[0].data.double[0].value);
+
+    // Reader 2 collects: also gets 20.5
+    try reader2.collect();
+    const data2 = try inMem2.fetch(allocator);
+    defer {
+        for (data2) |*d| d.deinit(allocator);
+        allocator.free(data2);
+    }
+    try std.testing.expectEqual(1, data2.len);
+    try std.testing.expectEqual(20.5, data2[0].data.double[0].value);
+
+    // Record next value
+    try gauge.record(35.0, .{});
+
+    // Reader 1 collects: gets 35.0
+    try reader1.collect();
+    const data1_r2 = try inMem1.fetch(allocator);
+    defer {
+        for (data1_r2) |*d| d.deinit(allocator);
+        allocator.free(data1_r2);
+    }
+    try std.testing.expectEqual(1, data1_r2.len);
+    try std.testing.expectEqual(35.0, data1_r2[0].data.double[0].value);
+
+    // Reader 2 collects: gets 35.0
+    try reader2.collect();
+    const data2_r2 = try inMem2.fetch(allocator);
+    defer {
+        for (data2_r2) |*d| d.deinit(allocator);
+        allocator.free(data2_r2);
+    }
+    try std.testing.expectEqual(1, data2_r2.len);
+    try std.testing.expectEqual(35.0, data2_r2[0].data.double[0].value);
+}
+
+test "multiple metric readers collect independently from same histogram without interference" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    var inMem1 = try InMemoryExporter.init(allocator, io);
+    defer inMem1.deinit();
+    const metric_exporter1 = try MetricExporter.new(allocator, io, &inMem1.exporter);
+    var reader1 = try MetricReader.init(allocator, io, metric_exporter1);
+    defer reader1.deinit();
+    try mp.addReader(reader1);
+
+    var inMem2 = try InMemoryExporter.init(allocator, io);
+    defer inMem2.deinit();
+    const metric_exporter2 = try MetricExporter.new(allocator, io, &inMem2.exporter);
+    var reader2 = try MetricReader.init(allocator, io, metric_exporter2);
+    defer reader2.deinit();
+    try mp.addReader(reader2);
+
+    const m = try mp.getMeter(.{ .name = "multi-reader-hist-meter" });
+    var hist = try m.createHistogram(f64, .{ .name = "shared-histogram" });
+
+    try hist.record(5.0, .{});
+    try hist.record(15.0, .{});
+
+    try reader1.collect();
+    const data1 = try inMem1.fetch(allocator);
+    defer {
+        for (data1) |*d| d.deinit(allocator);
+        allocator.free(data1);
+    }
+    try std.testing.expectEqual(1, data1.len);
+    try std.testing.expectEqual(2, data1[0].data.histogram[0].value.count);
+    try std.testing.expectEqual(20.0, data1[0].data.histogram[0].value.sum.?);
+
+    try reader2.collect();
+    const data2 = try inMem2.fetch(allocator);
+    defer {
+        for (data2) |*d| d.deinit(allocator);
+        allocator.free(data2);
+    }
+    try std.testing.expectEqual(1, data2.len);
+    try std.testing.expectEqual(2, data2[0].data.histogram[0].value.count);
+    try std.testing.expectEqual(20.0, data2[0].data.histogram[0].value.sum.?);
 }

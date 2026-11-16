@@ -9,6 +9,7 @@ const DataPoint = @import("measurement.zig").DataPoint;
 const HistogramDataPoint = @import("measurement.zig").HistogramDataPoint;
 const aggregation = @import("../../sdk/metrics/aggregation.zig");
 const ExponentialHistogramDataPoint = aggregation.ExponentialHistogramDataPoint;
+const view = @import("../../sdk/metrics/view.zig");
 
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 
@@ -238,12 +239,22 @@ pub const Instrument = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn getInstrumentsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
+    pub fn getInstrumentsDataForReader(self: Self, allocator: std.mem.Allocator, reader: ?*const anyopaque) !MeasurementsData {
         switch (self.data) {
-            inline else => |i| {
+            inline .ObservableCounter,
+            .ObservableUpDownCounter,
+            .ObservableGauge,
+            => |i| {
                 return i.measurementsData(allocator);
             },
+            inline else => |i| {
+                return i.measurementsDataForReader(allocator, reader);
+            },
         }
+    }
+
+    pub fn getInstrumentsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
+        return self.getInstrumentsDataForReader(allocator, null);
     }
 };
 
@@ -295,6 +306,36 @@ fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: std.m
 pub fn Counter(comptime T: type) type {
     return struct {
         const Self = @This();
+
+        pub const Pipeline = struct {
+            pre_sum: bool = true,
+            collection_start_ns: u64 = 0,
+            aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true) = .empty,
+            data_points: std.ArrayListUnmanaged(DataPoint(T)) = .empty,
+
+            pub fn init(allocator: std.mem.Allocator, io: std.Io, pre_sum: bool) Pipeline {
+                _ = allocator;
+                return .{
+                    .pre_sum = pre_sum,
+                    .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
+                    .aggregated_points = .empty,
+                    .data_points = .empty,
+                };
+            }
+
+            pub fn deinit(self: *Pipeline, allocator: std.mem.Allocator) void {
+                for (self.aggregated_points.values()) |*m| {
+                    m.deinit(allocator);
+                }
+                self.aggregated_points.deinit(allocator);
+
+                for (self.data_points.items) |*m| {
+                    m.deinit(allocator);
+                }
+                self.data_points.deinit(allocator);
+            }
+        };
+
         allocator: std.mem.Allocator,
         io: std.Io,
         lock: std.Io.Mutex,
@@ -309,6 +350,8 @@ pub fn Counter(comptime T: type) type {
         /// Raw data points kept as fallback when any reader or view resolves to non-Sum (e.g. LastValue, Histogram, Drop).
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
+        reader_pipelines: std.AutoArrayHashMapUnmanaged(?*const anyopaque, Pipeline) = .empty,
+
         const overflow_attrs = [_]Attribute{
             .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
         };
@@ -320,6 +363,7 @@ pub fn Counter(comptime T: type) type {
                 .cardinality_limit = spec.default_cardinality_limit,
                 .aggregated_points = .empty,
                 .data_points = .empty,
+                .reader_pipelines = .empty,
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
@@ -337,6 +381,11 @@ pub fn Counter(comptime T: type) type {
                 m.deinit(self.allocator);
             }
             self.data_points.deinit(self.allocator);
+
+            for (self.reader_pipelines.values()) |*p| {
+                p.deinit(self.allocator);
+            }
+            self.reader_pipelines.deinit(self.allocator);
         }
 
         /// Fold `dp` into the pre-aggregated series.
@@ -441,21 +490,155 @@ pub fn Counter(comptime T: type) type {
             }
         }
 
-        /// Add the given delta to the counter, using the provided attributes.
-        pub fn add(self: *Self, delta: T, attributes: anytype) !void {
+        fn recordSumToStorage(
+            self: *Self,
+            aggregated_points: *std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true),
+            data_points: *std.ArrayListUnmanaged(DataPoint(T)),
+            pre_sum: bool,
+            delta: T,
+            attributes: ?[]Attribute,
+            candidate: ?exemplar.Exemplar,
+        ) !void {
+            if (!pre_sum) {
+                const attrs_owned = (attributes != null and candidate != null);
+                var dp = DataPoint(T){
+                    .value = delta,
+                    .attributes = if (attributes) |attrs|
+                        if (candidate != null)
+                            try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
+                        else
+                            try self.allocator.dupe(Attribute, attrs)
+                    else
+                        null,
+                    .attributes_owned = attrs_owned,
+                };
+                errdefer dp.deinit(self.allocator);
+                if (candidate) |cand| {
+                    dp.exemplar_candidate = try cand.deepCopy(self.allocator);
+                }
+                try data_points.append(self.allocator, dp);
+                return;
+            }
+
+            const val: i64 = @intCast(delta);
+            const key = Attributes.with(attributes);
+            if (aggregated_points.getPtr(key)) |existing| {
+                existing.value += val;
+                if (candidate) |cand| {
+                    if (existing.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                    existing.exemplar_candidate = try cand.deepCopy(self.allocator);
+                    try existing.ownAttributes(self.allocator);
+                }
+                return;
+            }
+
+            if (self.cardinality_limit > 0 and aggregated_points.count() >= self.cardinality_limit - 1) {
+                if (aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
+                    overflow_ptr.value += val;
+                    if (candidate) |cand| {
+                        if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                        overflow_ptr.exemplar_candidate = try cand.deepCopy(self.allocator);
+                    }
+                    return;
+                }
+
+                log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                const overflow_slice = try self.allocator.dupe(Attribute, &overflow_attrs);
+                var overflow_dp = DataPoint(i64){
+                    .value = val,
+                    .attributes = overflow_slice,
+                    .attributes_owned = false,
+                };
+                var overflow_stored = false;
+                defer if (!overflow_stored) overflow_dp.deinit(self.allocator);
+
+                if (candidate) |cand| {
+                    overflow_dp.exemplar_candidate = try cand.deepCopy(self.allocator);
+                }
+
+                try aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
+                overflow_stored = true;
+                return;
+            }
+
+            const attrs_owned = (attributes != null and candidate != null);
+            const owned_attrs = if (attributes) |attrs|
+                if (candidate != null)
+                    try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
+                else
+                    try self.allocator.dupe(Attribute, attrs)
+            else
+                null;
+            var dp_i64 = DataPoint(i64){
+                .value = val,
+                .attributes = owned_attrs,
+                .attributes_owned = attrs_owned,
+            };
+            var stored = false;
+            defer if (!stored) dp_i64.deinit(self.allocator);
+
+            if (candidate) |cand| {
+                dp_i64.exemplar_candidate = try cand.deepCopy(self.allocator);
+            }
+
+            try aggregated_points.put(self.allocator, Attributes.with(owned_attrs), dp_i64);
+            stored = true;
+        }
+
+        pub fn setPipelineAggregation(self: *Self, reader: ?*const anyopaque, agg: view.Aggregation) !void {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            if (self.pre_sum) {
-                var dp = try DataPoint(T).new(self.allocator, delta, attributes);
-                defer dp.deinit(self.allocator);
-                try self.recordSumPoint(&dp, true);
-            } else {
-                var dp = try DataPoint(T).new(self.allocator, delta, attributes);
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
+            const is_sum = (agg == .Sum);
+            const r = reader orelse {
+                self.pre_sum = is_sum;
+                return;
+            };
+
+            // If this is the first concrete reader and points exist in default storage, migrate them
+            if (self.reader_pipelines.count() == 0 and (self.aggregated_points.count() > 0 or self.data_points.items.len > 0)) {
+                const p = Pipeline{
+                    .pre_sum = is_sum,
+                    .collection_start_ns = self.collection_start_ns,
+                    .aggregated_points = self.aggregated_points,
+                    .data_points = self.data_points,
+                };
+                self.aggregated_points = .empty;
+                self.data_points = .empty;
+                try self.reader_pipelines.put(self.allocator, r, p);
+                return;
             }
+
+            const gop = try self.reader_pipelines.getOrPut(self.allocator, r);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = Pipeline.init(self.allocator, self.io, is_sum);
+            } else {
+                gop.value_ptr.pre_sum = is_sum;
+            }
+        }
+
+        pub fn removePipeline(self: *Self, reader: ?*const anyopaque) void {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            const r = reader orelse return;
+            if (self.reader_pipelines.fetchSwapRemove(r)) |kv| {
+                var p = kv.value;
+                p.deinit(self.allocator);
+            }
+        }
+
+        /// Add the given delta to the counter, using the provided attributes.
+        pub fn add(self: *Self, delta: T, attributes: anytype) !void {
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
+            }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.addWithSlice(delta, attrs);
         }
 
         /// Add the given delta to the counter with a pre-built attribute slice.
@@ -464,45 +647,68 @@ pub fn Counter(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            var dp = DataPoint(T){
-                .value = delta,
-                .attributes = if (attributes) |attrs|
-                    try self.allocator.dupe(Attribute, attrs)
-                else
-                    null,
-            };
-            if (self.pre_sum) {
-                defer dp.deinit(self.allocator);
-                try self.recordSumPoint(&dp, true);
+            var candidate: ?exemplar.Exemplar = null;
+            defer if (candidate) |*c| c.deinit(self.allocator);
+            if (self.exemplar_filter != .always_off) {
+                candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, delta, attributes, self.exemplar_filter);
+            }
+
+            if (self.reader_pipelines.count() == 0) {
+                try self.recordSumToStorage(&self.aggregated_points, &self.data_points, self.pre_sum, delta, attributes, candidate);
             } else {
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
+                for (self.reader_pipelines.values()) |*p| {
+                    try self.recordSumToStorage(&p.aggregated_points, &p.data_points, p.pre_sum, delta, attributes, candidate);
+                }
             }
         }
 
-        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            // Both batches share one window, which only advances once the collection succeeds.
-            var agg_end_ns = self.collection_start_ns;
-            const agg_copied = try copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), &agg_end_ns);
+        fn collectPointsFrom(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            aggregated_points: *std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true),
+            data_points: *std.ArrayListUnmanaged(DataPoint(T)),
+            collection_start_ns: *u64,
+        ) !MeasurementsData {
+            var agg_end_ns = collection_start_ns.*;
+            const agg_copied = try copyNormalizedPoints(i64, i64, allocator, self.io, aggregated_points.values(), &agg_end_ns);
             defer allocator.free(agg_copied);
             errdefer for (agg_copied) |*p| p.deinit(allocator);
-            var raw_end_ns = self.collection_start_ns;
-            const raw_copied = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &raw_end_ns);
+            var raw_end_ns = collection_start_ns.*;
+            const raw_copied = try copyNormalizedPoints(T, i64, allocator, self.io, data_points.items, &raw_end_ns);
             defer allocator.free(raw_copied);
             errdefer for (raw_copied) |*p| p.deinit(allocator);
             const combined = try std.mem.concat(allocator, DataPoint(i64), &.{ agg_copied, raw_copied });
-            self.collection_start_ns = @max(agg_end_ns, raw_end_ns);
+            collection_start_ns.* = @max(agg_end_ns, raw_end_ns);
 
-            for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
-            self.aggregated_points.clearRetainingCapacity();
-            for (self.data_points.items) |*m| m.deinit(self.allocator);
-            self.data_points.clearRetainingCapacity();
+            for (aggregated_points.values()) |*m| m.deinit(self.allocator);
+            aggregated_points.clearRetainingCapacity();
+            for (data_points.items) |*m| m.deinit(self.allocator);
+            data_points.clearRetainingCapacity();
 
             return .{ .int = combined };
+        }
+
+        pub fn measurementsDataForReader(self: *Self, allocator: std.mem.Allocator, reader: ?*const anyopaque) !MeasurementsData {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            var p_ptr: ?*Pipeline = null;
+            if (reader) |r| {
+                p_ptr = self.reader_pipelines.getPtr(r);
+            }
+            if (p_ptr == null and reader == null and self.reader_pipelines.count() > 0) {
+                p_ptr = &self.reader_pipelines.values()[0];
+            }
+
+            if (p_ptr) |p| {
+                return self.collectPointsFrom(allocator, &p.aggregated_points, &p.data_points, &p.collection_start_ns);
+            }
+
+            return self.collectPointsFrom(allocator, &self.aggregated_points, &self.data_points, &self.collection_start_ns);
+        }
+
+        pub fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
+            return self.measurementsDataForReader(allocator, null);
         }
     };
 }
@@ -566,6 +772,42 @@ pub fn Histogram(comptime T: type) type {
             }
         };
 
+        pub const Pipeline = struct {
+            mode: Mode = .explicit,
+            buckets: []const f64 = spec.default_histogram_explicit_bucket_boundaries,
+            record_min_max: bool = true,
+            record_sum: bool = true,
+            max_scale: i32 = 20,
+            max_size: u32 = 1024,
+            pre_aggregate: bool = true,
+            collection_start_ns: u64 = 0,
+            data_points: std.ArrayListUnmanaged(DataPoint(T)) = .empty,
+            explicit_points: std.ArrayHashMapUnmanaged(Attributes, ExplicitState, Attributes.ArrayHashContext, true) = .empty,
+            exponential_points: std.ArrayHashMapUnmanaged(Attributes, ExponentialState, Attributes.ArrayHashContext, true) = .empty,
+
+            pub fn init(allocator: std.mem.Allocator, io: std.Io) Pipeline {
+                _ = allocator;
+                return .{
+                    .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
+                    .data_points = .empty,
+                    .explicit_points = .empty,
+                    .exponential_points = .empty,
+                    .pre_aggregate = true,
+                };
+            }
+
+            pub fn deinit(self: *Pipeline, allocator: std.mem.Allocator) void {
+                for (self.data_points.items) |*m| m.deinit(allocator);
+                self.data_points.deinit(allocator);
+
+                for (self.explicit_points.values()) |*val| val.deinit(allocator);
+                self.explicit_points.deinit(allocator);
+
+                for (self.exponential_points.values()) |*val| val.deinit(allocator);
+                self.exponential_points.deinit(allocator);
+            }
+        };
+
         allocator: std.mem.Allocator,
         io: std.Io,
         lock: std.Io.Mutex,
@@ -605,6 +847,8 @@ pub fn Histogram(comptime T: type) type {
             true,
         ),
 
+        reader_pipelines: std.AutoArrayHashMapUnmanaged(?*const anyopaque, Pipeline) = .empty,
+
         const overflow_attrs = [_]Attribute{
             .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
         };
@@ -619,6 +863,7 @@ pub fn Histogram(comptime T: type) type {
                 .data_points = .empty,
                 .explicit_points = .empty,
                 .exponential_points = .empty,
+                .reader_pipelines = .empty,
                 .pre_aggregate = false,
             };
         }
@@ -638,20 +883,25 @@ pub fn Histogram(comptime T: type) type {
                 val.deinit(self.allocator);
             }
             self.exponential_points.deinit(self.allocator);
+
+            for (self.reader_pipelines.values()) |*p| {
+                p.deinit(self.allocator);
+            }
+            self.reader_pipelines.deinit(self.allocator);
         }
 
-        fn updateExplicitPoint(self: *Self, state: *ExplicitState, f64_val: f64, candidate: *?exemplar.Exemplar) void {
+        fn updateExplicitPointIn(self: *Self, state: *ExplicitState, f64_val: f64, candidate: *?exemplar.Exemplar, buckets: []const f64, record_min_max: bool, record_sum: bool) void {
             const dp = &state.data;
-            if (self.record_sum) {
+            if (record_sum) {
                 dp.value.sum = (dp.value.sum orelse 0) + f64_val;
             }
             dp.value.count += 1;
-            if (self.record_min_max) {
+            if (record_min_max) {
                 dp.value.min = if (dp.value.min) |curr| @min(curr, f64_val) else f64_val;
                 dp.value.max = if (dp.value.max) |curr| @max(curr, f64_val) else f64_val;
             }
-            var bucket_index = self.buckets.len;
-            for (self.buckets, 0..) |boundary, i| {
+            var bucket_index = buckets.len;
+            for (buckets, 0..) |boundary, i| {
                 if (f64_val <= boundary) {
                     bucket_index = i;
                     break;
@@ -665,12 +915,25 @@ pub fn Histogram(comptime T: type) type {
             }
         }
 
-        fn insertExplicitPoint(self: *Self, attributes: ?[]const Attribute, f64_val: f64, candidate: *?exemplar.Exemplar) !void {
-            var bucket_counts: ?[]u64 = try self.allocator.alloc(u64, self.buckets.len + 1);
+        fn updateExplicitPoint(self: *Self, state: *ExplicitState, f64_val: f64, candidate: *?exemplar.Exemplar) void {
+            self.updateExplicitPointIn(state, f64_val, candidate, self.buckets, self.record_min_max, self.record_sum);
+        }
+
+        fn insertExplicitPointIn(
+            self: *Self,
+            explicit_points: *std.ArrayHashMapUnmanaged(Attributes, ExplicitState, Attributes.ArrayHashContext, true),
+            attributes: ?[]const Attribute,
+            f64_val: f64,
+            candidate: *?exemplar.Exemplar,
+            buckets: []const f64,
+            record_min_max: bool,
+            record_sum: bool,
+        ) !void {
+            var bucket_counts: ?[]u64 = try self.allocator.alloc(u64, buckets.len + 1);
             defer if (bucket_counts) |b| self.allocator.free(b);
             @memset(bucket_counts.?, 0);
 
-            var bucket_exemplars: ?[]?exemplar.Exemplar = try self.allocator.alloc(?exemplar.Exemplar, self.buckets.len + 1);
+            var bucket_exemplars: ?[]?exemplar.Exemplar = try self.allocator.alloc(?exemplar.Exemplar, buckets.len + 1);
             defer if (bucket_exemplars) |slots| {
                 for (slots) |*slot| {
                     if (slot.*) |*sample| sample.deinit(self.allocator);
@@ -679,8 +942,8 @@ pub fn Histogram(comptime T: type) type {
             };
             @memset(bucket_exemplars.?, null);
 
-            var bucket_index = self.buckets.len;
-            for (self.buckets, 0..) |boundary, i| {
+            var bucket_index = buckets.len;
+            for (buckets, 0..) |boundary, i| {
                 if (f64_val <= boundary) {
                     bucket_index = i;
                     break;
@@ -708,12 +971,12 @@ pub fn Histogram(comptime T: type) type {
             var state = ExplicitState{
                 .data = DataPoint(HistogramDataPoint){
                     .value = HistogramDataPoint{
-                        .explicit_bounds = self.buckets,
+                        .explicit_bounds = buckets,
                         .bucket_counts = bucket_counts.?,
-                        .sum = if (self.record_sum) f64_val else null,
+                        .sum = if (record_sum) f64_val else null,
                         .count = 1,
-                        .min = if (self.record_min_max) f64_val else null,
-                        .max = if (self.record_min_max) f64_val else null,
+                        .min = if (record_min_max) f64_val else null,
+                        .max = if (record_min_max) f64_val else null,
                     },
                     .attributes = owned_attrs,
                     .attributes_owned = (owned_attrs != null),
@@ -727,14 +990,28 @@ pub fn Histogram(comptime T: type) type {
             var state_stored = false;
             defer if (!state_stored) state.deinit(self.allocator);
 
-            try self.explicit_points.put(self.allocator, Attributes.with(state.data.attributes), state);
+            try explicit_points.put(self.allocator, Attributes.with(state.data.attributes), state);
             state_stored = true;
         }
 
-        fn insertExponentialPoint(self: *Self, attributes: ?[]const Attribute, f64_val: f64, candidate: *?exemplar.Exemplar) !void {
-            var exp_state: ?aggregation.ExponentialHistogramState = aggregation.ExponentialHistogramState.init(self.allocator, self.max_scale);
+        fn insertExplicitPoint(self: *Self, attributes: ?[]const Attribute, f64_val: f64, candidate: *?exemplar.Exemplar) !void {
+            try self.insertExplicitPointIn(&self.explicit_points, attributes, f64_val, candidate, self.buckets, self.record_min_max, self.record_sum);
+        }
+
+        fn insertExponentialPointIn(
+            self: *Self,
+            exponential_points: *std.ArrayHashMapUnmanaged(Attributes, ExponentialState, Attributes.ArrayHashContext, true),
+            attributes: ?[]const Attribute,
+            f64_val: f64,
+            candidate: *?exemplar.Exemplar,
+            max_scale: i32,
+            max_size: u32,
+            record_min_max: bool,
+            record_sum: bool,
+        ) !void {
+            var exp_state: ?aggregation.ExponentialHistogramState = aggregation.ExponentialHistogramState.init(self.allocator, max_scale);
             defer if (exp_state) |*s| s.deinit(self.allocator);
-            try exp_state.?.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
+            try exp_state.?.addValue(self.allocator, f64_val, max_size, record_min_max, record_sum);
 
             var owned_attrs = if (attributes) |attrs|
                 try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
@@ -761,31 +1038,192 @@ pub fn Histogram(comptime T: type) type {
             var state_stored = false;
             defer if (!state_stored) state.deinit(self.allocator);
 
-            try self.exponential_points.put(self.allocator, Attributes.with(state.attributes), state);
+            try exponential_points.put(self.allocator, Attributes.with(state.attributes), state);
             state_stored = true;
+        }
+
+        fn insertExponentialPoint(self: *Self, attributes: ?[]const Attribute, f64_val: f64, candidate: *?exemplar.Exemplar) !void {
+            try self.insertExponentialPointIn(&self.exponential_points, attributes, f64_val, candidate, self.max_scale, self.max_size, self.record_min_max, self.record_sum);
+        }
+
+        fn recordToPipelineStorage(
+            self: *Self,
+            explicit_points: *std.ArrayHashMapUnmanaged(Attributes, ExplicitState, Attributes.ArrayHashContext, true),
+            exponential_points: *std.ArrayHashMapUnmanaged(Attributes, ExponentialState, Attributes.ArrayHashContext, true),
+            data_points: *std.ArrayListUnmanaged(DataPoint(T)),
+            pre_aggregate: bool,
+            mode: Mode,
+            buckets: []const f64,
+            record_min_max: bool,
+            record_sum: bool,
+            max_scale: i32,
+            max_size: u32,
+            value: T,
+            attributes: ?[]Attribute,
+            candidate: ?exemplar.Exemplar,
+        ) !void {
+            if (!pre_aggregate) {
+                const attrs_owned = (attributes != null and candidate != null);
+                var dp = DataPoint(T){
+                    .value = value,
+                    .attributes = if (attributes) |attrs|
+                        if (candidate != null)
+                            try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
+                        else
+                            try self.allocator.dupe(Attribute, attrs)
+                    else
+                        null,
+                    .attributes_owned = attrs_owned,
+                };
+                errdefer dp.deinit(self.allocator);
+                if (candidate) |cand| {
+                    dp.exemplar_candidate = try cand.deepCopy(self.allocator);
+                }
+                try data_points.append(self.allocator, dp);
+                return;
+            }
+
+            const f64_val = toF64(value);
+            const key = Attributes.with(attributes);
+
+            var cand_copy = if (candidate) |cand| try cand.deepCopy(self.allocator) else null;
+            defer if (cand_copy) |*c| c.deinit(self.allocator);
+
+            switch (mode) {
+                .explicit => {
+                    if (explicit_points.getPtr(key)) |state_ptr| {
+                        self.updateExplicitPointIn(state_ptr, f64_val, &cand_copy, buckets, record_min_max, record_sum);
+                        return;
+                    }
+
+                    if (self.cardinality_limit > 0 and explicit_points.count() >= self.cardinality_limit - 1) {
+                        if (explicit_points.getPtr(overflow_key)) |overflow_ptr| {
+                            self.updateExplicitPointIn(overflow_ptr, f64_val, &cand_copy, buckets, record_min_max, record_sum);
+                            return;
+                        }
+
+                        log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                        try self.insertExplicitPointIn(explicit_points, &overflow_attrs, f64_val, &cand_copy, buckets, record_min_max, record_sum);
+                        return;
+                    }
+
+                    try self.insertExplicitPointIn(explicit_points, attributes, f64_val, &cand_copy, buckets, record_min_max, record_sum);
+                },
+                .exponential => {
+                    if (exponential_points.getPtr(key)) |state_ptr| {
+                        try state_ptr.state.addValue(self.allocator, f64_val, max_size, record_min_max, record_sum);
+                        if (cand_copy) |sample| {
+                            if (state_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                            state_ptr.exemplar_candidate = sample;
+                            cand_copy = null;
+                        }
+                        return;
+                    }
+
+                    if (self.cardinality_limit > 0 and exponential_points.count() >= self.cardinality_limit - 1) {
+                        if (exponential_points.getPtr(overflow_key)) |overflow_ptr| {
+                            try overflow_ptr.state.addValue(self.allocator, f64_val, max_size, record_min_max, record_sum);
+                            if (cand_copy) |sample| {
+                                if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                                overflow_ptr.exemplar_candidate = sample;
+                                cand_copy = null;
+                            }
+                            return;
+                        }
+
+                        log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                        try self.insertExponentialPointIn(exponential_points, &overflow_attrs, f64_val, &cand_copy, max_scale, max_size, record_min_max, record_sum);
+                        return;
+                    }
+
+                    try self.insertExponentialPointIn(exponential_points, attributes, f64_val, &cand_copy, max_scale, max_size, record_min_max, record_sum);
+                },
+            }
+        }
+
+        pub fn setPipelineAggregation(self: *Self, reader: ?*const anyopaque, agg: view.Aggregation) !void {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            const r = reader orelse return;
+
+            // If this is the first concrete reader and points exist in default storage, migrate them
+            if (self.reader_pipelines.count() == 0 and (self.explicit_points.count() > 0 or self.exponential_points.count() > 0 or self.data_points.items.len > 0)) {
+                var p = Pipeline{
+                    .mode = self.mode,
+                    .buckets = self.buckets,
+                    .record_min_max = self.record_min_max,
+                    .record_sum = self.record_sum,
+                    .max_scale = self.max_scale,
+                    .max_size = self.max_size,
+                    .pre_aggregate = self.pre_aggregate,
+                    .collection_start_ns = self.collection_start_ns,
+                    .data_points = self.data_points,
+                    .explicit_points = self.explicit_points,
+                    .exponential_points = self.exponential_points,
+                };
+                self.explicit_points = .empty;
+                self.exponential_points = .empty;
+                self.data_points = .empty;
+                self.configurePipeline(&p, agg);
+                try self.reader_pipelines.put(self.allocator, r, p);
+                return;
+            }
+
+            const gop = try self.reader_pipelines.getOrPut(self.allocator, r);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = Pipeline.init(self.allocator, self.io);
+            }
+            self.configurePipeline(gop.value_ptr, agg);
+        }
+
+        fn configurePipeline(self: *Self, p: *Pipeline, agg: view.Aggregation) void {
+            _ = self;
+            switch (agg) {
+                .ExplicitBucketHistogram => |conf| {
+                    p.mode = .explicit;
+                    p.buckets = conf.buckets;
+                    p.record_min_max = conf.record_min_max;
+                    p.pre_aggregate = true;
+                },
+                .ExponentialBucketHistogram => |conf| {
+                    p.mode = .exponential;
+                    p.max_scale = conf.max_scale;
+                    p.max_size = conf.max_size;
+                    p.record_min_max = conf.record_min_max;
+                    p.pre_aggregate = true;
+                },
+                .Drop => {
+                    p.pre_aggregate = false;
+                },
+                else => {
+                    p.pre_aggregate = false;
+                },
+            }
+        }
+
+        pub fn removePipeline(self: *Self, reader: ?*const anyopaque) void {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            const r = reader orelse return;
+            if (self.reader_pipelines.fetchSwapRemove(r)) |kv| {
+                var p = kv.value;
+                p.deinit(self.allocator);
+            }
         }
 
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
-            if (self.pre_aggregate) {
-                const ArgsType = @TypeOf(attributes);
-                const args_type_info = @typeInfo(ArgsType);
-                if (args_type_info != .@"struct") {
-                    @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
-                }
-                const count = args_type_info.@"struct".field_names.len / 2;
-                var stack_buf: [count]Attribute = undefined;
-                const attrs = Attributes.fromBuffer(&stack_buf, attributes);
-                return self.recordWithSlice(value, attrs);
-            } else {
-                self.lock.lockUncancelable(self.io);
-                defer self.lock.unlock(self.io);
-
-                var dp = try DataPoint(T).new(self.allocator, value, attributes);
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
             }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.recordWithSlice(value, attrs);
         }
 
         /// Record a value with a pre-built attribute slice.
@@ -794,86 +1232,43 @@ pub fn Histogram(comptime T: type) type {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            if (!self.pre_aggregate) {
-                var dp = DataPoint(T){
-                    .value = value,
-                    .attributes = if (attributes) |attrs|
-                        try self.allocator.dupe(Attribute, attrs)
-                    else
-                        null,
-                };
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
-                return;
-            }
-
-            const f64_val = toF64(value);
-
             var candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, value, attributes, self.exemplar_filter);
             defer if (candidate) |*s| s.deinit(self.allocator);
 
-            const key = Attributes.with(attributes);
-
-            switch (self.mode) {
-                .explicit => {
-                    // An existing time-series matching this attribute set is always updated in place
-                    // regardless of cardinality limits, because the limit restricts the number of distinct
-                    // series, not the number of measurements per series.
-                    if (self.explicit_points.getPtr(key)) |state_ptr| {
-                        self.updateExplicitPoint(state_ptr, f64_val, &candidate);
-                        return;
-                    }
-
-                    // For new attribute sets, check whether the cardinality limit has been reached.
-                    // When at capacity, divert all excess series into the reserved overflow series.
-                    if (self.cardinality_limit > 0 and self.explicit_points.count() >= self.cardinality_limit - 1) {
-                        if (self.explicit_points.getPtr(overflow_key)) |overflow_ptr| {
-                            self.updateExplicitPoint(overflow_ptr, f64_val, &candidate);
-                            return;
-                        }
-
-                        log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
-                        try self.insertExplicitPoint(&overflow_attrs, f64_val, &candidate);
-                        return;
-                    }
-
-                    try self.insertExplicitPoint(attributes, f64_val, &candidate);
-                },
-                .exponential => {
-                    // An existing time-series matching this attribute set is always updated in place
-                    // regardless of cardinality limits, because the limit restricts the number of distinct
-                    // series, not the number of measurements per series.
-                    if (self.exponential_points.getPtr(key)) |state_ptr| {
-                        try state_ptr.state.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
-                        if (candidate) |sample| {
-                            if (state_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
-                            state_ptr.exemplar_candidate = sample;
-                            candidate = null;
-                        }
-                        return;
-                    }
-
-                    // For new attribute sets, check whether the cardinality limit has been reached.
-                    // When at capacity, divert all excess series into the reserved overflow series.
-                    if (self.cardinality_limit > 0 and self.exponential_points.count() >= self.cardinality_limit - 1) {
-                        if (self.exponential_points.getPtr(overflow_key)) |overflow_ptr| {
-                            try overflow_ptr.state.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
-                            if (candidate) |sample| {
-                                if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
-                                overflow_ptr.exemplar_candidate = sample;
-                                candidate = null;
-                            }
-                            return;
-                        }
-
-                        log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
-                        try self.insertExponentialPoint(&overflow_attrs, f64_val, &candidate);
-                        return;
-                    }
-
-                    try self.insertExponentialPoint(attributes, f64_val, &candidate);
-                },
+            if (self.reader_pipelines.count() == 0) {
+                try self.recordToPipelineStorage(
+                    &self.explicit_points,
+                    &self.exponential_points,
+                    &self.data_points,
+                    self.pre_aggregate,
+                    self.mode,
+                    self.buckets,
+                    self.record_min_max,
+                    self.record_sum,
+                    self.max_scale,
+                    self.max_size,
+                    value,
+                    attributes,
+                    candidate,
+                );
+            } else {
+                for (self.reader_pipelines.values()) |*p| {
+                    try self.recordToPipelineStorage(
+                        &p.explicit_points,
+                        &p.exponential_points,
+                        &p.data_points,
+                        p.pre_aggregate,
+                        p.mode,
+                        p.buckets,
+                        p.record_min_max,
+                        p.record_sum,
+                        p.max_scale,
+                        p.max_size,
+                        value,
+                        attributes,
+                        candidate,
+                    );
+                }
             }
         }
 
@@ -889,64 +1284,73 @@ pub fn Histogram(comptime T: type) type {
             return dp;
         }
 
-        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            const has_explicit = self.explicit_points.count() > 0;
-            const has_exponential = self.exponential_points.count() > 0;
-            const has_raw = self.data_points.items.len > 0;
+        fn collectHistogramData(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            explicit_points: *std.ArrayHashMapUnmanaged(Attributes, ExplicitState, Attributes.ArrayHashContext, true),
+            exponential_points: *std.ArrayHashMapUnmanaged(Attributes, ExponentialState, Attributes.ArrayHashContext, true),
+            data_points: *std.ArrayListUnmanaged(DataPoint(T)),
+            buckets: []const f64,
+            record_min_max: bool,
+            record_sum: bool,
+            max_scale: i32,
+            max_size: u32,
+            collection_start_ns: *u64,
+        ) !MeasurementsData {
+            const has_explicit = explicit_points.count() > 0;
+            const has_exponential = exponential_points.count() > 0;
+            const has_raw = data_points.items.len > 0;
 
             if (has_raw and has_explicit) {
-                for (self.data_points.items) |*raw_dp| {
+                for (data_points.items) |*raw_dp| {
                     const f64_val = toF64(raw_dp.value);
                     var cand = raw_dp.exemplar_candidate;
                     raw_dp.exemplar_candidate = null;
                     defer if (cand) |*s| s.deinit(self.allocator);
                     const key = Attributes.with(raw_dp.attributes);
-                    if (self.explicit_points.getPtr(key)) |state_ptr| {
-                        self.updateExplicitPoint(state_ptr, f64_val, &cand);
+                    if (explicit_points.getPtr(key)) |state_ptr| {
+                        self.updateExplicitPointIn(state_ptr, f64_val, &cand, buckets, record_min_max, record_sum);
                     } else {
-                        self.insertExplicitPoint(raw_dp.attributes, f64_val, &cand) catch break;
+                        self.insertExplicitPointIn(explicit_points, raw_dp.attributes, f64_val, &cand, buckets, record_min_max, record_sum) catch break;
                     }
                 }
-                for (self.data_points.items) |*m| m.deinit(self.allocator);
-                self.data_points.clearRetainingCapacity();
+                for (data_points.items) |*m| m.deinit(self.allocator);
+                data_points.clearRetainingCapacity();
             } else if (has_raw and has_exponential) {
-                for (self.data_points.items) |*raw_dp| {
+                for (data_points.items) |*raw_dp| {
                     const f64_val = toF64(raw_dp.value);
                     var cand = raw_dp.exemplar_candidate;
                     raw_dp.exemplar_candidate = null;
                     defer if (cand) |*s| s.deinit(self.allocator);
                     const key = Attributes.with(raw_dp.attributes);
-                    if (self.exponential_points.getPtr(key)) |state_ptr| {
-                        state_ptr.state.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum) catch break;
+                    if (exponential_points.getPtr(key)) |state_ptr| {
+                        state_ptr.state.addValue(self.allocator, f64_val, max_size, record_min_max, record_sum) catch break;
                         if (cand) |sample| {
                             if (state_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
                             state_ptr.exemplar_candidate = sample;
                             cand = null;
                         }
                     } else {
-                        self.insertExponentialPoint(raw_dp.attributes, f64_val, &cand) catch break;
+                        self.insertExponentialPointIn(exponential_points, raw_dp.attributes, f64_val, &cand, max_scale, max_size, record_min_max, record_sum) catch break;
                     }
                 }
-                for (self.data_points.items) |*m| m.deinit(self.allocator);
-                self.data_points.clearRetainingCapacity();
+                for (data_points.items) |*m| m.deinit(self.allocator);
+                data_points.clearRetainingCapacity();
             }
 
             if (!has_explicit and !has_exponential) {
                 defer {
-                    for (self.data_points.items) |*m| {
+                    for (data_points.items) |*m| {
                         m.deinit(self.allocator);
                     }
-                    self.data_points.clearRetainingCapacity();
+                    data_points.clearRetainingCapacity();
                 }
                 switch (@typeInfo(T)) {
                     .int => {
-                        return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
+                        return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, data_points.items, collection_start_ns) };
                     },
                     .float => {
-                        return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
+                        return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.io, data_points.items, collection_start_ns) };
                     },
                     else => @compileError("Histogram only supports integer and floating-point types, found " ++ @typeName(T)),
                 }
@@ -954,7 +1358,7 @@ pub fn Histogram(comptime T: type) type {
 
             if (has_explicit) {
                 var total_points: usize = 0;
-                for (self.explicit_points.values()) |*val| {
+                for (explicit_points.values()) |*val| {
                     var ex_count: usize = 0;
                     for (val.bucket_exemplars) |slot| {
                         if (slot != null) ex_count += 1;
@@ -972,7 +1376,7 @@ pub fn Histogram(comptime T: type) type {
                 }
 
                 var out_idx: usize = 0;
-                for (self.explicit_points.values()) |*val| {
+                for (explicit_points.values()) |*val| {
                     const first_idx: ?usize = for (val.bucket_exemplars, 0..) |slot, b_i| {
                         if (slot != null) break b_i;
                     } else null;
@@ -1000,18 +1404,18 @@ pub fn Histogram(comptime T: type) type {
 
                 if (data.len > 0) {
                     const collection_time: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
-                    for (data) |*point| point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };
-                    self.collection_start_ns = collection_time;
+                    for (data) |*point| point.timestamps = .{ .start_time_ns = collection_start_ns.*, .time_ns = collection_time };
+                    collection_start_ns.* = collection_time;
                 }
 
-                for (self.explicit_points.values()) |*val| {
+                for (explicit_points.values()) |*val| {
                     val.deinit(self.allocator);
                 }
-                self.explicit_points.clearRetainingCapacity();
+                explicit_points.clearRetainingCapacity();
 
                 return .{ .histogram = data };
             } else {
-                const count = self.exponential_points.count();
+                const count = exponential_points.count();
                 var data = try allocator.alloc(DataPoint(ExponentialHistogramDataPoint), count);
                 var success_count: usize = 0;
                 errdefer {
@@ -1021,7 +1425,7 @@ pub fn Histogram(comptime T: type) type {
                     allocator.free(data);
                 }
 
-                for (self.exponential_points.values(), 0..) |*val, idx| {
+                for (exponential_points.values(), 0..) |*val, idx| {
                     var point = DataPoint(ExponentialHistogramDataPoint){
                         .value = try val.state.toDataPoint(allocator),
                     };
@@ -1043,17 +1447,62 @@ pub fn Histogram(comptime T: type) type {
 
                 if (data.len > 0) {
                     const collection_time: u64 = @intCast(std.Io.Clock.real.now(self.io).nanoseconds);
-                    for (data) |*point| point.timestamps = .{ .start_time_ns = self.collection_start_ns, .time_ns = collection_time };
-                    self.collection_start_ns = collection_time;
+                    for (data) |*point| point.timestamps = .{ .start_time_ns = collection_start_ns.*, .time_ns = collection_time };
+                    collection_start_ns.* = collection_time;
                 }
 
-                for (self.exponential_points.values()) |*val| {
+                for (exponential_points.values()) |*val| {
                     val.deinit(self.allocator);
                 }
-                self.exponential_points.clearRetainingCapacity();
+                exponential_points.clearRetainingCapacity();
 
                 return .{ .exponential_histogram = data };
             }
+        }
+
+        pub fn measurementsDataForReader(self: *Self, allocator: std.mem.Allocator, reader: ?*const anyopaque) !MeasurementsData {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            var p_ptr: ?*Pipeline = null;
+            if (reader) |r| {
+                p_ptr = self.reader_pipelines.getPtr(r);
+            }
+            if (p_ptr == null and reader == null and self.reader_pipelines.count() > 0) {
+                p_ptr = &self.reader_pipelines.values()[0];
+            }
+
+            if (p_ptr) |p| {
+                return self.collectHistogramData(
+                    allocator,
+                    &p.explicit_points,
+                    &p.exponential_points,
+                    &p.data_points,
+                    p.buckets,
+                    p.record_min_max,
+                    p.record_sum,
+                    p.max_scale,
+                    p.max_size,
+                    &p.collection_start_ns,
+                );
+            }
+
+            return self.collectHistogramData(
+                allocator,
+                &self.explicit_points,
+                &self.exponential_points,
+                &self.data_points,
+                self.buckets,
+                self.record_min_max,
+                self.record_sum,
+                self.max_scale,
+                self.max_size,
+                &self.collection_start_ns,
+            );
+        }
+
+        pub fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
+            return self.measurementsDataForReader(allocator, null);
         }
     };
 }
@@ -1091,6 +1540,31 @@ pub fn Gauge(comptime T: type) type {
             };
         }
 
+        pub const Pipeline = struct {
+            pre_last_value: bool = true,
+            collection_start_ns: u64 = 0,
+            aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(AggType), Attributes.ArrayHashContext, true) = .empty,
+            data_points: std.ArrayListUnmanaged(DataPoint(T)) = .empty,
+
+            pub fn init(allocator: std.mem.Allocator, io: std.Io, pre_last_value: bool) Pipeline {
+                _ = allocator;
+                return .{
+                    .pre_last_value = pre_last_value,
+                    .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
+                    .aggregated_points = .empty,
+                    .data_points = .empty,
+                };
+            }
+
+            pub fn deinit(self: *Pipeline, allocator: std.mem.Allocator) void {
+                for (self.aggregated_points.values()) |*m| m.deinit(allocator);
+                self.aggregated_points.deinit(allocator);
+
+                for (self.data_points.items) |*m| m.deinit(allocator);
+                self.data_points.deinit(allocator);
+            }
+        };
+
         allocator: std.mem.Allocator,
         io: std.Io,
         lock: std.Io.Mutex,
@@ -1105,6 +1579,8 @@ pub fn Gauge(comptime T: type) type {
         /// Raw data points kept as fallback when any reader or view resolves to non-LastValue (e.g. Drop).
         data_points: std.ArrayListUnmanaged(DataPoint(T)),
 
+        reader_pipelines: std.AutoArrayHashMapUnmanaged(?*const anyopaque, Pipeline) = .empty,
+
         const overflow_attrs = [_]Attribute{
             .{ .key = "otel.metric.overflow", .value = .{ .bool = true } },
         };
@@ -1116,6 +1592,7 @@ pub fn Gauge(comptime T: type) type {
                 .cardinality_limit = spec.default_cardinality_limit,
                 .aggregated_points = .empty,
                 .data_points = .empty,
+                .reader_pipelines = .empty,
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
@@ -1133,6 +1610,11 @@ pub fn Gauge(comptime T: type) type {
                 m.deinit(self.allocator);
             }
             self.data_points.deinit(self.allocator);
+
+            for (self.reader_pipelines.values()) |*p| {
+                p.deinit(self.allocator);
+            }
+            self.reader_pipelines.deinit(self.allocator);
         }
 
         /// Fold `raw_dp` into the pre-aggregated series.
@@ -1230,67 +1712,55 @@ pub fn Gauge(comptime T: type) type {
             }
         }
 
-        /// Record the given value to the gauge, using the provided attributes.
-        pub fn record(self: *Self, value: T, attributes: anytype) !void {
-            const ArgsType = @TypeOf(attributes);
-            const args_type_info = @typeInfo(ArgsType);
-            if (args_type_info != .@"struct") {
-                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
-            }
-            const count = args_type_info.@"struct".field_names.len / 2;
-            var stack_buf: [count]Attribute = undefined;
-            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
-            return self.recordWithSlice(value, attrs);
-        }
-
-        /// Record a value with a pre-built attribute slice.
-        /// This is primarily used for C interop where attributes are passed as a slice.
-        pub fn recordWithSlice(self: *Self, value: T, attributes: ?[]Attribute) !void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            if (!self.pre_last_value) {
+        fn recordLastValueToStorage(
+            self: *Self,
+            aggregated_points: *std.ArrayHashMapUnmanaged(Attributes, DataPoint(AggType), Attributes.ArrayHashContext, true),
+            data_points: *std.ArrayListUnmanaged(DataPoint(T)),
+            pre_last_value: bool,
+            value: T,
+            attributes: ?[]Attribute,
+            candidate: ?exemplar.Exemplar,
+        ) !void {
+            if (!pre_last_value) {
+                const attrs_owned = (attributes != null and candidate != null);
                 var dp = DataPoint(T){
                     .value = value,
                     .attributes = if (attributes) |attrs|
-                        try self.allocator.dupe(Attribute, attrs)
+                        if (candidate != null)
+                            try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
+                        else
+                            try self.allocator.dupe(Attribute, attrs)
                     else
                         null,
+                    .attributes_owned = attrs_owned,
                 };
                 errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
+                if (candidate) |cand| {
+                    dp.exemplar_candidate = try cand.deepCopy(self.allocator);
+                }
+                try data_points.append(self.allocator, dp);
                 return;
             }
 
             const val = toAgg(value);
-
-            var candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, value, attributes, self.exemplar_filter);
-            defer if (candidate) |*s| s.deinit(self.allocator);
-
             const key = Attributes.with(attributes);
 
-            if (self.aggregated_points.getPtr(key)) |existing| {
+            if (aggregated_points.getPtr(key)) |existing| {
                 existing.value = val;
                 if (candidate) |sample| {
                     if (existing.exemplar_candidate) |*prev| prev.deinit(self.allocator);
-                    existing.exemplar_candidate = sample;
-                    candidate = null;
+                    existing.exemplar_candidate = try sample.deepCopy(self.allocator);
+                    try existing.ownAttributes(self.allocator);
                 }
                 return;
             }
 
-            // The spec requires creating the overflow series prior to reaching the cardinality limit,
-            // and does not say whether it counts towards the limit. Like the Go and Java SDKs, it does:
-            // at most `cardinality_limit - 1` regular series are kept, leaving the last slot to the overflow series.
-            // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#overflow-attribute
-            if (self.cardinality_limit > 0 and self.aggregated_points.count() >= self.cardinality_limit - 1) {
-                if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
+            if (self.cardinality_limit > 0 and aggregated_points.count() >= self.cardinality_limit - 1) {
+                if (aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
                     overflow_ptr.value = val;
                     if (candidate) |sample| {
                         if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
-                        overflow_ptr.exemplar_candidate = sample;
-                        candidate = null;
+                        overflow_ptr.exemplar_candidate = try sample.deepCopy(self.allocator);
                     }
                     return;
                 }
@@ -1306,11 +1776,10 @@ pub fn Gauge(comptime T: type) type {
                 defer if (!overflow_stored) overflow_dp.deinit(self.allocator);
 
                 if (candidate) |sample| {
-                    overflow_dp.exemplar_candidate = sample;
-                    candidate = null;
+                    overflow_dp.exemplar_candidate = try sample.deepCopy(self.allocator);
                 }
 
-                try self.aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
+                try aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
                 overflow_stored = true;
                 return;
             }
@@ -1331,40 +1800,140 @@ pub fn Gauge(comptime T: type) type {
                 .value = val,
                 .attributes = owned_attrs,
                 .attributes_owned = (owned_attrs != null),
-                .exemplar_candidate = candidate,
             };
+            if (candidate) |cand| {
+                new_dp.exemplar_candidate = try cand.deepCopy(self.allocator);
+            }
             owned_attrs = null;
-            candidate = null;
 
             var dp_stored = false;
             defer if (!dp_stored) new_dp.deinit(self.allocator);
 
-            try self.aggregated_points.put(self.allocator, Attributes.with(new_dp.attributes), new_dp);
+            try aggregated_points.put(self.allocator, Attributes.with(new_dp.attributes), new_dp);
             dp_stored = true;
         }
 
-        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
+        pub fn setPipelineAggregation(self: *Self, reader: ?*const anyopaque, agg: view.Aggregation) !void {
             self.lock.lockUncancelable(self.io);
             defer self.lock.unlock(self.io);
 
-            // Both batches share one window, which only advances once the collection succeeds.
-            var agg_end_ns = self.collection_start_ns;
-            const agg_copied = try copyNormalizedPoints(AggType, AggType, allocator, self.io, self.aggregated_points.values(), &agg_end_ns);
+            const is_last_value = (agg == .LastValue);
+            const r = reader orelse {
+                self.pre_last_value = is_last_value;
+                return;
+            };
+
+            // If this is the first concrete reader and points exist in default storage, migrate them
+            if (self.reader_pipelines.count() == 0 and (self.aggregated_points.count() > 0 or self.data_points.items.len > 0)) {
+                const p = Pipeline{
+                    .pre_last_value = is_last_value,
+                    .collection_start_ns = self.collection_start_ns,
+                    .aggregated_points = self.aggregated_points,
+                    .data_points = self.data_points,
+                };
+                self.aggregated_points = .empty;
+                self.data_points = .empty;
+                try self.reader_pipelines.put(self.allocator, r, p);
+                return;
+            }
+
+            const gop = try self.reader_pipelines.getOrPut(self.allocator, r);
+            if (!gop.found_existing) {
+                gop.value_ptr.* = Pipeline.init(self.allocator, self.io, is_last_value);
+            } else {
+                gop.value_ptr.pre_last_value = is_last_value;
+            }
+        }
+
+        pub fn removePipeline(self: *Self, reader: ?*const anyopaque) void {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            const r = reader orelse return;
+            if (self.reader_pipelines.fetchSwapRemove(r)) |kv| {
+                var p = kv.value;
+                p.deinit(self.allocator);
+            }
+        }
+
+        /// Record the given value to the gauge, using the provided attributes.
+        pub fn record(self: *Self, value: T, attributes: anytype) !void {
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
+            }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.recordWithSlice(value, attrs);
+        }
+
+        /// Record a value with a pre-built attribute slice.
+        /// This is primarily used for C interop where attributes are passed as a slice.
+        pub fn recordWithSlice(self: *Self, value: T, attributes: ?[]Attribute) !void {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            var candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, value, attributes, self.exemplar_filter);
+            defer if (candidate) |*s| s.deinit(self.allocator);
+
+            if (self.reader_pipelines.count() == 0) {
+                try self.recordLastValueToStorage(&self.aggregated_points, &self.data_points, self.pre_last_value, value, attributes, candidate);
+            } else {
+                for (self.reader_pipelines.values()) |*p| {
+                    try self.recordLastValueToStorage(&p.aggregated_points, &p.data_points, p.pre_last_value, value, attributes, candidate);
+                }
+            }
+        }
+
+        fn collectGaugePointsFrom(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            aggregated_points: *std.ArrayHashMapUnmanaged(Attributes, DataPoint(AggType), Attributes.ArrayHashContext, true),
+            data_points: *std.ArrayListUnmanaged(DataPoint(T)),
+            collection_start_ns: *u64,
+        ) !MeasurementsData {
+            var agg_end_ns = collection_start_ns.*;
+            const agg_copied = try copyNormalizedPoints(AggType, AggType, allocator, self.io, aggregated_points.values(), &agg_end_ns);
             defer allocator.free(agg_copied);
             errdefer for (agg_copied) |*p| p.deinit(allocator);
-            var raw_end_ns = self.collection_start_ns;
-            const raw_copied = try copyNormalizedPoints(T, AggType, allocator, self.io, self.data_points.items, &raw_end_ns);
+            var raw_end_ns = collection_start_ns.*;
+            const raw_copied = try copyNormalizedPoints(T, AggType, allocator, self.io, data_points.items, &raw_end_ns);
             defer allocator.free(raw_copied);
             errdefer for (raw_copied) |*p| p.deinit(allocator);
             const combined = try std.mem.concat(allocator, DataPoint(AggType), &.{ agg_copied, raw_copied });
-            self.collection_start_ns = @max(agg_end_ns, raw_end_ns);
+            collection_start_ns.* = @max(agg_end_ns, raw_end_ns);
 
-            for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
-            self.aggregated_points.clearRetainingCapacity();
-            for (self.data_points.items) |*m| m.deinit(self.allocator);
-            self.data_points.clearRetainingCapacity();
+            for (aggregated_points.values()) |*m| m.deinit(self.allocator);
+            aggregated_points.clearRetainingCapacity();
+            for (data_points.items) |*m| m.deinit(self.allocator);
+            data_points.clearRetainingCapacity();
 
             return wrapData(combined);
+        }
+
+        pub fn measurementsDataForReader(self: *Self, allocator: std.mem.Allocator, reader: ?*const anyopaque) !MeasurementsData {
+            self.lock.lockUncancelable(self.io);
+            defer self.lock.unlock(self.io);
+
+            var p_ptr: ?*Pipeline = null;
+            if (reader) |r| {
+                p_ptr = self.reader_pipelines.getPtr(r);
+            }
+            if (p_ptr == null and reader == null and self.reader_pipelines.count() > 0) {
+                p_ptr = &self.reader_pipelines.values()[0];
+            }
+
+            if (p_ptr) |p| {
+                return self.collectGaugePointsFrom(allocator, &p.aggregated_points, &p.data_points, &p.collection_start_ns);
+            }
+
+            return self.collectGaugePointsFrom(allocator, &self.aggregated_points, &self.data_points, &self.collection_start_ns);
+        }
+
+        pub fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
+            return self.measurementsDataForReader(allocator, null);
         }
     };
 }

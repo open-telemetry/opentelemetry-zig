@@ -226,6 +226,15 @@ pub const MeterProvider = struct {
         }
         m.meterProvider = self;
         try self.readers.append(self.allocator, m);
+        errdefer {
+            _ = self.readers.pop();
+            m.meterProvider = null;
+            var rollback_iter = self.meters.valueIterator();
+            while (rollback_iter.next()) |meter| {
+                detachReaderFromMeter(meter, m);
+            }
+            self.syncInstrumentAggregations();
+        }
 
         var meter_iter = self.meters.valueIterator();
         while (meter_iter.next()) |meter| {
@@ -247,10 +256,11 @@ pub const MeterProvider = struct {
         defer self.mx.unlock(self.io);
 
         try self.views.append(self.allocator, new_view);
+        errdefer _ = self.views.pop();
 
         var meter_iter = self.meters.valueIterator();
         while (meter_iter.next()) |meter| {
-            try applyViewToMeter(meter, new_view, self.readers.items);
+            try applyViewToMeter(meter, self.views.items, new_view, self.readers.items);
         }
 
         self.syncInstrumentAggregations();
@@ -349,6 +359,13 @@ pub const MeterProvider = struct {
     }
 };
 
+fn viewsHaveAttributeFilter(views: []const view.View, instr: *const Instrument, scope: *const InstrumentationScope) bool {
+    for (views) |v| {
+        if (v.matches(instr, scope) and v.attribute_filter != null) return true;
+    }
+    return false;
+}
+
 fn configureMeterForReader(meter: *Meter, views: []const view.View, reader: *MetricReader) !void {
     meter.mx.lockUncancelable(meter.io);
     defer meter.mx.unlock(meter.io);
@@ -360,18 +377,26 @@ fn configureMeterForReader(meter: *Meter, views: []const view.View, reader: *Met
             &meter.scope,
             reader.aggregation,
         );
-        try applyAggregationToInstrument(instr.*, reader, agg);
+        const allow_pre_agg = !viewsHaveAttributeFilter(views, instr.*, &meter.scope);
+        try applyAggregationToInstrument(instr.*, reader, agg, allow_pre_agg);
     }
 }
 
-fn applyViewToMeter(meter: *Meter, new_view: view.View, readers: []*MetricReader) !void {
+fn applyViewToMeter(meter: *Meter, views: []const view.View, new_view: view.View, readers: []*MetricReader) !void {
     meter.mx.lockUncancelable(meter.io);
     defer meter.mx.unlock(meter.io);
     var instr_iter = meter.instruments.valueIterator();
     while (instr_iter.next()) |instr| {
         if (new_view.matches(instr.*, &meter.scope)) {
+            const allow_pre_agg = !viewsHaveAttributeFilter(views, instr.*, &meter.scope);
             for (readers) |r| {
-                try applyAggregationToInstrument(instr.*, r, new_view.aggregation);
+                const agg = view.aggregationForViews(
+                    views,
+                    instr.*,
+                    &meter.scope,
+                    r.aggregation,
+                );
+                try applyAggregationToInstrument(instr.*, r, agg, allow_pre_agg);
             }
         }
     }
@@ -414,7 +439,7 @@ fn removePipelineFromInstrument(instr: *Instrument, reader: ?*const anyopaque) v
     }
 }
 
-fn applyAggregationToInstrument(instr: *Instrument, reader: ?*const anyopaque, agg: view.Aggregation) !void {
+fn applyAggregationToInstrument(instr: *Instrument, reader: ?*const anyopaque, agg: view.Aggregation, allow_pre_agg: bool) !void {
     switch (instr.data) {
         inline .Counter_u16,
         .Counter_u32,
@@ -422,7 +447,10 @@ fn applyAggregationToInstrument(instr: *Instrument, reader: ?*const anyopaque, a
         .UpDownCounter_i16,
         .UpDownCounter_i32,
         .UpDownCounter_i64,
-        .Histogram_u16,
+        => |c| {
+            try c.setPipelineAggregation(reader, agg);
+        },
+        inline .Histogram_u16,
         .Histogram_u32,
         .Histogram_u64,
         .Histogram_i16,
@@ -430,13 +458,16 @@ fn applyAggregationToInstrument(instr: *Instrument, reader: ?*const anyopaque, a
         .Histogram_i64,
         .Histogram_f32,
         .Histogram_f64,
-        .Gauge_i16,
+        => |h| {
+            try h.setPipelineAggregation(reader, agg);
+        },
+        inline .Gauge_i16,
         .Gauge_i32,
         .Gauge_i64,
         .Gauge_f32,
         .Gauge_f64,
-        => |c| {
-            try c.setPipelineAggregation(reader, agg);
+        => |g| {
+            try g.setPipelineAggregation(reader, agg, allow_pre_agg);
         },
         else => {},
     }
@@ -568,7 +599,7 @@ pub const Meter = struct {
             c.pre_sum = resolvesToSumOnlyUnlocked(p, i, &self.scope);
             for (p.readers.items) |r| {
                 const agg = view.aggregationForViews(p.views.items, i, &self.scope, r.aggregation);
-                try applyAggregationToInstrument(i, r, agg);
+                try applyAggregationToInstrument(i, r, agg, true);
             }
             try self.registerInstrument(i);
         } else {
@@ -597,7 +628,7 @@ pub const Meter = struct {
             c.pre_sum = resolvesToSumOnlyUnlocked(p, i, &self.scope);
             for (p.readers.items) |r| {
                 const agg = view.aggregationForViews(p.views.items, i, &self.scope, r.aggregation);
-                try applyAggregationToInstrument(i, r, agg);
+                try applyAggregationToInstrument(i, r, agg, true);
             }
             try self.registerInstrument(i);
         } else {
@@ -646,7 +677,7 @@ pub const Meter = struct {
             }
             for (p.readers.items) |r| {
                 const agg = view.aggregationForViews(p.views.items, i, &self.scope, r.aggregation);
-                try applyAggregationToInstrument(i, r, agg);
+                try applyAggregationToInstrument(i, r, agg, true);
             }
             try self.registerInstrument(i);
         } else {
@@ -676,7 +707,7 @@ pub const Meter = struct {
             g.pre_last_value = resolvesToLastValueOnlyUnlocked(p, i, &self.scope);
             for (p.readers.items) |r| {
                 const agg = view.aggregationForViews(p.views.items, i, &self.scope, r.aggregation);
-                try applyAggregationToInstrument(i, r, agg);
+                try applyAggregationToInstrument(i, r, agg, g.pre_last_value);
             }
             try self.registerInstrument(i);
         } else {
@@ -2345,4 +2376,171 @@ test "detachReader removes pipeline from instruments" {
     mp.detachReader(reader);
 
     try std.testing.expectEqual(@as(usize, 0), counter.reader_pipelines.count());
+}
+
+test "gauge reader pipeline preserves measurement order when view filters attributes" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    const v = view.View{
+        .instrument_selector = .{ .name = "temperature" },
+        .aggregation = .LastValue,
+        .temporality = .Delta,
+        .attribute_filter = .{ .include_keys = &.{"sensor"} },
+    };
+    try mp.addView(v);
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+    const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+    var gauge = try meter.createGauge(f64, .{ .name = "temperature" });
+
+    // Pipeline must have pre_last_value = false because view filters attributes
+    const p = gauge.reader_pipelines.get(reader).?;
+    try std.testing.expectEqual(false, p.pre_last_value);
+
+    // Record A=10, B=20, A=30
+    try gauge.record(10.0, .{ "sensor", @as([]const u8, "temp1"), "sub_id", @as([]const u8, "a") });
+    try gauge.record(20.0, .{ "sensor", @as([]const u8, "temp1"), "sub_id", @as([]const u8, "b") });
+    try gauge.record(30.0, .{ "sensor", @as([]const u8, "temp1"), "sub_id", @as([]const u8, "a") });
+
+    try reader.collect();
+    const data = try inMem.fetch(allocator);
+    defer {
+        for (data) |*d| d.deinit(allocator);
+        allocator.free(data);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.double.len);
+    // Chronological order: A=30 was last
+    try std.testing.expectEqual(30.0, data[0].data.double[0].value);
+}
+
+test "gauge reader pipeline drains pending raw points before enabling LastValue" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+    var metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+    // Start with Drop/raw mode
+    metric_exporter.aggregation = struct {
+        fn dropAgg(kind: Kind) view.Aggregation {
+            _ = kind;
+            return .Drop;
+        }
+    }.dropAgg;
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "test-meter" });
+    var gauge = try meter.createGauge(f64, .{ .name = "cpu" });
+
+    // Record 1.0 while in raw mode
+    try gauge.record(1.0, .{ "core", @as([]const u8, "1") });
+
+    // Add LastValue view to switch reader's pipeline to LastValue
+    const v = view.View{
+        .instrument_selector = .{ .name = "cpu" },
+        .aggregation = .LastValue,
+        .temporality = .Cumulative,
+    };
+    try mp.addView(v);
+
+    // Record 2.0 under LastValue
+    try gauge.record(2.0, .{ "core", @as([]const u8, "1") });
+
+    // Collect: 2.0 should be the exported value
+    try reader.collect();
+    const data = try inMem.fetch(allocator);
+    defer {
+        for (data) |*d| d.deinit(allocator);
+        allocator.free(data);
+    }
+
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(2.0, data[0].data.double[0].value);
+}
+
+test "histogram reader pipeline reconfigures safely when bucket boundaries change" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    var inMem = try InMemoryExporter.init(allocator, io);
+    defer inMem.deinit();
+    var metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
+    metric_exporter.aggregation = struct {
+        fn initialAgg(kind: Kind) view.Aggregation {
+            _ = kind;
+            return .{ .ExplicitBucketHistogram = .{ .buckets = &.{2.0} } };
+        }
+    }.initialAgg;
+    var reader = try MetricReader.init(allocator, io, metric_exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "hist-meter" });
+    var hist = try meter.createHistogram(f64, .{ .name = "lat" });
+
+    // Record with boundary {2.0}
+    try hist.record(1.0, .{ "h", @as([]const u8, "1") });
+
+    // Add view with new boundaries {2.0, 5.0, 10.0}
+    const v = view.View{
+        .instrument_selector = .{ .name = "lat" },
+        .aggregation = .{ .ExplicitBucketHistogram = .{ .buckets = &.{ 2.0, 5.0, 10.0 } } },
+        .temporality = .Cumulative,
+    };
+    try mp.addView(v);
+
+    // Recording 20.0 must not panic with out-of-bounds array access
+    try hist.record(20.0, .{ "h", @as([]const u8, "1") });
+
+    try reader.collect();
+    const data = try inMem.fetch(allocator);
+    defer {
+        for (data) |*d| d.deinit(allocator);
+        allocator.free(data);
+    }
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+}
+
+test "addReader rolls back registration on allocation failure" {
+    const io = std.testing.io;
+    var mp = try MeterProvider.init(std.testing.allocator, io);
+    defer mp.deinit();
+
+    const meter = try mp.getMeter(.{ .name = "rollback-meter" });
+    var c1 = try meter.createCounter(u64, .{ .name = "c1" });
+    _ = try meter.createCounter(u64, .{ .name = "c2" });
+
+    var inMem = try InMemoryExporter.init(std.testing.allocator, io);
+    defer inMem.deinit();
+    const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &inMem.exporter);
+    var reader = try MetricReader.init(std.testing.allocator, io, metric_exporter);
+    defer reader.deinit();
+
+    // Fail during pipeline allocation in configureMeterForReader
+    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
+    c1.allocator = failing_allocator.allocator();
+    defer c1.allocator = std.testing.allocator;
+
+    const err = mp.addReader(reader);
+
+    try std.testing.expectError(error.OutOfMemory, err);
+    try std.testing.expectEqual(@as(?*MeterProvider, null), reader.meterProvider);
+    try std.testing.expectEqual(@as(usize, 0), mp.readers.items.len);
 }

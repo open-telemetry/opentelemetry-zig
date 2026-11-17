@@ -62,8 +62,8 @@ pub fn main(init: std.process.Init) !void {
     try testLogsOverGrpc(allocator, io, config, ctx.tmp_dir);
     std.debug.print("✓ Logs gRPC test passed\n\n", .{});
 
-    // The collector decompresses gRPC messages whatever the compression, so this
-    // checks the compressed messages are well-formed, not that they were compressed.
+    // The collector decompresses gRPC messages whatever the compression, so this only
+    // checks that a compressed message is accepted, not that the exporter compressed it.
     std.debug.print("Running gzip-compressed logs gRPC integration test...\n", .{});
     config.compression = .gzip;
     try testLogsOverGrpcWithCompression(allocator, io, config, ctx.tmp_dir);
@@ -315,7 +315,13 @@ fn testLogsOverGrpcWithCompression(
     try provider.addLogRecordProcessor(simple_processor.asLogRecordProcessor());
 
     const logger = try provider.getLogger(.{ .name = scope_name, .version = "1.0.0" });
-    logger.emit(.info, "gRPC gzip log", .{});
+    // gRPC sends a message uncompressed unless compressing makes it smaller, which a
+    // short record with varied content may not: use a body that gzip shrinks a lot.
+    const prefix = "gRPC gzip log ";
+    var body: [256]u8 = undefined;
+    @memset(&body, 'a');
+    @memcpy(body[0..prefix.len], prefix);
+    logger.emit(.info, &body, .{});
 
     try provider.shutdown();
 

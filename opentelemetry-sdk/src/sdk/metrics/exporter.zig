@@ -1,5 +1,5 @@
 const std = @import("std");
-const clock = @import("clock");
+const clock = @import("timeout");
 
 const log = std.log.scoped(.exporter);
 

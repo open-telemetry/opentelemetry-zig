@@ -61,6 +61,13 @@ pub fn main(init: std.process.Init) !void {
     std.debug.print("Running logs gRPC integration test...\n", .{});
     try testLogsOverGrpc(allocator, io, config, ctx.tmp_dir);
     std.debug.print("✓ Logs gRPC test passed\n\n", .{});
+
+    // The collector decompresses gRPC messages whatever the compression, so this
+    // checks the compressed messages are well-formed, not that they were compressed.
+    std.debug.print("Running gzip-compressed logs gRPC integration test...\n", .{});
+    config.compression = .gzip;
+    try testLogsOverGrpcWithCompression(allocator, io, config, ctx.tmp_dir);
+    std.debug.print("✓ Compressed logs gRPC test passed\n\n", .{});
 }
 
 fn testMetricsOverGrpc(
@@ -289,4 +296,42 @@ fn testLogsOverGrpc(
     if (has_transport_attr) {
         std.debug.print("  ✓ Transport attribute 'grpc' present\n", .{});
     }
+}
+
+fn testLogsOverGrpcWithCompression(
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    config: *sdk.otlp.ConfigOptions,
+    tmp_dir: std.Io.Dir,
+) !void {
+    var otlp_exporter = try logs_sdk.OTLPExporter.init(allocator, io, config);
+    defer otlp_exporter.deinit();
+
+    var simple_processor = logs_sdk.SimpleLogRecordProcessor.init(io, otlp_exporter.asLogRecordExporter());
+
+    var provider = try logs_sdk.LoggerProvider.init(allocator, io, null);
+    defer provider.deinit();
+
+    try provider.addLogRecordProcessor(simple_processor.asLogRecordProcessor());
+
+    const logger = try provider.getLogger(.{ .name = scope_name, .version = "1.0.0" });
+    logger.emit(.info, "gRPC gzip log", .{});
+
+    try provider.shutdown();
+
+    std.Io.sleep(io, .fromNanoseconds(1 * std.time.ns_per_s), .awake) catch {};
+
+    std.debug.print("  Sent a gzip-compressed log record over gRPC\n", .{});
+    std.debug.print("  Waiting for logs JSON file...\n", .{});
+
+    const json_content = common.waitForFileContent(allocator, io, tmp_dir, "logs.json", "gRPC gzip log", 15) catch |err| {
+        if (err == error.ExpectedContentNotFound) {
+            std.debug.print("  ERROR: gRPC logs JSON doesn't contain the compressed log record\n", .{});
+            return error.CompressedLogsNotReceivedByCollector;
+        }
+        return err;
+    };
+    defer allocator.free(json_content);
+
+    std.debug.print("  ✓ gRPC compressed logs JSON validated - found the log record\n", .{});
 }

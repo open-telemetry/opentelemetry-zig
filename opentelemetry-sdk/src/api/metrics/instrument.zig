@@ -313,8 +313,7 @@ pub fn Counter(comptime T: type) type {
             aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true) = .empty,
             data_points: std.ArrayListUnmanaged(DataPoint(T)) = .empty,
 
-            pub fn init(allocator: std.mem.Allocator, io: std.Io, pre_sum: bool) Pipeline {
-                _ = allocator;
+            pub fn init(io: std.Io, pre_sum: bool) Pipeline {
                 return .{
                     .pre_sum = pre_sum,
                     .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
@@ -616,7 +615,7 @@ pub fn Counter(comptime T: type) type {
 
             const gop = try self.reader_pipelines.getOrPut(self.allocator, r);
             if (!gop.found_existing) {
-                gop.value_ptr.* = Pipeline.init(self.allocator, self.io, is_sum);
+                gop.value_ptr.* = Pipeline.init(self.io, is_sum);
             } else {
                 gop.value_ptr.pre_sum = is_sum;
             }
@@ -790,8 +789,7 @@ pub fn Histogram(comptime T: type) type {
             explicit_points: std.ArrayHashMapUnmanaged(Attributes, ExplicitState, Attributes.ArrayHashContext, true) = .empty,
             exponential_points: std.ArrayHashMapUnmanaged(Attributes, ExponentialState, Attributes.ArrayHashContext, true) = .empty,
 
-            pub fn init(allocator: std.mem.Allocator, io: std.Io) Pipeline {
-                _ = allocator;
+            pub fn init(io: std.Io) Pipeline {
                 return .{
                     .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
                     .data_points = .empty,
@@ -1177,7 +1175,7 @@ pub fn Histogram(comptime T: type) type {
 
             const gop = try self.reader_pipelines.getOrPut(self.allocator, r);
             if (!gop.found_existing) {
-                gop.value_ptr.* = Pipeline.init(self.allocator, self.io);
+                gop.value_ptr.* = Pipeline.init(self.io);
             }
             self.configurePipeline(gop.value_ptr, agg);
         }
@@ -1566,8 +1564,7 @@ pub fn Gauge(comptime T: type) type {
             aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(AggType), Attributes.ArrayHashContext, true) = .empty,
             data_points: std.ArrayListUnmanaged(DataPoint(T)) = .empty,
 
-            pub fn init(allocator: std.mem.Allocator, io: std.Io, pre_last_value: bool) Pipeline {
-                _ = allocator;
+            pub fn init(io: std.Io, pre_last_value: bool) Pipeline {
                 return .{
                     .pre_last_value = pre_last_value,
                     .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
@@ -1892,7 +1889,7 @@ pub fn Gauge(comptime T: type) type {
 
             const gop = try self.reader_pipelines.getOrPut(self.allocator, r);
             if (!gop.found_existing) {
-                gop.value_ptr.* = Pipeline.init(self.allocator, self.io, is_last_value);
+                gop.value_ptr.* = Pipeline.init(self.io, is_last_value);
             } else {
                 if (is_last_value and !gop.value_ptr.pre_last_value) {
                     if (self.drainRawPointsInto(&gop.value_ptr.aggregated_points, &gop.value_ptr.data_points)) {

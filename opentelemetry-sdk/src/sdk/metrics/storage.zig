@@ -455,18 +455,32 @@ pub const ExplicitBucketHistogramStorage = struct {
     }
 
     pub fn insertExplicitPoint(self: *ExplicitBucketHistogramStorage, attributes: ?[]const Attribute, f64_val: f64, candidate: *?exemplar.Exemplar) !void {
-        var bucket_counts: ?[]u64 = try self.allocator.alloc(u64, self.buckets.len + 1);
-        defer if (bucket_counts) |b| self.allocator.free(b);
-        @memset(bucket_counts.?, 0);
-
-        var bucket_exemplars: ?[]?exemplar.Exemplar = try self.allocator.alloc(?exemplar.Exemplar, self.buckets.len + 1);
-        defer if (bucket_exemplars) |slots| {
-            for (slots) |*slot| {
-                if (slot.*) |*sample| sample.deinit(self.allocator);
-            }
-            self.allocator.free(slots);
+        // alloc returns undefined memory: counts must start at 0 and exemplar slots at null,
+        // otherwise deinit frees garbage pointers.
+        const bucket_counts = try self.allocator.alloc(u64, self.buckets.len + 1);
+        @memset(bucket_counts, 0);
+        var state = ExplicitState{
+            .data = DataPoint(HistogramDataPoint){
+                .value = HistogramDataPoint{
+                    .explicit_bounds = self.buckets,
+                    .bucket_counts = bucket_counts,
+                    .sum = if (self.record_sum) f64_val else null,
+                    .count = 1,
+                    .min = if (self.record_min_max) f64_val else null,
+                    .max = if (self.record_min_max) f64_val else null,
+                },
+            },
+            .bucket_exemplars = &.{},
         };
-        @memset(bucket_exemplars.?, null);
+        errdefer state.deinit(self.allocator);
+
+        state.bucket_exemplars = try self.allocator.alloc(?exemplar.Exemplar, self.buckets.len + 1);
+        @memset(state.bucket_exemplars, null);
+
+        if (attributes) |attrs| {
+            state.data.attributes = try exemplar.Exemplar.copyAttributes(self.allocator, attrs);
+            state.data.attributes_owned = true;
+        }
 
         var bucket_index = self.buckets.len;
         for (self.buckets, 0..) |boundary, i| {
@@ -475,49 +489,14 @@ pub const ExplicitBucketHistogramStorage = struct {
                 break;
             }
         }
-        bucket_counts.?[bucket_index] = 1;
-
-        var owned_attrs = if (attributes) |attrs|
-            try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
-        else
-            null;
-        defer if (owned_attrs) |attrs| {
-            for (attrs) |attr| {
-                self.allocator.free(attr.key);
-                if (attr.value == .string) self.allocator.free(attr.value.string);
-            }
-            self.allocator.free(attrs);
-        };
+        bucket_counts[bucket_index] = 1;
 
         if (candidate.*) |sample| {
-            bucket_exemplars.?[bucket_index] = sample;
+            state.bucket_exemplars[bucket_index] = sample;
             candidate.* = null;
         }
 
-        var state = ExplicitState{
-            .data = DataPoint(HistogramDataPoint){
-                .value = HistogramDataPoint{
-                    .explicit_bounds = self.buckets,
-                    .bucket_counts = bucket_counts.?,
-                    .sum = if (self.record_sum) f64_val else null,
-                    .count = 1,
-                    .min = if (self.record_min_max) f64_val else null,
-                    .max = if (self.record_min_max) f64_val else null,
-                },
-                .attributes = owned_attrs,
-                .attributes_owned = (owned_attrs != null),
-            },
-            .bucket_exemplars = bucket_exemplars.?,
-        };
-        bucket_counts = null;
-        bucket_exemplars = null;
-        owned_attrs = null;
-
-        var state_stored = false;
-        defer if (!state_stored) state.deinit(self.allocator);
-
         try self.explicit_points.put(self.allocator, Attributes.with(state.data.attributes), state);
-        state_stored = true;
     }
 
     pub fn record(self: *ExplicitBucketHistogramStorage, f64_val: f64, attributes: ?[]const Attribute, candidate: *?exemplar.Exemplar) !void {
@@ -680,37 +659,20 @@ pub const ExponentialHistogramStorage = struct {
     }
 
     pub fn insertExponentialPoint(self: *ExponentialHistogramStorage, attributes: ?[]const Attribute, f64_val: f64, candidate: *?exemplar.Exemplar) !void {
-        var exp_state: ?aggregation.ExponentialHistogramState = aggregation.ExponentialHistogramState.init(self.allocator, self.max_scale);
-        defer if (exp_state) |*s| s.deinit(self.allocator);
-        try exp_state.?.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
+        var state = ExponentialState{ .state = aggregation.ExponentialHistogramState.init(self.max_scale) };
+        errdefer state.deinit(self.allocator);
 
-        var owned_attrs = if (attributes) |attrs|
-            try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
-        else
-            null;
-        defer if (owned_attrs) |attrs| {
-            for (attrs) |attr| {
-                self.allocator.free(attr.key);
-                if (attr.value == .string) self.allocator.free(attr.value.string);
-            }
-            self.allocator.free(attrs);
-        };
+        try state.state.addValue(self.allocator, f64_val, self.max_size, self.record_min_max, self.record_sum);
 
-        var state = ExponentialState{
-            .state = exp_state.?,
-            .attributes = owned_attrs,
-            .attributes_owned = (owned_attrs != null),
-            .exemplar_candidate = candidate.*,
-        };
-        exp_state = null;
-        owned_attrs = null;
+        if (attributes) |attrs| {
+            state.attributes = try exemplar.Exemplar.copyAttributes(self.allocator, attrs);
+            state.attributes_owned = true;
+        }
+
+        state.exemplar_candidate = candidate.*;
         candidate.* = null;
 
-        var state_stored = false;
-        defer if (!state_stored) state.deinit(self.allocator);
-
         try self.exponential_points.put(self.allocator, Attributes.with(state.attributes), state);
-        state_stored = true;
     }
 
     pub fn record(self: *ExponentialHistogramStorage, f64_val: f64, attributes: ?[]const Attribute, candidate: *?exemplar.Exemplar) !void {
@@ -902,4 +864,49 @@ test "ExplicitBucketHistogramStorage basic recording" {
     try std.testing.expectEqual(@as(f64, 22.0), points[0].value.sum.?);
     try std.testing.expectEqual(@as(f64, 3.0), points[0].value.min.?);
     try std.testing.expectEqual(@as(f64, 12.0), points[0].value.max.?);
+}
+
+const test_attrs = [_]Attribute{.{ .key = "status", .value = .{ .string = "200" } }};
+
+fn insertExplicitPointAllocationFailure(allocator: std.mem.Allocator) !void {
+    const buckets = [_]f64{ 5.0, 10.0 };
+    var hist_storage = ExplicitBucketHistogramStorage.init(allocator, std.testing.io, 100, &buckets, true, true);
+    defer hist_storage.deinit();
+
+    // Like the instrument caller, the test owns the candidate until storage takes it.
+    var candidate: ?exemplar.Exemplar = .{ .value = .{ .double = 7.0 }, .time_ns = 1, .filtered_attributes = try exemplar.Exemplar.copyAttributes(allocator, &test_attrs) };
+    defer if (candidate) |*s| s.deinit(allocator);
+
+    try hist_storage.record(7.0, &test_attrs, &candidate);
+
+    try std.testing.expect(candidate == null);
+    const state = hist_storage.explicit_points.values()[0];
+    // Buckets the value did not hit must be initialized, not left as undefined memory.
+    try std.testing.expectEqualSlices(u64, &.{ 0, 1, 0 }, state.data.value.bucket_counts);
+    try std.testing.expect(state.bucket_exemplars[0] == null);
+    try std.testing.expect(state.bucket_exemplars[1] != null);
+    try std.testing.expect(state.bucket_exemplars[2] == null);
+}
+
+test "ExplicitBucketHistogramStorage insert handles allocation failures without leaks or double-frees" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, insertExplicitPointAllocationFailure, .{});
+}
+
+fn insertExponentialPointAllocationFailure(allocator: std.mem.Allocator) !void {
+    var hist_storage = ExponentialHistogramStorage.init(allocator, std.testing.io, 100, 20, 160, true, true);
+    defer hist_storage.deinit();
+
+    var candidate: ?exemplar.Exemplar = .{ .value = .{ .double = 7.0 }, .time_ns = 1, .filtered_attributes = try exemplar.Exemplar.copyAttributes(allocator, &test_attrs) };
+    defer if (candidate) |*s| s.deinit(allocator);
+
+    try hist_storage.record(7.0, &test_attrs, &candidate);
+
+    try std.testing.expect(candidate == null);
+    const state = hist_storage.exponential_points.values()[0];
+    try std.testing.expectEqual(@as(u64, 1), state.state.count);
+    try std.testing.expect(state.exemplar_candidate != null);
+}
+
+test "ExponentialHistogramStorage insert handles allocation failures without leaks or double-frees" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, insertExponentialPointAllocationFailure, .{});
 }

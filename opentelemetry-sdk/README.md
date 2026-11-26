@@ -90,6 +90,8 @@ some of them, for instance `sdk,os`. `*` enables all of them and `none` disables
 all of them, leaving only the configured attributes. An empty value is the same as
 unset, and unknown names are ignored with a warning. A key set in
 `OTEL_RESOURCE_ATTRIBUTES` takes precedence over the detected attribute of the same key.
+If any entry of `OTEL_RESOURCE_ATTRIBUTES` has no `=` or an empty key, the whole value
+is discarded and an error is logged.
 
 ### `std.log` Bridge for Seamless Migration
 

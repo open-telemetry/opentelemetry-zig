@@ -25,6 +25,7 @@ test {
     _ = @import("metrics/temporality.zig");
     _ = @import("metrics/aggregation.zig");
     _ = @import("metrics/storage.zig");
+    _ = @import("metrics/pipeline.zig");
 }
 
 pub const exemplar = @import("metrics/exemplar.zig");

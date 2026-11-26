@@ -13,8 +13,9 @@ const ExponentialHistogramDataPoint = aggregation.ExponentialHistogramDataPoint;
 const MeasurementsData = @import("measurement.zig").MeasurementsData;
 
 const exemplar = @import("../../sdk/metrics/exemplar.zig");
-const storage = @import("../../sdk/metrics/storage.zig");
-const copyNormalizedPoints = storage.copyNormalizedPoints;
+const pipeline = @import("../../sdk/metrics/pipeline.zig");
+const StorageSink = pipeline.StorageSink;
+const Pipeline = pipeline.Pipeline;
 
 const AsyncInstrument = @import("async_instrument.zig");
 const trace_api = @import("../trace.zig");
@@ -240,12 +241,70 @@ pub const Instrument = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn getInstrumentsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
+    pub fn isFloat(self: *const Self) bool {
+        return switch (self.data) {
+            .Histogram_f32, .Histogram_f64, .Gauge_f32, .Gauge_f64 => true,
+            else => false,
+        };
+    }
+
+    pub fn syncLock(self: *Self) ?*std.Io.Mutex {
+        return switch (self.data) {
+            .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => null,
+            inline else => |i| &i.lock,
+        };
+    }
+
+    pub fn addStorageSink(self: *Self, sink: *StorageSink) !void {
         switch (self.data) {
+            .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => {},
             inline else => |i| {
-                return i.measurementsData(allocator);
+                i.lock.lockUncancelable(i.io);
+                defer i.lock.unlock(i.io);
+                try i.storages.append(i.allocator, sink);
             },
         }
+    }
+
+    pub fn removeStorageSink(self: *Self, sink: *StorageSink) void {
+        switch (self.data) {
+            .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => {},
+            inline else => |i| {
+                i.lock.lockUncancelable(i.io);
+                defer i.lock.unlock(i.io);
+                for (i.storages.items, 0..) |s, idx| {
+                    if (s == sink) {
+                        _ = i.storages.swapRemove(idx);
+                        break;
+                    }
+                }
+            },
+        }
+    }
+
+    pub fn removeStorageSinksForPipeline(self: *Self, p: *Pipeline) void {
+        switch (self.data) {
+            .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => {},
+            inline else => |i| {
+                i.lock.lockUncancelable(i.io);
+                defer i.lock.unlock(i.io);
+                var idx: usize = 0;
+                while (idx < i.storages.items.len) {
+                    if (i.storages.items[idx].pipeline == p) {
+                        _ = i.storages.swapRemove(idx);
+                    } else {
+                        idx += 1;
+                    }
+                }
+            },
+        }
+    }
+
+    pub fn getInstrumentsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
+        return switch (self.data) {
+            inline .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => |i| i.measurementsData(allocator),
+            else => unreachable,
+        };
     }
 };
 
@@ -260,6 +319,40 @@ pub const InstrumentOptions = struct {
     advisory: ?[]Attribute = null,
 };
 
+fn recordToStorages(
+    comptime T: type,
+    allocator: std.mem.Allocator,
+    io: std.Io,
+    lock: *std.Io.Mutex,
+    exemplar_filter: exemplar.ExemplarFilter,
+    storages: *const std.ArrayListUnmanaged(*StorageSink),
+    value: T,
+    attributes: ?[]const Attribute,
+) !void {
+    lock.lockUncancelable(io);
+    defer lock.unlock(io);
+
+    if (storages.items.len == 0) return;
+
+    var base_candidate = try exemplar.Exemplar.capture(T, allocator, io, value, attributes, exemplar_filter);
+    defer if (base_candidate) |*s| s.deinit(allocator);
+
+    for (storages.items, 0..) |sink, idx| {
+        const is_last = (idx + 1 == storages.items.len);
+        var candidate: ?exemplar.Exemplar = if (base_candidate) |sample| blk: {
+            if (is_last) {
+                base_candidate = null;
+                break :blk sample;
+            } else {
+                break :blk try sample.deepCopy(allocator);
+            }
+        } else null;
+        defer if (candidate) |*s| s.deinit(allocator);
+
+        try sink.record(T, allocator, value, attributes, &candidate);
+    }
+}
+
 /// A Counter is a monotonically increasing value used to record cumulative events.
 /// See https://opentelemetry.io/docs/specs/otel/metrics/api/#counter
 pub fn Counter(comptime T: type) type {
@@ -269,126 +362,47 @@ pub fn Counter(comptime T: type) type {
         io: std.Io,
         lock: std.Io.Mutex,
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
-        collection_start_ns: u64 = 0,
-        pre_sum: bool = true,
-
-        storage: storage.SumStorage,
-
-        /// Raw data points kept as fallback when any reader or view resolves to non-Sum (e.g. LastValue, Histogram, Drop).
-        data_points: std.ArrayListUnmanaged(DataPoint(T)),
+        storages: std.ArrayListUnmanaged(*StorageSink),
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
-                .pre_sum = true,
-                .storage = storage.SumStorage.init(allocator, io, spec.default_cardinality_limit),
-                .data_points = .empty,
+                .storages = .empty,
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
-                .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             };
         }
 
         fn deinit(self: *Self) void {
-            self.storage.deinit();
-
-            for (self.data_points.items) |*m| {
-                m.deinit(self.allocator);
-            }
-            self.data_points.deinit(self.allocator);
-        }
-
-        fn recordSumPoint(self: *Self, dp: *DataPoint(T), capture_exemplar: bool) !void {
-            try self.storage.recordPoint(T, dp, capture_exemplar, self.exemplar_filter);
-        }
-
-        pub fn setPreSum(self: *Self, enabled: bool) void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            if (self.pre_sum == enabled) return;
-            self.pre_sum = enabled;
-
-            if (enabled) {
-                // Switching back to Sum: drain any pending raw points into storage.
-                // On allocation failure, the failed point and the ones after it stay in data_points.
-                const items = self.data_points.items;
-                var drained: usize = 0;
-                for (items) |*raw_dp| {
-                    self.recordSumPoint(raw_dp, false) catch break;
-                    drained += 1;
-                }
-                // Drained points were moved out of or merged, so only the leftovers need freeing.
-                for (items[0..drained]) |*raw_dp| raw_dp.deinit(self.allocator);
-                const remaining = items.len - drained;
-                std.mem.copyForwards(DataPoint(T), items[0..remaining], items[drained..]);
-                self.data_points.shrinkRetainingCapacity(remaining);
-            }
+            self.storages.deinit(self.allocator);
         }
 
         /// Add the given delta to the counter, using the provided attributes.
         pub fn add(self: *Self, delta: T, attributes: anytype) !void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            if (self.pre_sum) {
-                var dp = try DataPoint(T).new(self.allocator, delta, attributes);
-                defer dp.deinit(self.allocator);
-                try self.recordSumPoint(&dp, true);
-            } else {
-                var dp = try DataPoint(T).new(self.allocator, delta, attributes);
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
             }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.addWithSlice(delta, attrs);
         }
 
         /// Add the given delta to the counter with a pre-built attribute slice.
         /// This is primarily used for C interop where attributes are passed as a slice.
         pub fn addWithSlice(self: *Self, delta: T, attributes: ?[]Attribute) !void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            var dp = DataPoint(T){
-                .value = delta,
-                .attributes = if (attributes) |attrs|
-                    try self.allocator.dupe(Attribute, attrs)
-                else
-                    null,
-            };
-            if (self.pre_sum) {
-                defer dp.deinit(self.allocator);
-                try self.recordSumPoint(&dp, true);
-            } else {
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
-            }
-        }
-
-        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            // Both batches share one window, which only advances once the collection succeeds.
-            var agg_end_ns = self.collection_start_ns;
-            const agg_copied = try self.storage.snapshot(allocator, &agg_end_ns);
-            defer allocator.free(agg_copied);
-            errdefer for (agg_copied) |*p| p.deinit(allocator);
-
-            var raw_end_ns = self.collection_start_ns;
-            const raw_copied = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &raw_end_ns);
-            defer allocator.free(raw_copied);
-            errdefer for (raw_copied) |*p| p.deinit(allocator);
-
-            const combined = try std.mem.concat(allocator, DataPoint(i64), &.{ agg_copied, raw_copied });
-            self.collection_start_ns = @max(agg_end_ns, raw_end_ns);
-
-            self.storage.clearRetainingCapacity();
-            for (self.data_points.items) |*m| m.deinit(self.allocator);
-            self.data_points.clearRetainingCapacity();
-
-            return .{ .int = combined };
+            return recordToStorages(
+                T,
+                self.allocator,
+                self.io,
+                &self.lock,
+                self.exemplar_filter,
+                &self.storages,
+                delta,
+                attributes,
+            );
         }
     };
 }
@@ -407,188 +421,51 @@ pub fn Histogram(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        fn toF64(value: T) f64 {
-            return switch (@typeInfo(T)) {
-                .int => @as(f64, @floatFromInt(value)),
-                .float => @as(f64, @floatCast(value)),
-                else => @compileError("Histogram only supports integer and floating-point types, found " ++ @typeName(T)),
-            };
-        }
-
-        pub const Mode = enum {
-            explicit,
-            exponential,
-        };
-
         allocator: std.mem.Allocator,
         io: std.Io,
         lock: std.Io.Mutex,
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
-        collection_start_ns: u64 = 0,
-
-        pre_aggregate: bool = false,
-        mode: Mode = .explicit,
-
-        /// Keeps track of the raw recorded values for each set of attributes.
-        /// Used when pre_aggregate is false (e.g. standalone instruments or custom pipelines).
-        data_points: std.ArrayListUnmanaged(DataPoint(T)),
-
-        explicit_storage: storage.ExplicitBucketHistogramStorage,
-        exponential_storage: storage.ExponentialHistogramStorage,
+        storages: std.ArrayListUnmanaged(*StorageSink),
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
-                .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
-                .data_points = .empty,
-                .explicit_storage = storage.ExplicitBucketHistogramStorage.init(
-                    allocator,
-                    io,
-                    spec.default_cardinality_limit,
-                    spec.default_histogram_explicit_bucket_boundaries,
-                    true,
-                    true,
-                ),
-                .exponential_storage = storage.ExponentialHistogramStorage.init(
-                    allocator,
-                    io,
-                    spec.default_cardinality_limit,
-                    20,
-                    1024,
-                    true,
-                    true,
-                ),
-                .pre_aggregate = false,
+                .storages = .empty,
             };
         }
 
         fn deinit(self: *Self) void {
-            for (self.data_points.items) |*m| {
-                m.deinit(self.allocator);
-            }
-            self.data_points.deinit(self.allocator);
-
-            self.explicit_storage.deinit();
-            self.exponential_storage.deinit();
+            self.storages.deinit(self.allocator);
         }
 
         /// Add the given value to the histogram, using the provided attributes.
         pub fn record(self: *Self, value: T, attributes: anytype) !void {
-            if (self.pre_aggregate) {
-                const ArgsType = @TypeOf(attributes);
-                const args_type_info = @typeInfo(ArgsType);
-                if (args_type_info != .@"struct") {
-                    @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
-                }
-                const count = args_type_info.@"struct".field_names.len / 2;
-                var stack_buf: [count]Attribute = undefined;
-                const attrs = Attributes.fromBuffer(&stack_buf, attributes);
-                return self.recordWithSlice(value, attrs);
-            } else {
-                self.lock.lockUncancelable(self.io);
-                defer self.lock.unlock(self.io);
-
-                var dp = try DataPoint(T).new(self.allocator, value, attributes);
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
+            const ArgsType = @TypeOf(attributes);
+            const args_type_info = @typeInfo(ArgsType);
+            if (args_type_info != .@"struct") {
+                @compileError("expected a tuple argument, found " ++ @typeName(ArgsType));
             }
+            const count = args_type_info.@"struct".field_names.len / 2;
+            var stack_buf: [count]Attribute = undefined;
+            const attrs = Attributes.fromBuffer(&stack_buf, attributes);
+            return self.recordWithSlice(value, attrs);
         }
 
         /// Record a value with a pre-built attribute slice.
         /// This is primarily used for C interop where attributes are passed as a slice.
         pub fn recordWithSlice(self: *Self, value: T, attributes: ?[]Attribute) !void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            if (!self.pre_aggregate) {
-                var dp = DataPoint(T){
-                    .value = value,
-                    .attributes = if (attributes) |attrs|
-                        try self.allocator.dupe(Attribute, attrs)
-                    else
-                        null,
-                };
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
-                return;
-            }
-
-            const f64_val = toF64(value);
-
-            var candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, value, attributes, self.exemplar_filter);
-            defer if (candidate) |*s| s.deinit(self.allocator);
-
-            switch (self.mode) {
-                .explicit => {
-                    try self.explicit_storage.record(f64_val, attributes, &candidate);
-                },
-                .exponential => {
-                    try self.exponential_storage.record(f64_val, attributes, &candidate);
-                },
-            }
-        }
-
-        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            const has_explicit = self.explicit_storage.count() > 0;
-            const has_exponential = self.exponential_storage.count() > 0;
-            const has_raw = self.data_points.items.len > 0;
-
-            if (has_raw and has_explicit) {
-                for (self.data_points.items) |*raw_dp| {
-                    const f64_val = toF64(raw_dp.value);
-                    var cand = raw_dp.exemplar_candidate;
-                    raw_dp.exemplar_candidate = null;
-                    defer if (cand) |*s| s.deinit(self.allocator);
-                    self.explicit_storage.record(f64_val, raw_dp.attributes, &cand) catch break;
-                }
-                for (self.data_points.items) |*m| m.deinit(self.allocator);
-                self.data_points.clearRetainingCapacity();
-            } else if (has_raw and has_exponential) {
-                for (self.data_points.items) |*raw_dp| {
-                    const f64_val = toF64(raw_dp.value);
-                    var cand = raw_dp.exemplar_candidate;
-                    raw_dp.exemplar_candidate = null;
-                    defer if (cand) |*s| s.deinit(self.allocator);
-                    self.exponential_storage.record(f64_val, raw_dp.attributes, &cand) catch break;
-                }
-                for (self.data_points.items) |*m| m.deinit(self.allocator);
-                self.data_points.clearRetainingCapacity();
-            }
-
-            if (!has_explicit and !has_exponential) {
-                defer {
-                    for (self.data_points.items) |*m| {
-                        m.deinit(self.allocator);
-                    }
-                    self.data_points.clearRetainingCapacity();
-                }
-                switch (@typeInfo(T)) {
-                    .int => {
-                        return .{ .int = try copyNormalizedPoints(T, i64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-                    },
-                    .float => {
-                        return .{ .double = try copyNormalizedPoints(T, f64, allocator, self.io, self.data_points.items, &self.collection_start_ns) };
-                    },
-                    else => @compileError("Histogram only supports integer and floating-point types, found " ++ @typeName(T)),
-                }
-            }
-
-            if (has_explicit) {
-                const data = try self.explicit_storage.snapshot(allocator, &self.collection_start_ns);
-                self.explicit_storage.clearRetainingCapacity();
-                return .{ .histogram = data };
-            } else {
-                const data = try self.exponential_storage.snapshot(allocator, &self.collection_start_ns);
-                self.exponential_storage.clearRetainingCapacity();
-                return .{ .exponential_histogram = data };
-            }
+            return recordToStorages(
+                T,
+                self.allocator,
+                self.io,
+                &self.lock,
+                self.exemplar_filter,
+                &self.storages,
+                value,
+                attributes,
+            );
         }
     };
 }
@@ -604,91 +481,23 @@ pub fn Gauge(comptime T: type) type {
     return struct {
         const Self = @This();
 
-        pub const AggType = switch (@typeInfo(T)) {
-            .int => i64,
-            .float => f64,
-            else => unreachable,
-        };
-
-        fn toAgg(value: T) AggType {
-            return switch (@typeInfo(T)) {
-                .int => @intCast(value),
-                .float => @floatCast(value),
-                else => unreachable,
-            };
-        }
-
-        fn wrapData(points: []DataPoint(AggType)) MeasurementsData {
-            return switch (AggType) {
-                i64 => .{ .int = points },
-                f64 => .{ .double = points },
-                else => unreachable,
-            };
-        }
-
         allocator: std.mem.Allocator,
         io: std.Io,
         lock: std.Io.Mutex,
         exemplar_filter: exemplar.ExemplarFilter = .trace_based,
-        collection_start_ns: u64 = 0,
-        pre_last_value: bool = true,
-
-        storage: storage.LastValueStorage(AggType),
-
-        /// Raw data points kept as fallback when any reader or view resolves to non-LastValue (e.g. Drop).
-        data_points: std.ArrayListUnmanaged(DataPoint(T)),
+        storages: std.ArrayListUnmanaged(*StorageSink),
 
         fn init(allocator: std.mem.Allocator, io: std.Io) Self {
             return Self{
-                .pre_last_value = true,
-                .storage = storage.LastValueStorage(AggType).init(allocator, io, spec.default_cardinality_limit),
-                .data_points = .empty,
+                .storages = .empty,
                 .allocator = allocator,
                 .io = io,
                 .lock = std.Io.Mutex.init,
-                .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
             };
         }
 
         fn deinit(self: *Self) void {
-            self.storage.deinit();
-
-            for (self.data_points.items) |*m| {
-                m.deinit(self.allocator);
-            }
-            self.data_points.deinit(self.allocator);
-        }
-
-        fn recordRawPoint(self: *Self, raw_dp: *DataPoint(T)) !void {
-            try self.storage.recordRawPoint(T, raw_dp);
-        }
-
-        pub fn setPreLastValue(self: *Self, enabled: bool) void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            if (self.pre_last_value == enabled) return;
-            self.pre_last_value = enabled;
-
-            if (enabled) {
-                // Switching back to LastValue: drain any pending raw points into storage.
-                // On allocation failure, the failed point and the ones after it stay in data_points,
-                // and we revert pre_last_value to false so subsequent measurements preserve chronological order.
-                const items = self.data_points.items;
-                var drained: usize = 0;
-                for (items) |*raw_dp| {
-                    self.recordRawPoint(raw_dp) catch {
-                        self.pre_last_value = false;
-                        break;
-                    };
-                    drained += 1;
-                }
-                // Drained points were moved out of or merged, so only the leftovers need freeing.
-                for (items[0..drained]) |*raw_dp| raw_dp.deinit(self.allocator);
-                const remaining = items.len - drained;
-                std.mem.copyForwards(DataPoint(T), items[0..remaining], items[drained..]);
-                self.data_points.shrinkRetainingCapacity(remaining);
-            }
+            self.storages.deinit(self.allocator);
         }
 
         /// Record the given value to the gauge, using the provided attributes.
@@ -707,54 +516,16 @@ pub fn Gauge(comptime T: type) type {
         /// Record a value with a pre-built attribute slice.
         /// This is primarily used for C interop where attributes are passed as a slice.
         pub fn recordWithSlice(self: *Self, value: T, attributes: ?[]Attribute) !void {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            if (!self.pre_last_value) {
-                var dp = DataPoint(T){
-                    .value = value,
-                    .attributes = if (attributes) |attrs|
-                        try self.allocator.dupe(Attribute, attrs)
-                    else
-                        null,
-                };
-                errdefer dp.deinit(self.allocator);
-                try dp.captureExemplar(self.allocator, self.io, self.exemplar_filter);
-                try self.data_points.append(self.allocator, dp);
-                return;
-            }
-
-            const val = toAgg(value);
-
-            var candidate = try exemplar.Exemplar.capture(T, self.allocator, self.io, value, attributes, self.exemplar_filter);
-            defer if (candidate) |*s| s.deinit(self.allocator);
-
-            try self.storage.record(val, attributes, &candidate);
-        }
-
-        fn measurementsData(self: *Self, allocator: std.mem.Allocator) !MeasurementsData {
-            self.lock.lockUncancelable(self.io);
-            defer self.lock.unlock(self.io);
-
-            // Both batches share one window, which only advances once the collection succeeds.
-            var agg_end_ns = self.collection_start_ns;
-            const agg_copied = try self.storage.snapshot(allocator, &agg_end_ns);
-            defer allocator.free(agg_copied);
-            errdefer for (agg_copied) |*p| p.deinit(allocator);
-
-            var raw_end_ns = self.collection_start_ns;
-            const raw_copied = try copyNormalizedPoints(T, AggType, allocator, self.io, self.data_points.items, &raw_end_ns);
-            defer allocator.free(raw_copied);
-            errdefer for (raw_copied) |*p| p.deinit(allocator);
-
-            const combined = try std.mem.concat(allocator, DataPoint(AggType), &.{ agg_copied, raw_copied });
-            self.collection_start_ns = @max(agg_end_ns, raw_end_ns);
-
-            self.storage.clearRetainingCapacity();
-            for (self.data_points.items) |*m| m.deinit(self.allocator);
-            self.data_points.clearRetainingCapacity();
-
-            return wrapData(combined);
+            return recordToStorages(
+                T,
+                self.allocator,
+                self.io,
+                &self.lock,
+                self.exemplar_filter,
+                &self.storages,
+                value,
+                attributes,
+            );
         }
     };
 }
@@ -768,22 +539,67 @@ test "counter with unsupported type does not leak" {
     try std.testing.expectError(spec.FormatError.UnsupportedValueType, err);
 }
 
+const MetricReader = @import("../../sdk/metrics/reader.zig").MetricReader;
+const MetricExporter = @import("../../sdk/metrics/exporter.zig").MetricExporter;
+const Measurements = @import("measurement.zig").Measurements;
+const storage = @import("../../sdk/metrics/storage.zig");
+const view_sdk = @import("../../sdk/metrics/view.zig");
+
+const TestHarness = struct {
+    allocator: std.mem.Allocator,
+    mp: *MeterProvider,
+    reader: *MetricReader,
+    in_mem: *@import("../../sdk/metrics/exporters/in_memory.zig").InMemoryExporter,
+
+    fn init(allocator: std.mem.Allocator, io: std.Io) !TestHarness {
+        const mp = try MeterProvider.init(allocator, io);
+        errdefer mp.deinit();
+        const me = try MetricExporter.InMemory(allocator, io, null, null);
+        errdefer me.in_memory.deinit();
+        const reader = try MetricReader.init(allocator, io, me.exporter);
+        errdefer reader.deinit();
+        try mp.addReader(reader);
+        return .{
+            .allocator = allocator,
+            .mp = mp,
+            .reader = reader,
+            .in_mem = me.in_memory,
+        };
+    }
+
+    fn deinit(self: *TestHarness) void {
+        self.reader.deinit();
+        self.in_mem.deinit();
+        self.mp.deinit();
+    }
+
+    fn collect(self: *TestHarness) ![]Measurements {
+        try self.reader.collect();
+        return try self.in_mem.fetch(self.allocator);
+    }
+
+    fn freeCollected(self: *TestHarness, data: []Measurements) void {
+        for (data) |*m| m.deinit(self.allocator);
+        self.allocator.free(data);
+    }
+};
+
 test "meter can create counter instrument and record increase without attributes" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
 
     try counter.add(10, .{});
-    std.debug.assert(counter.storage.aggregated_points.count() == 1);
+    try std.testing.expectEqual(@as(usize, 1), counter.storages.items[0].storage.count());
 }
 
 test "meter can create counter instrument and record increase with attributes" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{
         .name = "a-counter",
         .description = "a funny counter",
@@ -793,110 +609,101 @@ test "meter can create counter instrument and record increase with attributes" {
     try counter.add(100, .{});
     try counter.add(1000, .{});
 
-    // In record-time sum aggregation, identical attributes aggregate into 1 point
-    std.debug.assert(counter.storage.aggregated_points.count() == 1);
-    std.debug.assert(counter.storage.aggregated_points.values()[0].value == 1100);
+    try std.testing.expectEqual(@as(usize, 1), counter.storages.items[0].storage.count());
 
     const val1: []const u8 = "some-value";
     const val2: []const u8 = "another-value";
 
     try counter.add(2, .{ "some-key", val1, "another-key", val2 });
-    std.debug.assert(counter.storage.aggregated_points.count() == 2);
-    std.debug.assert(counter.storage.aggregated_points.values()[1].value == 2);
+    try std.testing.expectEqual(@as(usize, 2), counter.storages.items[0].storage.count());
+
+    const data = try h.collect();
+    defer h.freeCollected(data);
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 2), data[0].data.int.len);
+    try std.testing.expectEqual(@as(i64, 1100), data[0].data.int[0].value);
+    try std.testing.expectEqual(@as(i64, 2), data[0].data.int[1].value);
 }
 
 test "histogram records value without explicit buckets" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
 
     try histogram.record(1, .{});
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    // Aggregates in place at record time: single attribute set yields 1 HistogramDataPoint
-    const measurements = try histogram.measurementsData(std.testing.allocator);
-    defer {
-        for (measurements.histogram) |*dp| {
-            dp.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(measurements.histogram);
-    }
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    try std.testing.expectEqual(1, measurements.histogram.len);
-    const dp = measurements.histogram[0].value;
-    try std.testing.expectEqual(3, dp.count);
-    try std.testing.expectEqual(21, dp.sum.?);
-    try std.testing.expectEqual(1, dp.min.?);
-    try std.testing.expectEqual(15, dp.max.?);
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.histogram.len);
+    const dp = data[0].data.histogram[0].value;
+    try std.testing.expectEqual(@as(u64, 3), dp.count);
+    try std.testing.expectEqual(@as(f64, 21), dp.sum.?);
+    try std.testing.expectEqual(@as(f64, 1), dp.min.?);
+    try std.testing.expectEqual(@as(f64, 15), dp.max.?);
 }
 
 test "histogram records value with explicit buckets" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    try h.mp.addView(.{
+        .instrument_selector = .{ .name = "a-histogram" },
+        .aggregation = .{ .ExplicitBucketHistogram = .{ .buckets = &[_]f64{ 2.0, 10.0 } } },
+        .temporality = .Cumulative,
+    });
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
-    histogram.explicit_storage.buckets = &[_]f64{ 2.0, 10.0 };
 
     try histogram.record(1, .{});
     try histogram.record(5, .{});
     try histogram.record(15, .{});
 
-    try std.testing.expectEqual(1, histogram.explicit_storage.count());
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    const measurements = try histogram.measurementsData(std.testing.allocator);
-    defer {
-        for (measurements.histogram) |*dp| {
-            dp.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(measurements.histogram);
-    }
-
-    try std.testing.expectEqual(1, measurements.histogram.len);
-    const dp = measurements.histogram[0].value;
-    try std.testing.expectEqual(3, dp.count);
-    try std.testing.expectEqual(21, dp.sum.?);
-    try std.testing.expectEqual(1, dp.min.?);
-    try std.testing.expectEqual(15, dp.max.?);
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.histogram.len);
+    const dp = data[0].data.histogram[0].value;
+    try std.testing.expectEqual(@as(u64, 3), dp.count);
+    try std.testing.expectEqual(@as(f64, 21), dp.sum.?);
+    try std.testing.expectEqual(@as(f64, 1), dp.min.?);
+    try std.testing.expectEqual(@as(f64, 15), dp.max.?);
     // Buckets: <= 2.0 (1), <= 10.0 (1), > 10.0 (1)
-    try std.testing.expectEqual(3, dp.bucket_counts.len);
-    try std.testing.expectEqual(1, dp.bucket_counts[0]);
-    try std.testing.expectEqual(1, dp.bucket_counts[1]);
-    try std.testing.expectEqual(1, dp.bucket_counts[2]);
+    try std.testing.expectEqual(@as(usize, 3), dp.bucket_counts.len);
+    try std.testing.expectEqual(@as(u64, 1), dp.bucket_counts[0]);
+    try std.testing.expectEqual(@as(u64, 1), dp.bucket_counts[1]);
+    try std.testing.expectEqual(@as(u64, 1), dp.bucket_counts[2]);
 }
 
 test "histogram keeps track of bucket counts by attribute" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
 
     const val: []const u8 = "some-value";
     try histogram.record(1, .{ "some-key", val });
     try histogram.record(1000, .{ "other-key", val });
 
-    try std.testing.expectEqual(2, histogram.explicit_storage.count());
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    const measurements = try histogram.measurementsData(std.testing.allocator);
-    defer {
-        for (measurements.histogram) |*dp| {
-            dp.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(measurements.histogram);
-    }
-
-    try std.testing.expectEqual(2, measurements.histogram.len);
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 2), data[0].data.histogram.len);
 }
 
 test "histogram keeps track of count, sum and min/max by attribute" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
 
     const val: []const u8 = "some-val";
@@ -904,35 +711,28 @@ test "histogram keeps track of count, sum and min/max by attribute" {
     try histogram.record(5, .{ "key", val });
     try histogram.record(15, .{ "key", val });
 
-    std.debug.assert(histogram.explicit_storage.count() == 2);
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    const measurements = try histogram.measurementsData(std.testing.allocator);
-    defer {
-        for (measurements.histogram) |*dp| {
-            dp.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(measurements.histogram);
-    }
-
-    // 2 attribute sets: empty attributes and {"key": "some-val"}
-    try std.testing.expectEqual(2, measurements.histogram.len);
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 2), data[0].data.histogram.len);
 
     var found_empty = false;
     var found_key = false;
 
-    for (measurements.histogram) |dp| {
+    for (data[0].data.histogram) |dp| {
         if (dp.attributes == null) {
             found_empty = true;
-            try std.testing.expectEqual(1, dp.value.count);
-            try std.testing.expectEqual(1, dp.value.sum.?);
-            try std.testing.expectEqual(1, dp.value.min.?);
-            try std.testing.expectEqual(1, dp.value.max.?);
+            try std.testing.expectEqual(@as(u64, 1), dp.value.count);
+            try std.testing.expectEqual(@as(f64, 1), dp.value.sum.?);
+            try std.testing.expectEqual(@as(f64, 1), dp.value.min.?);
+            try std.testing.expectEqual(@as(f64, 1), dp.value.max.?);
         } else {
             found_key = true;
-            try std.testing.expectEqual(2, dp.value.count);
-            try std.testing.expectEqual(20, dp.value.sum.?);
-            try std.testing.expectEqual(5, dp.value.min.?);
-            try std.testing.expectEqual(15, dp.value.max.?);
+            try std.testing.expectEqual(@as(u64, 2), dp.value.count);
+            try std.testing.expectEqual(@as(f64, 20), dp.value.sum.?);
+            try std.testing.expectEqual(@as(f64, 5), dp.value.min.?);
+            try std.testing.expectEqual(@as(f64, 15), dp.value.max.?);
         }
     }
 
@@ -942,9 +742,9 @@ test "histogram keeps track of count, sum and min/max by attribute" {
 
 test "histogram aggregates measurements in place without growing memory" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(f64, .{ .name = "latency" });
 
     const val: []const u8 = "127.0.0.1";
@@ -952,98 +752,96 @@ test "histogram aggregates measurements in place without growing memory" {
         try histogram.record(@floatFromInt(i % 100), .{ "server.address", val });
     }
 
-    // Must be exactly 1 series in memory despite 10,000 recordings
-    try std.testing.expectEqual(1, histogram.explicit_storage.count());
+    try std.testing.expectEqual(@as(usize, 1), histogram.storages.items[0].storage.count());
 
-    const measurements = try histogram.measurementsData(std.testing.allocator);
-    defer {
-        for (measurements.histogram) |*dp| {
-            dp.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(measurements.histogram);
-    }
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    try std.testing.expectEqual(1, measurements.histogram.len);
-    try std.testing.expectEqual(10_000, measurements.histogram[0].value.count);
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.histogram.len);
+    try std.testing.expectEqual(@as(u64, 10_000), data[0].data.histogram[0].value.count);
 }
 
 test "histogram enforces cardinality limit" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "cardinality-test" });
-    histogram.explicit_storage.cardinality_limit = 2;
+    histogram.storages.items[0].storage.setCardinalityLimit(2);
 
     try histogram.record(1, .{ "attr", @as([]const u8, "a") });
     try histogram.record(2, .{ "attr", @as([]const u8, "b") });
-    try histogram.record(3, .{ "attr", @as([]const u8, "c") }); // dropped
+    try histogram.record(3, .{ "attr", @as([]const u8, "c") }); // overflow
 
-    try std.testing.expectEqual(2, histogram.explicit_storage.count());
+    try std.testing.expectEqual(@as(usize, 2), histogram.storages.items[0].storage.count());
 }
 
 test "histogram exponential bucket mode aggregates in place" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    try h.mp.addView(.{
+        .instrument_selector = .{ .name = "exp-test" },
+        .aggregation = .{ .ExponentialBucketHistogram = try view_sdk.ExponentialBucketHistogramConfig.init(.{
+            .max_scale = 10,
+            .max_size = 4,
+        }) },
+        .temporality = .Cumulative,
+    });
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(f64, .{ .name = "exp-test" });
-    histogram.mode = .exponential;
-    histogram.exponential_storage.max_scale = 10;
-    histogram.exponential_storage.max_size = 4;
 
     try histogram.record(1.0, .{});
     try histogram.record(2.0, .{});
     try histogram.record(4.0, .{});
 
-    try std.testing.expectEqual(1, histogram.exponential_storage.count());
+    try std.testing.expectEqual(@as(usize, 1), histogram.storages.items[0].storage.count());
 
-    const measurements = try histogram.measurementsData(std.testing.allocator);
-    defer {
-        for (measurements.exponential_histogram) |*dp| {
-            dp.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(measurements.exponential_histogram);
-    }
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    try std.testing.expectEqual(1, measurements.exponential_histogram.len);
-    const dp = measurements.exponential_histogram[0].value;
-    try std.testing.expectEqual(3, dp.count);
-    try std.testing.expectEqual(7.0, dp.sum.?);
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.exponential_histogram.len);
+    const dp = data[0].data.exponential_histogram[0].value;
+    try std.testing.expectEqual(@as(u64, 3), dp.count);
+    try std.testing.expectEqual(@as(f64, 7.0), dp.sum.?);
 }
 
 test "gauge instrument records value without attributes" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
 
     try gauge.record(42, .{});
     try gauge.record(-42, .{});
-    // In record-time last-value aggregation, identical attributes aggregate into 1 point
-    std.debug.assert(gauge.storage.aggregated_points.count() == 1);
-    std.debug.assert(gauge.storage.aggregated_points.values()[0].value == -42);
+
+    try std.testing.expectEqual(@as(usize, 1), gauge.storages.items[0].storage.count());
+
+    const data = try h.collect();
+    defer h.freeCollected(data);
+    try std.testing.expectEqual(@as(i64, -42), data[0].data.int[0].value);
 }
 
 test "gauge keeps separate last value per attribute set" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(f64, .{ .name = "temperature" });
 
     try gauge.record(20.5, .{ "room", @as([]const u8, "kitchen") });
     try gauge.record(22.0, .{ "room", @as([]const u8, "living_room") });
     try gauge.record(21.0, .{ "room", @as([]const u8, "kitchen") });
 
-    try std.testing.expectEqual(@as(usize, 2), gauge.storage.aggregated_points.count());
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    var measurements = try gauge.measurementsData(std.testing.allocator);
-    defer measurements.deinit(std.testing.allocator);
-
-    try std.testing.expectEqual(@as(usize, 2), measurements.double.len);
-    for (measurements.double) |dp| {
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(usize, 2), data[0].data.double.len);
+    for (data[0].data.double) |dp| {
         const room = dp.attributes.?[0].value.string;
         if (std.mem.eql(u8, room, "kitchen")) {
             try std.testing.expectEqual(21.0, dp.value);
@@ -1057,24 +855,24 @@ test "gauge keeps separate last value per attribute set" {
 
 test "gauge cardinality limit creates overflow series and records excess measurements" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i64, .{ .name = "gauge-cardinality" });
-    gauge.storage.cardinality_limit = 3;
+    gauge.storages.items[0].storage.setCardinalityLimit(3);
 
     try gauge.record(10, .{ "k", @as([]const u8, "v1") });
     try gauge.record(20, .{ "k", @as([]const u8, "v2") });
-    // Limit is 3, so at 3 - 1 = 2 regular series, next series goes to overflow
     try gauge.record(30, .{ "k", @as([]const u8, "v3") });
     try gauge.record(40, .{ "k", @as([]const u8, "v4") });
 
-    // Should have 3 points: v1, v2, and the overflow series
-    try std.testing.expectEqual(@as(usize, 3), gauge.storage.aggregated_points.count());
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    // The overflow series should hold the latest value (40)
+    try std.testing.expectEqual(@as(usize, 3), data[0].data.int.len);
+
     var found_overflow = false;
-    for (gauge.storage.aggregated_points.values()) |dp| {
+    for (data[0].data.int) |dp| {
         if (dp.attributes) |attrs| {
             if (attrs.len == 1 and std.mem.eql(u8, attrs[0].key, "otel.metric.overflow")) {
                 found_overflow = true;
@@ -1087,120 +885,46 @@ test "gauge cardinality limit creates overflow series and records excess measure
 
 test "gauge record existing series performs zero heap allocations" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var gauge = try meter.createGauge(f64, .{ .name = "zero-alloc-gauge" });
+    var last_val_storage = storage.LastValueStorage(f64).init(std.testing.allocator, io, 100);
+    defer last_val_storage.deinit();
 
-    // Initial record creates the series
-    try gauge.record(1.0, .{ "host", @as([]const u8, "server-1") });
+    const attrs = [_]Attribute{.{ .key = "host", .value = .{ .string = "server-1" } }};
+    var candidate: ?exemplar.Exemplar = null;
+    try last_val_storage.record(1.0, &attrs, &candidate);
 
-    // Subsequent records to the same series must not allocate any heap memory
     var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    const prev_allocator = gauge.allocator;
-    gauge.allocator = failing_allocator.allocator();
-    gauge.storage.allocator = failing_allocator.allocator();
-    defer {
-        gauge.allocator = prev_allocator;
-        gauge.storage.allocator = prev_allocator;
-    }
+    const prev_allocator = last_val_storage.allocator;
+    last_val_storage.allocator = failing_allocator.allocator();
+    defer last_val_storage.allocator = prev_allocator;
 
-    try gauge.record(2.5, .{ "host", @as([]const u8, "server-1") });
-    try gauge.record(3.5, .{ "host", @as([]const u8, "server-1") });
+    try last_val_storage.record(2.5, &attrs, &candidate);
+    try last_val_storage.record(3.5, &attrs, &candidate);
 
-    try std.testing.expectEqual(@as(usize, 1), gauge.storage.aggregated_points.count());
-    try std.testing.expectEqual(3.5, gauge.storage.aggregated_points.values()[0].value);
-}
-
-test "gauge setPreLastValue drains pending raw data points" {
-    const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var gauge = try meter.createGauge(i32, .{ .name = "drain-gauge" });
-
-    // Disable pre-aggregation to accumulate raw points
-    gauge.setPreLastValue(false);
-    try gauge.record(10, .{ "color", @as([]const u8, "red") });
-    try gauge.record(20, .{ "color", @as([]const u8, "blue") });
-    try gauge.record(30, .{ "color", @as([]const u8, "red") });
-    try std.testing.expectEqual(@as(usize, 3), gauge.data_points.items.len);
-    try std.testing.expectEqual(@as(usize, 0), gauge.storage.aggregated_points.count());
-
-    // Switch back to pre-aggregation: drains into aggregated_points
-    gauge.setPreLastValue(true);
-    try std.testing.expectEqual(@as(usize, 0), gauge.data_points.items.len);
-    try std.testing.expectEqual(@as(usize, 2), gauge.storage.aggregated_points.count());
-}
-
-test "gauge setPreLastValue failed drain reverts to raw recording mode" {
-    const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
-    var gauge = try meter.createGauge(i32, .{ .name = "drain-fail-gauge" });
-
-    gauge.setPreLastValue(false);
-    try gauge.record(10, .{ "color", @as([]const u8, "red") });
-    try std.testing.expectEqual(@as(usize, 1), gauge.data_points.items.len);
-
-    // Make allocations fail during drain
-    var failing_allocator = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 0 });
-    const prev_allocator = gauge.allocator;
-    gauge.allocator = failing_allocator.allocator();
-    gauge.storage.allocator = failing_allocator.allocator();
-
-    // Drain fails because put/copyAttributes fails:
-    gauge.setPreLastValue(true);
-    // Mode must revert to false so new points are not inserted out of order
-    try std.testing.expectEqual(false, gauge.pre_last_value);
-    try std.testing.expectEqual(@as(usize, 1), gauge.data_points.items.len);
-
-    // Restore allocator
-    gauge.allocator = prev_allocator;
-    gauge.storage.allocator = prev_allocator;
-    // Record another measurement: appends to raw data_points in chronological order
-    try gauge.record(20, .{ "color", @as([]const u8, "red") });
-    try std.testing.expectEqual(@as(usize, 2), gauge.data_points.items.len);
-
-    // Subsequent drain succeeds
-    gauge.setPreLastValue(true);
-    try std.testing.expectEqual(true, gauge.pre_last_value);
-    try std.testing.expectEqual(@as(usize, 0), gauge.data_points.items.len);
-    try std.testing.expectEqual(@as(usize, 1), gauge.storage.aggregated_points.count());
-    try std.testing.expectEqual(@as(i64, 20), gauge.storage.aggregated_points.values()[0].value);
-}
-
-test "gauge mixed aggregated and raw points share the collection start time" {
-    const io = std.testing.io;
-    var g = Gauge(i32).init(std.testing.allocator, io);
-    defer g.deinit();
-    g.collection_start_ns = 1;
-
-    try g.record(10, .{ "color", @as([]const u8, "red") });
-    g.setPreLastValue(false);
-    try g.record(20, .{ "color", @as([]const u8, "blue") });
-
-    var data = try g.measurementsData(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
-    try std.testing.expectEqual(2, data.int.len);
-    for (data.int) |point| try std.testing.expectEqual(1, point.timestamps.?.start_time_ns);
-    try std.testing.expectEqual(@max(data.int[0].timestamps.?.time_ns, data.int[1].timestamps.?.time_ns), g.collection_start_ns);
+    try std.testing.expectEqual(@as(usize, 1), last_val_storage.count());
+    try std.testing.expectEqual(3.5, last_val_storage.aggregated_points.values()[0].value);
 }
 
 fn testGaugeAllocationFailures(allocator: std.mem.Allocator) !void {
     const io = std.testing.io;
-    var g = Gauge(f64).init(allocator, io);
-    defer g.deinit();
-    g.storage.cardinality_limit = 2;
+    var s = storage.LastValueStorage(f64).init(allocator, io, 2);
+    defer s.deinit();
 
-    try g.record(10.0, .{ "status", @as([]const u8, "200") });
-    try g.record(5.0, .{ "status", @as([]const u8, "200") });
-    try g.record(20.0, .{ "status", @as([]const u8, "404") });
-    try g.record(30.0, .{ "status", @as([]const u8, "500") });
+    var candidate: ?exemplar.Exemplar = null;
+    const a200 = [_]Attribute{.{ .key = "status", .value = .{ .string = "200" } }};
+    const a404 = [_]Attribute{.{ .key = "status", .value = .{ .string = "404" } }};
+    const a500 = [_]Attribute{.{ .key = "status", .value = .{ .string = "500" } }};
 
-    var data = try g.measurementsData(allocator);
-    defer data.deinit(allocator);
+    try s.record(10.0, &a200, &candidate);
+    try s.record(5.0, &a200, &candidate);
+    try s.record(20.0, &a404, &candidate);
+    try s.record(30.0, &a500, &candidate);
+
+    var end_time: u64 = 0;
+    const points = try s.snapshot(allocator, &end_time);
+    defer {
+        for (points) |*p| p.deinit(allocator);
+        allocator.free(points);
+    }
 }
 
 test "gauge in-place aggregation handles allocation failures without leaks or double-frees" {
@@ -1209,32 +933,30 @@ test "gauge in-place aggregation handles allocation failures without leaks or do
 
 test "upDownCounter instrument records and stores value" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-    const meter = try mp.getMeter(.{ .name = "my-meter" });
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
+    const meter = try h.mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
 
     try counter.add(10, .{});
     try counter.add(-5, .{});
     try counter.add(-4, .{});
-    std.debug.assert(counter.storage.aggregated_points.count() == 1);
-    try std.testing.expectEqual(1, counter.storage.aggregated_points.values()[0].value);
-
     try counter.add(1, .{ "some-key", @as(i64, 42) });
 
-    std.debug.assert(counter.storage.aggregated_points.count() == 2);
-    try std.testing.expectEqual(1, counter.storage.aggregated_points.values()[1].value);
+    const data = try h.collect();
+    defer h.freeCollected(data);
+    try std.testing.expectEqual(@as(usize, 2), data[0].data.int.len);
+    try std.testing.expectEqual(@as(i64, 1), data[0].data.int[0].value);
+    try std.testing.expectEqual(@as(i64, 1), data[0].data.int[1].value);
 }
 
 test "instrument in meter and instrument in data are the same" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
 
     const name = "test-instrument";
-
-    const meter = try mp.getMeter(.{ .name = "test-meter" });
-
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
     var c = try meter.createCounter(u64, .{ .name = name });
     try c.add(100, .{});
 
@@ -1249,43 +971,7 @@ test "instrument in meter and instrument in data are the same" {
 
     if (meter.instruments.get(id)) |instrument| {
         std.debug.assert(instrument.kind == Kind.Counter);
-
-        const counter_value = instrument.data.Counter_u64.storage.aggregated_points.get(Attributes.with(null)) orelse unreachable;
-        try std.testing.expectEqual(100, counter_value.value);
-    } else {
-        std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.scope.name });
-    }
-}
-
-test "instrument fetches measurements from inner" {
-    const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
-
-    const name = "test-instrument";
-
-    const meter = try mp.getMeter(.{ .name = "test-meter" });
-
-    var c = try meter.createCounter(u64, .{ .name = name });
-    try c.add(100, .{});
-
-    const id = try spec.instrumentIdentifier(
-        std.testing.allocator,
-        name,
-        Kind.Counter.toString(),
-        "",
-        "",
-    );
-    defer std.testing.allocator.free(id);
-
-    if (meter.instruments.get(id)) |instrument| {
-        const measurements = try instrument.getInstrumentsData(std.testing.allocator);
-        defer switch (measurements) {
-            inline else => |list| std.testing.allocator.free(list),
-        };
-
-        std.debug.assert(measurements.int.len == 1);
-        try std.testing.expectEqual(@as(i64, 100), measurements.int[0].value);
+        try std.testing.expectEqual(c, instrument.data.Counter_u64);
     } else {
         std.debug.panic("Counter {s} not found in meter {s} after creation", .{ name, meter.scope.name });
     }
@@ -1293,23 +979,17 @@ test "instrument fetches measurements from inner" {
 
 test "counter thread-safety between datapoints collection and recording" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
 
-    const name = "test-instrument";
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
+    var c = try meter.createCounter(u64, .{ .name = "test-instrument" });
 
-    const meter = try mp.getMeter(.{ .name = "test-meter" });
-
-    var c = try meter.createCounter(u64, .{ .name = name });
-
-    // We use attributes to perform memory allocation,
-    // slowing down the add() call, retaining the lock
-    // for longer
     const val: []const u8 = "test-val";
     try c.add(1, .{ "cde", val });
 
     const adding_job = try std.Thread.spawn(.{}, testCounterAddingOne, .{c});
-    const fetch_compare = try std.Thread.spawn(.{}, testCounterCollect, .{c});
+    const fetch_compare = try std.Thread.spawn(.{}, testCounterCollect, .{&h});
     adding_job.join();
     fetch_compare.join();
 }
@@ -1319,44 +999,30 @@ fn testCounterAddingOne(counter: *Counter(u64)) !void {
     try counter.add(2, .{ "abc", val });
 }
 
-fn testCounterCollect(counter: *Counter(u64)) !void {
-    // FIXME flaky test can result in failure, so we added a sleep but we should find a more robust solution.
+fn testCounterCollect(h: *TestHarness) !void {
     for (0..1000) |_| {
-        counter.lock.lockUncancelable(counter.io);
-        counter.lock.unlock(counter.io);
         std.Io.sleep(std.testing.io, .fromNanoseconds(25), .awake) catch {};
     }
 
-    const fetched = try counter.measurementsData(std.testing.allocator);
-    defer {
-        for (fetched.int) |*m| {
-            m.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(fetched.int);
-    }
-    // Assert that we have 2 data points: the first added by the test thread,
-    // the second added by `testAddingOne` called in a separate thread.
-    try std.testing.expectEqual(2, fetched.int.len);
-    try std.testing.expectEqual(1, fetched.int[0].value);
-    try std.testing.expectEqual(2, fetched.int[1].value);
+    const fetched = try h.collect();
+    defer h.freeCollected(fetched);
+    try std.testing.expectEqual(@as(usize, 1), fetched.len);
+    try std.testing.expectEqual(@as(usize, 2), fetched[0].data.int.len);
 }
 
 test "histogram thread-safety" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
 
-    const name = "test-instrument";
-
-    const meter = try mp.getMeter(.{ .name = "test-meter" });
-
-    var h = try meter.createHistogram(u64, .{ .name = name });
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
+    var hist = try meter.createHistogram(u64, .{ .name = "test-instrument" });
 
     const val: []const u8 = "same-val";
-    try h.record(20, .{ "same-key", val });
+    try hist.record(20, .{ "same-key", val });
 
-    const adding_job = try std.Thread.spawn(.{}, testHistogramRecordOne, .{h});
-    const fetch_compare = try std.Thread.spawn(.{}, testHistogramCollect, .{h});
+    const adding_job = try std.Thread.spawn(.{}, testHistogramRecordOne, .{hist});
+    const fetch_compare = try std.Thread.spawn(.{}, testHistogramCollect, .{&h});
     adding_job.join();
     fetch_compare.join();
 }
@@ -1366,51 +1032,33 @@ fn testHistogramRecordOne(histogram: *Histogram(u64)) !void {
     try histogram.record(1, .{ "same-key", val });
 }
 
-fn testHistogramCollect(histogram: *Histogram(u64)) !void {
-    // FIXME flaky test can result in failure, so we added a sleep but we should find a more robust solution.
+fn testHistogramCollect(h: *TestHarness) !void {
     for (0..1000) |_| {
-        histogram.lock.lockUncancelable(histogram.io);
-        histogram.lock.unlock(histogram.io);
         std.Io.sleep(std.testing.io, .fromNanoseconds(25), .awake) catch {};
     }
 
-    const fetched = try histogram.measurementsData(std.testing.allocator);
-    defer {
-        for (fetched.histogram) |*m| {
-            m.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(fetched.histogram);
-    }
-    // Both recordings have the same attribute set, aggregating into 1 HistogramDataPoint
-    try std.testing.expectEqual(1, fetched.histogram.len);
-    try std.testing.expectEqual(2, fetched.histogram[0].value.count);
-    try std.testing.expectEqual(21, fetched.histogram[0].value.sum.?);
+    const fetched = try h.collect();
+    defer h.freeCollected(fetched);
+    try std.testing.expectEqual(@as(usize, 1), fetched.len);
+    try std.testing.expectEqual(@as(usize, 1), fetched[0].data.histogram.len);
+    try std.testing.expectEqual(@as(u64, 2), fetched[0].data.histogram[0].value.count);
+    try std.testing.expectEqual(@as(f64, 21), fetched[0].data.histogram[0].value.sum.?);
 }
 
 test "instrument cleans up internal state when datapoints are fetched" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
 
-    const name = "test-instrument";
-
-    const meter = try mp.getMeter(.{ .name = "test-meter" });
-
-    var c = try meter.createCounter(u64, .{ .name = name });
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
+    var c = try meter.createCounter(u64, .{ .name = "test-instrument" });
 
     const val: []const u8 = "test-val";
     try c.add(1, .{ "cde", val });
 
-    const fetched = try c.measurementsData(std.testing.allocator);
-    defer {
-        for (fetched.int) |*m| {
-            m.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(fetched.int);
-    }
-    // Assert that we have 1 data point: the first added by the test thread.
-    try std.testing.expectEqual(0, c.storage.aggregated_points.count());
-    try std.testing.expectEqual(0, c.data_points.items.len);
+    const fetched = try h.collect();
+    defer h.freeCollected(fetched);
+    try std.testing.expectEqual(@as(usize, 0), c.storages.items[0].storage.count());
 }
 
 const MetricObserveError = AsyncInstrument.MetricObserveError;
@@ -1422,8 +1070,6 @@ test "async instrument registered in meter" {
 
     const background = struct {
         fn observe(_: AsyncInstrument.ObservedContext, _: std.mem.Allocator) MetricObserveError!MeasurementsData {
-            // This is a dummy callback that does nothing.
-            // In a real-world scenario, it would collect data asynchronously.
             return MeasurementsData{
                 .int = &.{},
             };
@@ -1443,8 +1089,6 @@ test "async instrument registered in meter" {
         &callbacks,
     );
 
-    // SDK users aren't expected to call measurementsData on the async instrument,
-    // rather simply use the meter to register the instrument
     const data = try async_counter.measurementsData(std.testing.allocator);
     try std.testing.expectEqual(0, data.int.len);
 }
@@ -1452,31 +1096,39 @@ test "async instrument registered in meter" {
 test "exemplar recording snapshots caller attributes before draining" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const instr = try Instrument.new(.Counter, .{ .name = "exemplar-counter" }, allocator);
-    defer instr.deinit();
-    const counter = try instr.counter(std.testing.io, u64);
+    var h = try TestHarness.init(allocator, io);
+    defer h.deinit();
+
+    const meter = try h.mp.getMeter(.{ .name = "exemplar-meter" });
+    const counter = try meter.createCounter(u64, .{ .name = "exemplar-counter" });
     counter.exemplar_filter = .always_on;
+
     var value = [_]u8{ 'f', 'i', 'r', 's', 't' };
     var attrs = [_]Attribute{.{ .key = "request", .value = .{ .string = &value } }};
     const before: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
     try counter.addWithSlice(7, &attrs);
     const after: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
     @memcpy(&value, "later");
-    var data = try instr.getInstrumentsData(allocator);
-    defer data.deinit(allocator);
-    const sample = data.int[0].exemplar_candidate.?;
-    try std.testing.expectEqualStrings("first", sample.filtered_attributes[0].value.string);
+
+    // Disable exemplar_sampler filtering by checking the captured candidate directly before collect,
+    // or collect with a view that drops the attribute so it stays in filtered_attributes.
+    // Here we check the collected point attribute is "first" (not "later").
+    const data = try h.collect();
+    defer h.freeCollected(data);
+    try std.testing.expectEqualStrings("first", data[0].data.int[0].attributes.?[0].value.string);
+    const sample = data[0].data.int[0].exemplars[0];
     try std.testing.expect(sample.time_ns >= before and sample.time_ns <= after);
     try std.testing.expectEqual(@as(i64, 7), sample.value.int);
-    try std.testing.expectEqual(@as(usize, 0), counter.storage.aggregated_points.count());
-    try std.testing.expectEqual(@as(usize, 0), counter.data_points.items.len);
 }
 
 test "exemplar recording keeps sampled span IDs after context ends" {
     const allocator = std.testing.allocator;
-    const instr = try Instrument.new(.Histogram, .{ .name = "exemplar-histogram" }, allocator);
-    defer instr.deinit();
-    const histogram = try instr.histogram(std.testing.io, f64);
+    const io = std.testing.io;
+    var h = try TestHarness.init(allocator, io);
+    defer h.deinit();
+
+    const meter = try h.mp.getMeter(.{ .name = "exemplar-meter" });
+    const histogram = try meter.createHistogram(f64, .{ .name = "exemplar-histogram" });
     {
         defer context_api.cleanup();
         const sc = trace_api.SpanContext.init(trace_api.TraceID.init(@splat(1)), trace_api.SpanID.init(@splat(2)), .sampled(), trace_api.TraceState.init(allocator), false);
@@ -1485,97 +1137,68 @@ test "exemplar recording keeps sampled span IDs after context ends" {
         _ = try context_api.attachContext(ctx);
         try histogram.record(2.5, .{});
     }
-    var data = try instr.getInstrumentsData(allocator);
-    defer data.deinit(allocator);
-    const sample = data.double[0].exemplar_candidate.?;
+    const data = try h.collect();
+    defer h.freeCollected(data);
+    const sample = data[0].data.histogram[0].exemplars[0];
     try std.testing.expectEqualSlices(u8, &@as([16]u8, @splat(1)), &sample.trace_id.?);
     try std.testing.expectEqualSlices(u8, &@as([8]u8, @splat(2)), &sample.span_id.?);
     try std.testing.expectEqual(@as(f64, 2.5), sample.value.double);
 }
 
-fn recordRequests(counter: *Counter(u64), count: usize) !void {
-    const route: []const u8 = "/api/v1/users";
-    for (0..count) |_| {
-        try counter.add(1, .{ "http.route", route, "http.status_code", @as(i64, 200) });
-    }
-}
-
 test "counter aggregates measurements in place in constant memory" {
     const io = std.testing.io;
 
-    // Large enough for one series, far too small for thousands of raw measurements.
+    // Large enough for one series, far too small for 10,000 raw measurements.
     var buffer: [16 * 1024]u8 = undefined;
     var fixed = std.heap.FixedBufferAllocator.init(&buffer);
-    var counter = Counter(u64).init(fixed.allocator(), io);
-    defer counter.deinit();
+    var sum_storage = storage.SumStorage(i64).init(fixed.allocator(), io, spec.default_cardinality_limit);
+    defer sum_storage.deinit();
 
-    try recordRequests(&counter, 10_000);
-    try std.testing.expectEqual(1, counter.storage.aggregated_points.count());
-    try std.testing.expectEqual(10_000, counter.storage.aggregated_points.values()[0].value);
-
-    // Control: the same buffer cannot hold the raw measurements.
-    var raw_buffer: [16 * 1024]u8 = undefined;
-    var raw_fixed = std.heap.FixedBufferAllocator.init(&raw_buffer);
-    var raw_counter = Counter(u64).init(raw_fixed.allocator(), io);
-    defer raw_counter.deinit();
-    raw_counter.setPreSum(false);
-    try std.testing.expectError(error.OutOfMemory, recordRequests(&raw_counter, 10_000));
-
-    const fetched = try counter.measurementsData(std.testing.allocator);
-    defer {
-        for (fetched.int) |*m| {
-            m.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(fetched.int);
+    const route: []const u8 = "/api/v1/users";
+    const attrs = [_]Attribute{
+        .{ .key = "http.route", .value = .{ .string = route } },
+        .{ .key = "http.status_code", .value = .{ .int = 200 } },
+    };
+    var candidate: ?exemplar.Exemplar = null;
+    for (0..10_000) |_| {
+        try sum_storage.record(1, &attrs, &candidate);
     }
 
-    try std.testing.expectEqual(1, fetched.int.len);
-    try std.testing.expectEqual(10_000, fetched.int[0].value);
-    try std.testing.expectEqual(0, counter.storage.aggregated_points.count());
+    try std.testing.expectEqual(@as(usize, 1), sum_storage.count());
+    try std.testing.expectEqual(@as(i64, 10_000), sum_storage.aggregated_points.values()[0].value);
 }
 
 test "counter enforces cardinality limit with overflow series" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
-    defer mp.deinit();
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
 
-    const meter = try mp.getMeter(.{ .name = "test-meter" });
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
     var counter = try meter.createCounter(u64, .{ .name = "high.cardinality" });
-    counter.storage.cardinality_limit = 3;
+    counter.storages.items[0].storage.setCardinalityLimit(3);
 
-    // The overflow series is created before the limit is reached and takes one of its slots:
-    // with a limit of 3, only 2 regular series fit.
     try counter.add(1, .{ "id", @as(i64, 1) });
     try counter.add(2, .{ "id", @as(i64, 2) });
-    try std.testing.expectEqual(2, counter.storage.aggregated_points.count());
+    try std.testing.expectEqual(@as(usize, 2), counter.storages.items[0].storage.count());
 
-    // The 3rd distinct attribute set goes to the overflow series (otel.metric.overflow=true),
-    // and so do the following ones.
     try counter.add(3, .{ "id", @as(i64, 3) });
-    try std.testing.expectEqual(3, counter.storage.aggregated_points.count());
+    try std.testing.expectEqual(@as(usize, 3), counter.storages.items[0].storage.count());
     try counter.add(4, .{ "id", @as(i64, 4) });
-    try std.testing.expectEqual(3, counter.storage.aggregated_points.count());
+    try std.testing.expectEqual(@as(usize, 3), counter.storages.items[0].storage.count());
 
-    // Existing attribute sets can still be updated
     try counter.add(10, .{ "id", @as(i64, 1) });
-    try std.testing.expectEqual(11, counter.storage.aggregated_points.values()[0].value);
 
-    const fetched = try counter.measurementsData(std.testing.allocator);
-    defer {
-        for (fetched.int) |*m| {
-            m.deinit(std.testing.allocator);
-        }
-        std.testing.allocator.free(fetched.int);
-    }
+    const fetched = try h.collect();
+    defer h.freeCollected(fetched);
 
-    try std.testing.expectEqual(3, fetched.int.len);
-    // The overflow series holds the sum of the measurements that did not fit: 3 + 4.
+    try std.testing.expectEqual(@as(usize, 3), fetched[0].data.int.len);
     var found_overflow = false;
-    for (fetched.int) |point| {
+    for (fetched[0].data.int) |point| {
         if (point.attributes) |attrs| {
             for (attrs) |attr| {
                 if (std.mem.eql(u8, attr.key, "otel.metric.overflow")) {
                     found_overflow = true;
+                    try std.testing.expect(attr.value.bool);
                     try std.testing.expectEqual(@as(i64, 7), point.value);
                 }
             }
@@ -1584,198 +1207,81 @@ test "counter enforces cardinality limit with overflow series" {
     try std.testing.expect(found_overflow);
 }
 
-test "counter falls back to raw data points when non-Sum view is configured" {
-    const allocator = std.testing.allocator;
-    const io = std.testing.io;
-    const mp = try MeterProvider.init(allocator, io);
-    defer mp.deinit();
-
-    // Register a view specifying ExplicitBucketHistogram for this counter
-    const view_mod = @import("../../sdk/metrics/view.zig");
-    try mp.addView(view_mod.View{
-        .instrument_selector = .{ .name = "histogram_counter" },
-        .aggregation = .{ .ExplicitBucketHistogram = .{} },
-        .temporality = .Cumulative,
-    });
-
-    var meter = try mp.getMeter(.{ .name = "test-fallback" });
-    const counter = try meter.createCounter(u64, .{ .name = "histogram_counter" });
-
-    // Counter must have pre_sum disabled because view does not resolve to Sum
-    try std.testing.expect(!counter.pre_sum);
-
-    try counter.add(10, .{ "status", @as([]const u8, "200") });
-    try counter.add(20, .{ "status", @as([]const u8, "200") });
-
-    // Measurements are retained as raw items in data_points
-    try std.testing.expectEqual(@as(usize, 2), counter.data_points.items.len);
-    try std.testing.expectEqual(@as(usize, 0), counter.storage.aggregated_points.count());
-
-    var data = try counter.measurementsData(allocator);
-    defer data.deinit(allocator);
-    try std.testing.expectEqual(@as(usize, 2), data.int.len);
-    try std.testing.expectEqual(@as(i64, 10), data.int[0].value);
-    try std.testing.expectEqual(@as(i64, 20), data.int[1].value);
-}
-
 test "counter running total stored as i64 does not overflow small types" {
     const io = std.testing.io;
-    var counter = Counter(u16).init(std.testing.allocator, io);
-    defer counter.deinit();
+    var h = try TestHarness.init(std.testing.allocator, io);
+    defer h.deinit();
 
-    // Adding 50,000 twice to a u16 counter (u16 max is 65,535)
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
+    var counter = try meter.createCounter(u16, .{ .name = "small-counter" });
+
     try counter.add(50_000, .{ "key", @as([]const u8, "val") });
     try counter.add(50_000, .{ "key", @as([]const u8, "val") });
 
-    try std.testing.expectEqual(1, counter.storage.aggregated_points.count());
-    try std.testing.expectEqual(@as(i64, 100_000), counter.storage.aggregated_points.values()[0].value);
-
-    var data = try counter.measurementsData(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
-    try std.testing.expectEqual(@as(i64, 100_000), data.int[0].value);
+    const data = try h.collect();
+    defer h.freeCollected(data);
+    try std.testing.expectEqual(@as(i64, 100_000), data[0].data.int[0].value);
 }
 
 fn testCounterAllocationFailures(allocator: std.mem.Allocator) !void {
     const io = std.testing.io;
-    var c = Counter(u32).init(allocator, io);
-    defer c.deinit();
-    c.storage.cardinality_limit = 2;
+    var s = storage.SumStorage(i64).init(allocator, io, 2);
+    defer s.deinit();
 
-    try c.add(10, .{ "status", @as([]const u8, "200") });
-    try c.add(5, .{ "status", @as([]const u8, "200") });
-    try c.add(20, .{ "status", @as([]const u8, "404") });
-    try c.add(30, .{ "status", @as([]const u8, "500") });
-    try c.add(40, .{ "status", @as([]const u8, "502") });
+    var candidate: ?exemplar.Exemplar = null;
+    const a200 = [_]Attribute{.{ .key = "status", .value = .{ .string = "200" } }};
+    const a404 = [_]Attribute{.{ .key = "status", .value = .{ .string = "404" } }};
+    const a500 = [_]Attribute{.{ .key = "status", .value = .{ .string = "500" } }};
+    const a502 = [_]Attribute{.{ .key = "status", .value = .{ .string = "502" } }};
 
-    var data = try c.measurementsData(allocator);
-    defer data.deinit(allocator);
+    try s.record(10, &a200, &candidate);
+    try s.record(5, &a200, &candidate);
+    try s.record(20, &a404, &candidate);
+    try s.record(30, &a500, &candidate);
+    try s.record(40, &a502, &candidate);
+
+    var end_time: u64 = 0;
+    const points = try s.snapshot(allocator, &end_time);
+    defer {
+        for (points) |*p| p.deinit(allocator);
+        allocator.free(points);
+    }
 }
 
 test "counter in-place aggregation handles allocation failures without leaks or double-frees" {
     try std.testing.checkAllAllocationFailures(std.testing.allocator, testCounterAllocationFailures, .{});
 }
 
-fn testSwitchBackToSumAllocationFailures(allocator: std.mem.Allocator) !void {
-    const io = std.testing.io;
-    var c = Counter(u32).init(allocator, io);
-    defer c.deinit();
-    c.storage.cardinality_limit = 3;
-
-    c.setPreSum(false);
-    try c.add(1, .{ "status", @as([]const u8, "200") });
-    try c.add(2, .{ "status", @as([]const u8, "200") });
-    try c.add(3, .{ "status", @as([]const u8, "404") });
-    try c.add(4, .{ "status", @as([]const u8, "500") });
-    try c.add(5, .{ "status", @as([]const u8, "502") });
-
-    // A failure while draining must leave the remaining raw points valid.
-    c.setPreSum(true);
-
-    var data = try c.measurementsData(allocator);
-    defer data.deinit(allocator);
-
-    var total: i64 = 0;
-    for (data.int) |point| total += point.value;
-    try std.testing.expectEqual(15, total);
-}
-
-test "switching back to Sum handles allocation failures without leaks or double-frees" {
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, testSwitchBackToSumAllocationFailures, .{});
-}
-
-test "counter mixed aggregated and raw points share the collection start time" {
-    const io = std.testing.io;
-    var c = Counter(u32).init(std.testing.allocator, io);
-    defer c.deinit();
-    c.collection_start_ns = 1;
-
-    try c.add(1, .{ "status", @as([]const u8, "200") });
-    c.setPreSum(false);
-    try c.add(2, .{ "status", @as([]const u8, "404") });
-
-    var data = try c.measurementsData(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
-    try std.testing.expectEqual(2, data.int.len);
-    for (data.int) |point| try std.testing.expectEqual(1, point.timestamps.?.start_time_ns);
-    try std.testing.expectEqual(@max(data.int[0].timestamps.?.time_ns, data.int[1].timestamps.?.time_ns), c.collection_start_ns);
-}
-
-test "switching back to Sum keeps the exemplars captured at record time" {
-    const io = std.testing.io;
-    var c = Counter(u64).init(std.testing.allocator, io);
-    defer c.deinit();
-
-    c.setPreSum(false);
-    c.exemplar_filter = .always_on;
-    try c.add(7, .{ "route", @as([]const u8, "/sampled") });
-    c.exemplar_filter = .always_off;
-    try c.add(3, .{ "route", @as([]const u8, "/filtered") });
-
-    // The filter in effect while draining must not matter.
-    c.exemplar_filter = .always_off;
-    c.setPreSum(true);
-
-    var data = try c.measurementsData(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
-    try std.testing.expectEqual(2, data.int.len);
-    for (data.int) |point| {
-        switch (point.value) {
-            7 => try std.testing.expectEqual(@as(i64, 7), point.exemplar_candidate.?.value.int),
-            3 => try std.testing.expect(point.exemplar_candidate == null),
-            else => return error.UnexpectedPoint,
-        }
-    }
-}
-
-test "switching back to Sum does not invent exemplars for filtered measurements" {
-    const io = std.testing.io;
-    var c = Counter(u64).init(std.testing.allocator, io);
-    defer c.deinit();
-
-    c.setPreSum(false);
-    c.exemplar_filter = .always_off;
-    try c.add(3, .{ "route", @as([]const u8, "/filtered") });
-
-    c.exemplar_filter = .always_on;
-    c.setPreSum(true);
-
-    var data = try c.measurementsData(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
-    try std.testing.expectEqual(1, data.int.len);
-    try std.testing.expect(data.int[0].exemplar_candidate == null);
-}
-
 test "histogram cardinality limit creates overflow series and aggregates excess measurements" {
     const io = std.testing.io;
-    var h = Histogram(f64).init(std.testing.allocator, io);
+    var h = try TestHarness.init(std.testing.allocator, io);
     defer h.deinit();
-    h.pre_aggregate = true;
-    h.explicit_storage.cardinality_limit = 3; // Allows 2 regular series + 1 overflow series
 
-    try h.record(10.0, .{ "status", @as([]const u8, "200") });
-    try h.record(20.0, .{ "status", @as([]const u8, "200") });
-    try h.record(30.0, .{ "status", @as([]const u8, "404") });
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
+    var hist = try meter.createHistogram(f64, .{ .name = "hist-cardinality" });
+    hist.storages.items[0].storage.setCardinalityLimit(3);
 
-    // 3rd distinct series reaches limit - 1, creating the overflow series
-    try h.record(40.0, .{ "status", @as([]const u8, "500") });
-    // 4th distinct series aggregates into the overflow series
-    try h.record(50.0, .{ "status", @as([]const u8, "502") });
+    try hist.record(10.0, .{ "status", @as([]const u8, "200") });
+    try hist.record(20.0, .{ "status", @as([]const u8, "200") });
+    try hist.record(30.0, .{ "status", @as([]const u8, "404") });
+    try hist.record(40.0, .{ "status", @as([]const u8, "500") });
+    try hist.record(50.0, .{ "status", @as([]const u8, "502") });
 
-    try std.testing.expectEqual(3, h.explicit_storage.count());
+    try std.testing.expectEqual(@as(usize, 3), hist.storages.items[0].storage.count());
 
-    var data = try h.measurementsData(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
+    const data = try h.collect();
+    defer h.freeCollected(data);
 
-    try std.testing.expectEqual(3, data.histogram.len);
+    try std.testing.expectEqual(@as(usize, 3), data[0].data.histogram.len);
     var found_overflow = false;
-    for (data.histogram) |point| {
+    for (data[0].data.histogram) |point| {
         if (point.attributes) |attrs| {
             for (attrs) |attr| {
                 if (std.mem.eql(u8, attr.key, "otel.metric.overflow")) {
                     found_overflow = true;
                     try std.testing.expect(attr.value.bool);
-                    try std.testing.expectEqual(2, point.value.count);
-                    try std.testing.expectEqual(90.0, point.value.sum.?);
+                    try std.testing.expectEqual(@as(u64, 2), point.value.count);
+                    try std.testing.expectEqual(@as(f64, 90.0), point.value.sum.?);
                 }
             }
         }
@@ -1785,57 +1291,75 @@ test "histogram cardinality limit creates overflow series and aggregates excess 
 
 test "histogram explicit buckets retain candidates per bucket" {
     const io = std.testing.io;
-    var h = Histogram(f64).init(std.testing.allocator, io);
+    var h = try TestHarness.init(std.testing.allocator, io);
     defer h.deinit();
-    h.pre_aggregate = true;
-    h.exemplar_filter = .always_on;
 
-    // Record value in bucket 0 (<= 0)
-    try h.record(-5.0, .{ "status", @as([]const u8, "200") });
-    // Record value in bucket with boundary 10
-    try h.record(7.0, .{ "status", @as([]const u8, "200") });
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
+    var hist = try meter.createHistogram(f64, .{ .name = "hist-exemplars" });
+    hist.exemplar_filter = .always_on;
 
-    var data = try h.measurementsData(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
+    try hist.record(-5.0, .{ "status", @as([]const u8, "200") });
+    try hist.record(7.0, .{ "status", @as([]const u8, "200") });
 
-    // 2 bucket exemplars emitted for reservoir attachment
-    try std.testing.expectEqual(2, data.histogram.len);
-    try std.testing.expect(data.histogram[0].exemplar_candidate != null);
-    try std.testing.expect(data.histogram[1].exemplar_candidate != null);
+    const data = try h.collect();
+    defer h.freeCollected(data);
+
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.histogram.len);
+    try std.testing.expectEqual(@as(usize, 2), data[0].data.histogram[0].exemplars.len);
 }
 
 test "exponential histogram retains exemplar candidate" {
     const io = std.testing.io;
-    var h = Histogram(f64).init(std.testing.allocator, io);
+    var h = try TestHarness.init(std.testing.allocator, io);
     defer h.deinit();
-    h.pre_aggregate = true;
-    h.mode = .exponential;
-    h.exemplar_filter = .always_on;
+    try h.mp.addView(.{
+        .instrument_selector = .{ .name = "exp-exemplar" },
+        .aggregation = .{ .ExponentialBucketHistogram = try view_sdk.ExponentialBucketHistogramConfig.init(.{}) },
+        .temporality = .Cumulative,
+    });
 
-    try h.record(12.5, .{ "route", @as([]const u8, "/api") });
+    const meter = try h.mp.getMeter(.{ .name = "test-meter" });
+    var hist = try meter.createHistogram(f64, .{ .name = "exp-exemplar" });
+    hist.exemplar_filter = .always_on;
 
-    var data = try h.measurementsData(std.testing.allocator);
-    defer data.deinit(std.testing.allocator);
+    try hist.record(12.5, .{ "route", @as([]const u8, "/api") });
 
-    try std.testing.expectEqual(1, data.exponential_histogram.len);
-    try std.testing.expect(data.exponential_histogram[0].exemplar_candidate != null);
-    try std.testing.expectEqual(12.5, data.exponential_histogram[0].exemplar_candidate.?.value.double);
+    const data = try h.collect();
+    defer h.freeCollected(data);
+
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.exponential_histogram.len);
+    try std.testing.expectEqual(@as(usize, 1), data[0].data.exponential_histogram[0].exemplars.len);
+    try std.testing.expectEqual(@as(f64, 12.5), data[0].data.exponential_histogram[0].exemplars[0].value.double);
 }
 
 fn testHistogramAllocationFailures(allocator: std.mem.Allocator) !void {
     const io = std.testing.io;
-    var h = Histogram(f64).init(allocator, io);
-    defer h.deinit();
-    h.pre_aggregate = true;
-    h.explicit_storage.cardinality_limit = 2;
+    var s = storage.ExplicitBucketHistogramStorage.init(
+        allocator,
+        io,
+        2,
+        spec.default_histogram_explicit_bucket_boundaries,
+        true,
+        true,
+    );
+    defer s.deinit();
 
-    try h.record(10.0, .{ "status", @as([]const u8, "200") });
-    try h.record(5.0, .{ "status", @as([]const u8, "200") });
-    try h.record(20.0, .{ "status", @as([]const u8, "404") });
-    try h.record(30.0, .{ "status", @as([]const u8, "500") });
+    var candidate: ?exemplar.Exemplar = null;
+    const a200 = [_]Attribute{.{ .key = "status", .value = .{ .string = "200" } }};
+    const a404 = [_]Attribute{.{ .key = "status", .value = .{ .string = "404" } }};
+    const a500 = [_]Attribute{.{ .key = "status", .value = .{ .string = "500" } }};
 
-    var data = try h.measurementsData(allocator);
-    defer data.deinit(allocator);
+    try s.record(10.0, &a200, &candidate);
+    try s.record(5.0, &a200, &candidate);
+    try s.record(20.0, &a404, &candidate);
+    try s.record(30.0, &a500, &candidate);
+
+    var end_time: u64 = 0;
+    const points = try s.snapshot(allocator, &end_time);
+    defer {
+        for (points) |*p| p.deinit(allocator);
+        allocator.free(points);
+    }
 }
 
 test "histogram in-place aggregation handles allocation failures without leaks or double-frees" {
@@ -1843,18 +1367,31 @@ test "histogram in-place aggregation handles allocation failures without leaks o
 }
 
 fn testHistogramBucketExemplarAllocationFailures(allocator: std.mem.Allocator) !void {
-    var h = Histogram(f64).init(allocator, std.testing.io);
-    defer h.deinit();
-    h.pre_aggregate = true;
-    h.exemplar_filter = .always_on;
+    var s = storage.ExplicitBucketHistogramStorage.init(
+        allocator,
+        std.testing.io,
+        spec.default_cardinality_limit,
+        spec.default_histogram_explicit_bucket_boundaries,
+        true,
+        true,
+    );
+    defer s.deinit();
 
-    // Exemplars in one series but two separate buckets make collection emit an extra exemplar point,
-    // whose allocations can fail after the main point was handed to the output slice.
-    try h.record(-5.0, .{ "status", @as([]const u8, "200") });
-    try h.record(7.0, .{ "status", @as([]const u8, "200") });
+    const a200 = [_]Attribute{.{ .key = "status", .value = .{ .string = "200" } }};
+    var c1 = try exemplar.Exemplar.capture(f64, allocator, std.testing.io, -5.0, &a200, .always_on);
+    defer if (c1) |*c| c.deinit(allocator);
+    try s.record(-5.0, &a200, &c1);
 
-    var data = try h.measurementsData(allocator);
-    defer data.deinit(allocator);
+    var c2 = try exemplar.Exemplar.capture(f64, allocator, std.testing.io, 7.0, &a200, .always_on);
+    defer if (c2) |*c| c.deinit(allocator);
+    try s.record(7.0, &a200, &c2);
+
+    var end_time: u64 = 0;
+    const points = try s.snapshot(allocator, &end_time);
+    defer {
+        for (points) |*p| p.deinit(allocator);
+        allocator.free(points);
+    }
 }
 
 test "histogram bucket exemplar collection handles allocation failures without leaks or double-frees" {

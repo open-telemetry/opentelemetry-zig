@@ -32,7 +32,7 @@ pub fn main(init: std.process.Init) !void {
     var prng = std.Random.DefaultPrng.init(@bitCast(std.Io.Clock.real.now(init.io).toMilliseconds()));
     var tracer_provider = try trace.TracerProvider.init(allocator, init.io, .{
         .Random = trace.RandomIDGenerator.init(prng.random()),
-    });
+    }, null);
     defer tracer_provider.deinit();
 
     const tracer = try tracer_provider.getTracer(.{ .name = "tracecontext-example", .version = "1.0.0" });

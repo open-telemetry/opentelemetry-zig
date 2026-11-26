@@ -65,7 +65,7 @@ pub fn main(init: std.process.Init) !void {
     const id_generator = sdk.trace.IDGenerator{
         .Random = sdk.trace.RandomIDGenerator.init(prng.random()),
     };
-    var tracer_provider = try sdk.trace.TracerProvider.init(allocator, io, id_generator);
+    var tracer_provider = try sdk.trace.TracerProvider.init(allocator, io, id_generator, null);
     defer tracer_provider.deinit();
     var trace_exporter = try sdk.trace.OTLPExporter.init(allocator, io, config);
     defer trace_exporter.deinit();

@@ -21,7 +21,7 @@ const Config = zbench.Config{
 
 fn createTracerProvider(allocator: std.mem.Allocator, io: std.Io) !*TracerProvider {
     const id_gen = IDGenerator{ .TimeBased = .{} };
-    return try TracerProvider.init(allocator, io, id_gen);
+    return try TracerProvider.init(allocator, io, id_gen, null);
 }
 
 // === BENCHMARK TESTS ===

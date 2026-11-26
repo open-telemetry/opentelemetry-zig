@@ -253,7 +253,7 @@ pub fn tracerProviderCreate() callconv(.c) ?*OtelTracerProvider {
     const random_generator = RandomIDGenerator.init(prng_ptr.random());
     const id_generator = IDGenerator{ .Random = random_generator };
 
-    const provider = TracerProvider.init(allocator, io, id_generator) catch {
+    const provider = TracerProvider.init(allocator, io, id_generator, null) catch {
         allocator.destroy(prng_ptr);
         return null;
     };

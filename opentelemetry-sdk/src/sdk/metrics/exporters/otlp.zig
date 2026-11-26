@@ -356,7 +356,7 @@ test "exemplar/otlp recording pipeline" {
     const cfg = try Configuration.init(allocator, std.testing.io, &env);
     defer cfg.deinit();
     Configuration.set(cfg);
-    const provider = try meter_api.MeterProvider.init(allocator, std.testing.io);
+    const provider = try meter_api.MeterProvider.init(allocator, std.testing.io, null);
     defer provider.deinit();
     try provider.addView(.{
         .instrument_selector = .{ .name = "requests" },

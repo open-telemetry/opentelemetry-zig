@@ -27,7 +27,7 @@ fn testMetricsHttpJson(
     config.endpoint = "localhost:" ++ common.COLLECTOR_HTTP_PORT;
     config.protocol = .http_json;
 
-    const mp = try metrics_sdk.MeterProvider.init(allocator, io);
+    const mp = try metrics_sdk.MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);

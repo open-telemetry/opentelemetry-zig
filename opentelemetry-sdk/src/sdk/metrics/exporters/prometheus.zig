@@ -1109,7 +1109,7 @@ test "PrometheusExporter e2e" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     // Create Prometheus exporter using factory function

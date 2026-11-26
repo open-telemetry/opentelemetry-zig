@@ -8,7 +8,7 @@ pub fn main(init: std.process.Init) !void {
     const io = init.io;
 
     // Use the builtin meter provider
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{
         .name = "test.company.org/sample",

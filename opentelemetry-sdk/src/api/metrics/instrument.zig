@@ -761,7 +761,7 @@ pub fn Gauge(comptime T: type) type {
 
 test "counter with unsupported type does not leak" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     const err = meter.createCounter(u1, .{ .name = "a-counter" });
@@ -770,7 +770,7 @@ test "counter with unsupported type does not leak" {
 
 test "meter can create counter instrument and record increase without attributes" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{ .name = "a-counter" });
@@ -781,7 +781,7 @@ test "meter can create counter instrument and record increase without attributes
 
 test "meter can create counter instrument and record increase with attributes" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createCounter(u32, .{
@@ -807,7 +807,7 @@ test "meter can create counter instrument and record increase with attributes" {
 
 test "histogram records value without explicit buckets" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "anything" });
@@ -835,7 +835,7 @@ test "histogram records value without explicit buckets" {
 
 test "histogram records value with explicit buckets" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
@@ -870,7 +870,7 @@ test "histogram records value with explicit buckets" {
 
 test "histogram keeps track of bucket counts by attribute" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
@@ -894,7 +894,7 @@ test "histogram keeps track of bucket counts by attribute" {
 
 test "histogram keeps track of count, sum and min/max by attribute" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "a-histogram" });
@@ -942,7 +942,7 @@ test "histogram keeps track of count, sum and min/max by attribute" {
 
 test "histogram aggregates measurements in place without growing memory" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(f64, .{ .name = "latency" });
@@ -969,7 +969,7 @@ test "histogram aggregates measurements in place without growing memory" {
 
 test "histogram enforces cardinality limit" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(u32, .{ .name = "cardinality-test" });
@@ -984,7 +984,7 @@ test "histogram enforces cardinality limit" {
 
 test "histogram exponential bucket mode aggregates in place" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var histogram = try meter.createHistogram(f64, .{ .name = "exp-test" });
@@ -1014,7 +1014,7 @@ test "histogram exponential bucket mode aggregates in place" {
 
 test "gauge instrument records value without attributes" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i16, .{ .name = "a-gauge" });
@@ -1028,7 +1028,7 @@ test "gauge instrument records value without attributes" {
 
 test "gauge keeps separate last value per attribute set" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(f64, .{ .name = "temperature" });
@@ -1057,7 +1057,7 @@ test "gauge keeps separate last value per attribute set" {
 
 test "gauge cardinality limit creates overflow series and records excess measurements" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i64, .{ .name = "gauge-cardinality" });
@@ -1087,7 +1087,7 @@ test "gauge cardinality limit creates overflow series and records excess measure
 
 test "gauge record existing series performs zero heap allocations" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(f64, .{ .name = "zero-alloc-gauge" });
@@ -1114,7 +1114,7 @@ test "gauge record existing series performs zero heap allocations" {
 
 test "gauge setPreLastValue drains pending raw data points" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i32, .{ .name = "drain-gauge" });
@@ -1135,7 +1135,7 @@ test "gauge setPreLastValue drains pending raw data points" {
 
 test "gauge setPreLastValue failed drain reverts to raw recording mode" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var gauge = try meter.createGauge(i32, .{ .name = "drain-fail-gauge" });
@@ -1209,7 +1209,7 @@ test "gauge in-place aggregation handles allocation failures without leaks or do
 
 test "upDownCounter instrument records and stores value" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     var counter = try meter.createUpDownCounter(i32, .{ .name = "up-down-counter" });
@@ -1228,7 +1228,7 @@ test "upDownCounter instrument records and stores value" {
 
 test "instrument in meter and instrument in data are the same" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const name = "test-instrument";
@@ -1259,7 +1259,7 @@ test "instrument in meter and instrument in data are the same" {
 
 test "instrument fetches measurements from inner" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const name = "test-instrument";
@@ -1293,7 +1293,7 @@ test "instrument fetches measurements from inner" {
 
 test "counter thread-safety between datapoints collection and recording" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const name = "test-instrument";
@@ -1343,7 +1343,7 @@ fn testCounterCollect(counter: *Counter(u64)) !void {
 
 test "histogram thread-safety" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const name = "test-instrument";
@@ -1389,7 +1389,7 @@ fn testHistogramCollect(histogram: *Histogram(u64)) !void {
 
 test "instrument cleans up internal state when datapoints are fetched" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const name = "test-instrument";
@@ -1417,7 +1417,7 @@ const MetricObserveError = AsyncInstrument.MetricObserveError;
 
 test "async instrument registered in meter" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const background = struct {
@@ -1536,7 +1536,7 @@ test "counter aggregates measurements in place in constant memory" {
 
 test "counter enforces cardinality limit with overflow series" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test-meter" });
@@ -1587,7 +1587,7 @@ test "counter enforces cardinality limit with overflow series" {
 test "counter falls back to raw data points when non-Sum view is configured" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     // Register a view specifying ExplicitBucketHistogram for this counter

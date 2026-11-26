@@ -184,7 +184,7 @@ pub fn meterProviderCreate() callconv(.c) ?*OtelMeterProvider {
     const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
     threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
 
-    const provider = MeterProvider.init(allocator, threaded_ptr.io()) catch {
+    const provider = MeterProvider.init(allocator, threaded_ptr.io(), null) catch {
         threaded_ptr.deinit();
         allocator.destroy(threaded_ptr);
         return null;
@@ -214,7 +214,7 @@ pub fn meterProviderInit() callconv(.c) ?*OtelMeterProvider {
     const threaded_ptr = allocator.create(std.Io.Threaded) catch return null;
     threaded_ptr.* = std.Io.Threaded.init(allocator, .{});
 
-    const provider = MeterProvider.init(allocator, threaded_ptr.io()) catch {
+    const provider = MeterProvider.init(allocator, threaded_ptr.io(), null) catch {
         threaded_ptr.deinit();
         allocator.destroy(threaded_ptr);
         return null;

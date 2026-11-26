@@ -12,7 +12,7 @@ const bench_config = benchmark.Config{
 };
 
 fn setupSDK(allocator: std.mem.Allocator, io: std.Io) !*MeterProvider {
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     errdefer mp.deinit();
     return mp;
 }

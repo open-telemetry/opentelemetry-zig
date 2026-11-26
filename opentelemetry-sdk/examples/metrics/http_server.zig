@@ -108,7 +108,7 @@ const OTel = struct {
 };
 
 fn setupTelemetry(allocator: std.mem.Allocator, io: std.Io) !OTel {
-    const mp = try metrics_sdk.MeterProvider.init(allocator, io);
+    const mp = try metrics_sdk.MeterProvider.init(allocator, io, null);
     errdefer mp.deinit();
 
     // Create a view for histogram instruments with explicit bucket aggregation

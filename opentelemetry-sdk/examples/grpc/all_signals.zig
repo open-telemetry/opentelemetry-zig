@@ -40,7 +40,7 @@ pub fn main(init: std.process.Init) !void {
 
     // ── Metrics ──────────────────────────────────────────────────────────────
 
-    const mp = try sdk.metrics.MeterProvider.init(allocator, io);
+    const mp = try sdk.metrics.MeterProvider.init(allocator, io, null);
     defer mp.deinit();
     const me = try sdk.metrics.MetricExporter.OTLP(allocator, io, null, null, config);
     defer me.otlp.deinit();

@@ -13,7 +13,7 @@ const bench_config = benchmark.Config{
 
 // Helper function to create meter provider and meter
 fn setupMeter(allocator: std.mem.Allocator, io: std.Io) !*MeterProvider {
-    const provider = try MeterProvider.init(allocator, io);
+    const provider = try MeterProvider.init(allocator, io, null);
     return provider;
 }
 

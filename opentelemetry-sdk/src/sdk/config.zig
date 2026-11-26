@@ -980,7 +980,7 @@ test "ConfigurationMeterProvider with SDK disabled" {
     Configuration.set(config_from_env);
 
     // Create MeterProvider
-    var provider = try MeterProvider.init(allocator, std.testing.io);
+    var provider = try MeterProvider.init(allocator, std.testing.io, null);
     defer provider.deinit();
 
     // Verify SDK is disabled
@@ -1053,7 +1053,7 @@ test "Configuration SDK disabled with OTEL_SDK_DISABLED=false" {
     var tracer_provider = try TracerProvider.init(allocator, io, id_gen);
     defer tracer_provider.deinit();
 
-    var meter_provider = try MeterProvider.init(allocator, io);
+    var meter_provider = try MeterProvider.init(allocator, io, null);
     defer meter_provider.deinit();
 
     var logger_provider = try LoggerProvider.init(allocator, io, null);

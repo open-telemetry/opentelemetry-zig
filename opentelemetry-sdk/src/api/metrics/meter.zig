@@ -69,10 +69,22 @@ pub const MeterProvider = struct {
     const Self = @This();
 
     /// Create a new custom meter provider, using the specified allocator.
-    pub fn init(alloc: std.mem.Allocator, io: std.Io) !*Self {
+    pub fn init(alloc: std.mem.Allocator, io: std.Io, resource: ?[]const Attribute) !*Self {
         // Access global configuration (transparent to user)
         const cfg = Configuration.get();
         const sdk_disabled = if (cfg) |c| c.sdk_disabled else false;
+
+        // Only build resource attributes from config if SDK is enabled
+        const merged_resource = if (!sdk_disabled) blk: {
+            const cfg_resource_attributes: []Attribute = if (cfg) |c| try resource_attributes.buildFromConfig(alloc, c) else &.{};
+            defer if (cfg_resource_attributes.len > 0) resource_attributes.freeResource(alloc, cfg_resource_attributes);
+            break :blk try resource_attributes.mergeResources(
+                alloc,
+                if (resource) |r| r else &.{},
+                cfg_resource_attributes,
+            );
+        } else null;
+        errdefer if (merged_resource) |r| resource_attributes.freeResource(alloc, r);
 
         const provider = try alloc.create(Self);
         provider.* = Self{
@@ -83,8 +95,7 @@ pub const MeterProvider = struct {
             .views = .empty,
             .sdk_disabled = sdk_disabled,
             .config = cfg,
-            // Build resource attributes from config (empty if SDK disabled)
-            .resource = if (sdk_disabled) null else if (cfg) |c| try resource_attributes.buildFromConfig(alloc, c) else null,
+            .resource = merged_resource,
         };
 
         if (sdk_disabled) {
@@ -679,7 +690,7 @@ pub const Meter = struct {
 
 test "default meter provider can be fetched" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
@@ -687,10 +698,101 @@ test "default meter provider can be fetched" {
 
 test "custom meter provider can be created" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     std.debug.assert(@intFromPtr(&mp) != 0);
+}
+
+test "meter provider with custom resource" {
+    const user_resource = [_]Attribute{
+        .{ .key = "service.name", .value = .{ .string = "my-service" } },
+        .{ .key = "timecard.name", .value = .{ .string = "ocp2" } },
+    };
+    const mp = try MeterProvider.init(std.testing.allocator, std.testing.io, &user_resource);
+    defer mp.deinit();
+
+    // The provider owns a copy of the resource
+    try std.testing.expect(mp.resource != null);
+    try std.testing.expectEqual(@as(usize, 2), mp.resource.?.len);
+    try std.testing.expect(mp.resource.?.ptr != &user_resource);
+    try std.testing.expectEqualStrings("service.name", mp.resource.?[0].key);
+    try std.testing.expectEqualStrings("my-service", mp.resource.?[0].value.string);
+    try std.testing.expectEqualStrings("timecard.name", mp.resource.?[1].key);
+    try std.testing.expectEqualStrings("ocp2", mp.resource.?[1].value.string);
+}
+
+test "meter provider without resource has none when there is no configuration" {
+    const mp = try MeterProvider.init(std.testing.allocator, std.testing.io, null);
+    defer mp.deinit();
+
+    try std.testing.expectEqual(null, mp.resource);
+}
+
+test "meter provider resource takes precedence over the configuration" {
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_SERVICE_NAME", "env-service");
+    try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "env.only=from-env,shared=from-env");
+
+    const cfg = try Configuration.init(std.testing.allocator, std.testing.io, &env_map);
+    defer cfg.deinit();
+    Configuration.set(cfg);
+
+    const user_resource = [_]Attribute{
+        .{ .key = "service.name", .value = .{ .string = "user-service" } },
+        .{ .key = "shared", .value = .{ .string = "from-user" } },
+        .{ .key = "user.only", .value = .{ .string = "from-user" } },
+    };
+    const mp = try MeterProvider.init(std.testing.allocator, std.testing.io, &user_resource);
+    defer mp.deinit();
+
+    const resource = mp.resource.?;
+    var service_name: ?[]const u8 = null;
+    var shared: ?[]const u8 = null;
+    var user_only: ?[]const u8 = null;
+    var env_only: ?[]const u8 = null;
+    for (resource, 0..) |attr, i| {
+        // Keys are unique
+        for (resource[i + 1 ..]) |other| try std.testing.expect(!std.mem.eql(u8, attr.key, other.key));
+        if (std.mem.eql(u8, attr.key, "service.name")) service_name = attr.value.string;
+        if (std.mem.eql(u8, attr.key, "shared")) shared = attr.value.string;
+        if (std.mem.eql(u8, attr.key, "user.only")) user_only = attr.value.string;
+        if (std.mem.eql(u8, attr.key, "env.only")) env_only = attr.value.string;
+    }
+    try std.testing.expectEqualStrings("user-service", service_name.?);
+    try std.testing.expectEqualStrings("from-user", shared.?);
+    try std.testing.expectEqualStrings("from-user", user_only.?);
+    try std.testing.expectEqualStrings("from-env", env_only.?);
+}
+
+test "meter provider has no resource when the SDK is disabled" {
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_SDK_DISABLED", "true");
+
+    const cfg = try Configuration.init(std.testing.allocator, std.testing.io, &env_map);
+    defer cfg.deinit();
+    Configuration.set(cfg);
+
+    const user_resource = [_]Attribute{.{ .key = "service.name", .value = .{ .string = "my-service" } }};
+    const mp = try MeterProvider.init(std.testing.allocator, std.testing.io, &user_resource);
+    defer mp.deinit();
+
+    try std.testing.expectEqual(null, mp.resource);
+}
+
+fn initAndDeinitMeterProvider(allocator: std.mem.Allocator, io: std.Io, resource: []const Attribute) !void {
+    const mp = try MeterProvider.init(allocator, io, resource);
+    mp.deinit();
+}
+
+test "MeterProvider.init with a resource does not leak on allocation failure" {
+    const user_resource = [_]Attribute{
+        .{ .key = "service.name", .value = .{ .string = "my-service" } },
+        .{ .key = "timecard.name", .value = .{ .string = "ocp2" } },
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, initAndDeinitMeterProvider, .{ std.testing.io, @as([]const Attribute, &user_resource) });
 }
 
 test "meter provider with config from environment" {
@@ -702,7 +804,7 @@ test "meter provider with config from environment" {
     Configuration.set(cfg);
 
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     // Verify config was loaded with defaults
@@ -716,7 +818,7 @@ test "meter can be created from custom provider" {
     const meter_name = "my-meter";
     const meter_version = "my-meter";
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = meter_name, .version = meter_version });
@@ -732,7 +834,7 @@ test "meter can be created from default provider with schema url and attributes"
     const meter_version = "my-meter";
 
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const val: []const u8 = "value";
@@ -747,7 +849,7 @@ test "meter can be created from default provider with schema url and attributes"
 
 test "meter register instrument twice with same name fails" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -761,7 +863,7 @@ test "meter register instrument twice with same name fails" {
 
 test "meter register instrument" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "my-meter" });
@@ -789,7 +891,7 @@ test "meter register instrument" {
 
 test "meter provider adds metric reader" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter = try MetricExporter.new(std.testing.allocator, io, &noop);
@@ -802,7 +904,7 @@ test "meter provider adds metric reader" {
 
 test "meter provider adds multiple metric readers" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     var noop1 = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
     const metric_exporter1 = try MetricExporter.new(std.testing.allocator, io, &noop1);
@@ -820,10 +922,10 @@ test "meter provider adds multiple metric readers" {
 
 test "metric reader cannot be registered with multiple providers" {
     const io = std.testing.io;
-    const mp1 = try MeterProvider.init(std.testing.allocator, io);
+    const mp1 = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp1.deinit();
 
-    const mp2 = try MeterProvider.init(std.testing.allocator, io);
+    const mp2 = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp2.deinit();
 
     var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
@@ -838,7 +940,7 @@ test "metric reader cannot be registered with multiple providers" {
 
 test "metric reader cannot be registered twice on same meter provider" {
     const io = std.testing.io;
-    const mp1 = try MeterProvider.init(std.testing.allocator, io);
+    const mp1 = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp1.deinit();
 
     var noop = exporter.ExporterImpl{ .exportFn = exporter.noopExporter };
@@ -858,7 +960,7 @@ test "meter provider shutdown shuts down registered readers and flushes metrics"
     var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
@@ -889,7 +991,7 @@ test "meter provider shutdown shuts down every reader and returns the first erro
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     // Registered first, so the provider must keep going after its failure.
@@ -916,7 +1018,7 @@ test "meter provider shutdown is idempotent" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     try mp.shutdown();
@@ -930,7 +1032,7 @@ test "meter provider forceFlush flushes all registered readers" {
     var inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const metric_exporter = try MetricExporter.new(allocator, io, &inMem.exporter);
@@ -958,7 +1060,7 @@ test "meter provider forceFlush flushes all registered readers" {
 
 test "meter provider end to end" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "service.company.com" });
@@ -989,7 +1091,7 @@ test "meter provider with arena allocator" {
     defer arena.deinit();
 
     const io = std.testing.io;
-    const mp = try MeterProvider.init(arena.allocator(), io);
+    const mp = try MeterProvider.init(arena.allocator(), io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "service.company.com" });
@@ -1369,7 +1471,7 @@ pub const AggregatedMetrics = struct {
 
 test "aggregated metrics deduplicated from meter without attributes" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
     var counter = try meter.createCounter(u64, .{ .name = "test-counter" });
@@ -1394,7 +1496,7 @@ test "aggregated metrics deduplicated from meter without attributes" {
 
 test "aggregated metrics deduplicated from meter with attributes" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meterVal: []const u8 = "meter_val";
@@ -1435,7 +1537,7 @@ test "aggregated metrics deduplicated from meter with attributes" {
 
 test "aggregated metrics fetch to owned slice" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
@@ -1461,7 +1563,7 @@ test "aggregated metrics fetch to owned slice" {
 
 test "fetch validates exponential histogram max_size" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test" });
@@ -1513,7 +1615,7 @@ test "fetch validates exponential histogram max_size" {
 
 test "fetch records histogram sum only for instruments without negative values" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     try mp.addView(.{
@@ -1553,7 +1655,7 @@ test "fetch records histogram sum only for instruments without negative values" 
 
 test "fetch frees accumulated results on validation failure" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test" });
@@ -1590,7 +1692,7 @@ test "fetch frees accumulated results on validation failure" {
 
 test "aggregated metrics do not duplicate data points" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
@@ -1621,7 +1723,7 @@ test "aggregated metrics do not duplicate data points" {
 
 test "aggregated metrics have timestamps" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
@@ -1646,7 +1748,7 @@ test "aggregated metrics have timestamps" {
 
 test "aggregated metrics with custom views" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
@@ -1683,7 +1785,7 @@ test "aggregated metrics with custom views" {
 
 test "meter provider validates exponential histogram view max_size" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const view_max_size_0 = view.View{
@@ -1731,7 +1833,7 @@ test "meter provider validates exponential histogram view max_size" {
 
 test "view associated with meter provider" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     // Create a view that matches histograms and uses explicit bucket aggregation
@@ -1790,7 +1892,7 @@ test "view associated with meter provider" {
 
 test "view is additive processing with conflicts" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "test", .schema_url = "http://example.com" });
@@ -1870,7 +1972,7 @@ test "exemplar aggregation samples the series after View attribute filtering" {
 test "gauge with filtered view preserves measurement order" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     // Register a view that filters attributes (drops distinguishing sub_id attribute)

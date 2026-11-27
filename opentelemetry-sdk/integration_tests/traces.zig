@@ -36,7 +36,7 @@ fn testTraces(
         .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
     };
 
-    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
+    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator, null);
     defer tracer_provider.deinit();
 
     var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);
@@ -121,7 +121,7 @@ fn testTracesWithCompression(
         .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
     };
 
-    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
+    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator, null);
     defer tracer_provider.deinit();
 
     var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);

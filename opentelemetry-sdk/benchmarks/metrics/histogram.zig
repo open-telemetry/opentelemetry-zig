@@ -22,7 +22,7 @@ const bench_config = benchmark.Config{
 };
 
 fn setupSDK(allocator: std.mem.Allocator, io: std.Io) !*MeterProvider {
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     errdefer mp.deinit();
     return mp;
 }
@@ -37,7 +37,7 @@ test "Histogram_Record" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     // Add a view with custom explicit buckets for the histogram
@@ -96,7 +96,7 @@ test "Histogram_Record_With_Non_Static_Values" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     // Add a view with custom explicit buckets for the histogram
@@ -167,7 +167,7 @@ test "Histogram_Record_With_Many_Buckets" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     // Create histogram with 50 buckets similar to Rust benchmarks

@@ -76,7 +76,7 @@ fn testMetricsOverGrpc(
     config: *sdk.otlp.ConfigOptions,
     tmp_dir: std.Io.Dir,
 ) !void {
-    const mp = try metrics_sdk.MeterProvider.init(allocator, io);
+    const mp = try metrics_sdk.MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, config);
@@ -154,7 +154,7 @@ fn testTracesOverGrpc(
         .Random = trace_sdk.RandomIDGenerator.init(prng.random()),
     };
 
-    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator);
+    var tracer_provider = try trace_sdk.TracerProvider.init(allocator, io, id_generator, null);
     defer tracer_provider.deinit();
 
     var otlp_exporter = try trace_sdk.OTLPExporter.init(allocator, io, config);

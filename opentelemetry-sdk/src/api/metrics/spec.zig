@@ -72,7 +72,7 @@ test "instrument name must conform to the OpenTelemetry specification" {
 
 test "meter cannot create instrument if name does not conform to the OpenTelemetry specification" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const m = try mp.getMeter(.{ .name = "my-meter" });
     const invalid_names = &[_][]const u8{

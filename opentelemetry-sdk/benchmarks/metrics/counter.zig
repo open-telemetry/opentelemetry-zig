@@ -22,7 +22,7 @@ const bench_config = benchmark.Config{
 };
 
 fn setupSDK(allocator: std.mem.Allocator, io: std.Io) !*metrics.MeterProvider {
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     errdefer mp.deinit();
     return mp;
 }
@@ -74,7 +74,7 @@ test "Counter_Add_W/O_Attributes" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{
@@ -108,7 +108,7 @@ test "Counter_Add_Sorted" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{
@@ -156,7 +156,7 @@ test "Counter_Add_Unsorted" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{
@@ -204,7 +204,7 @@ test "Counter_Add_Non_Static_Values" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{
@@ -267,7 +267,7 @@ test "Counter_Overflow" {
     defer threaded.deinit();
     const io = threaded.io();
 
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{

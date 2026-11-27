@@ -31,7 +31,7 @@ const ObservableCounterBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
         var bench_threaded: std.Io.Threaded = .init(allocator, .{});
         defer bench_threaded.deinit();
-        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
+        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io(), null) catch @panic("failed to create meter provider");
         defer provider.deinit();
 
         const meter = provider.getMeter(.{
@@ -64,7 +64,7 @@ const ObservableUpDownBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
         var bench_threaded: std.Io.Threaded = .init(allocator, .{});
         defer bench_threaded.deinit();
-        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
+        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io(), null) catch @panic("failed to create meter provider");
         defer provider.deinit();
 
         const meter = provider.getMeter(.{
@@ -96,7 +96,7 @@ const ObservableGaugeBench = struct {
     pub fn run(allocator: std.mem.Allocator) void {
         var bench_threaded: std.Io.Threaded = .init(allocator, .{});
         defer bench_threaded.deinit();
-        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io()) catch @panic("failed to create meter provider");
+        const provider = metrics.MeterProvider.init(allocator, bench_threaded.io(), null) catch @panic("failed to create meter provider");
         defer provider.deinit();
 
         const meter = provider.getMeter(.{

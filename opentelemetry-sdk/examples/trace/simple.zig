@@ -17,7 +17,7 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // 2. Create a tracer provider with the ID generator
-    var tracer_provider = try trace.TracerProvider.init(allocator, io, id_generator);
+    var tracer_provider = try trace.TracerProvider.init(allocator, io, id_generator, null);
     defer tracer_provider.deinit();
 
     // 3. Create a stdout exporter and simple processor

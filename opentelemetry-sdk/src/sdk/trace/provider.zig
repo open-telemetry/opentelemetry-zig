@@ -54,10 +54,22 @@ pub const TracerProvider = struct {
     resource: ?[]const Attribute,
     io: std.Io,
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, id_generator: IDGenerator) !*Self {
+    pub fn init(allocator: std.mem.Allocator, io: std.Io, id_generator: IDGenerator, resource: ?[]const Attribute) !*Self {
         // Access global configuration (transparent to user)
         const cfg = Configuration.get();
         const sdk_disabled = if (cfg) |c| c.sdk_disabled else false;
+
+        // Only build resource attributes from config if SDK is enabled
+        const merged_resource = if (!sdk_disabled) blk: {
+            const cfg_resource_attributes: []Attribute = if (cfg) |c| try resource_attributes.buildFromConfig(allocator, c) else &.{};
+            defer if (cfg_resource_attributes.len > 0) resource_attributes.freeResource(allocator, cfg_resource_attributes);
+            break :blk try resource_attributes.mergeResources(
+                allocator,
+                if (resource) |r| r else &.{},
+                cfg_resource_attributes,
+            );
+        } else null;
+        errdefer if (merged_resource) |r| resource_attributes.freeResource(allocator, r);
 
         const self = try allocator.create(Self);
 
@@ -75,7 +87,7 @@ pub const TracerProvider = struct {
             },
             .sdk_disabled = sdk_disabled,
             .config = cfg,
-            .resource = if (sdk_disabled) null else if (cfg) |c| try resource_attributes.buildFromConfig(allocator, c) else null,
+            .resource = merged_resource,
             .io = io,
         };
 
@@ -411,7 +423,7 @@ test "TracerProvider basic functionality" {
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     // Get a tracer via the interface
@@ -427,6 +439,94 @@ test "TracerProvider basic functionality" {
     try std.testing.expect(span.span_context.trace_flags.isSampled());
 }
 
+test "TracerProvider with custom resource" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    const user_resource = [_]Attribute{
+        .{ .key = "service.name", .value = .{ .string = "my-service" } },
+        .{ .key = "timecard.name", .value = .{ .string = "ocp2" } },
+    };
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, &user_resource);
+    defer provider.deinit();
+
+    // The provider owns a copy of the resource
+    try std.testing.expect(provider.resource != null);
+    try std.testing.expectEqual(@as(usize, 2), provider.resource.?.len);
+    try std.testing.expect(provider.resource.?.ptr != &user_resource);
+    try std.testing.expectEqualStrings("service.name", provider.resource.?[0].key);
+    try std.testing.expectEqualStrings("my-service", provider.resource.?[0].value.string);
+    try std.testing.expectEqualStrings("timecard.name", provider.resource.?[1].key);
+    try std.testing.expectEqualStrings("ocp2", provider.resource.?[1].value.string);
+
+    // Spans point to the provider's resource
+    const tracer = try provider.getTracer(.{ .name = "test-tracer" });
+    var span = try tracer.startSpan(allocator, "test-span", .{});
+    defer span.deinit();
+    try std.testing.expectEqual(provider.resource.?.ptr, span.resource.?.ptr);
+}
+
+test "TracerProvider without resource has none when there is no configuration" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
+    defer provider.deinit();
+
+    try std.testing.expectEqual(null, provider.resource);
+}
+
+test "TracerProvider resource takes precedence over the configuration" {
+    var env_map = std.process.Environ.Map.init(std.testing.allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_SERVICE_NAME", "env-service");
+    try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "env.only=from-env");
+
+    const cfg = try Configuration.init(std.testing.allocator, std.testing.io, &env_map);
+    defer cfg.deinit();
+    Configuration.set(cfg);
+
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+
+    const user_resource = [_]Attribute{.{ .key = "service.name", .value = .{ .string = "user-service" } }};
+    var provider = try TracerProvider.init(std.testing.allocator, std.testing.io, IDGenerator{ .Random = random_generator }, &user_resource);
+    defer provider.deinit();
+
+    var service_name_count: usize = 0;
+    var env_only: ?[]const u8 = null;
+    for (provider.resource.?) |attr| {
+        if (std.mem.eql(u8, attr.key, "service.name")) {
+            service_name_count += 1;
+            try std.testing.expectEqualStrings("user-service", attr.value.string);
+        }
+        if (std.mem.eql(u8, attr.key, "env.only")) env_only = attr.value.string;
+    }
+    try std.testing.expectEqual(@as(usize, 1), service_name_count);
+    try std.testing.expectEqualStrings("from-env", env_only.?);
+}
+
+fn initAndDeinitTracerProvider(allocator: std.mem.Allocator, io: std.Io, resource: []const Attribute) !void {
+    var default_prng = std.Random.DefaultPrng.init(0);
+    const random_generator = RandomIDGenerator.init(default_prng.random());
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, resource);
+    provider.deinit();
+}
+
+test "TracerProvider.init with a resource does not leak on allocation failure" {
+    const user_resource = [_]Attribute{
+        .{ .key = "service.name", .value = .{ .string = "my-service" } },
+        .{ .key = "timecard.name", .value = .{ .string = "ocp2" } },
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, initAndDeinitTracerProvider, .{ std.testing.io, @as([]const Attribute, &user_resource) });
+}
+
 test "Tracer starts a new trace under an invalid parent" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
@@ -434,7 +534,7 @@ test "Tracer starts a new trace under an invalid parent" {
     var default_prng = std.Random.DefaultPrng.init(0);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
     provider.sampler = .{ .trace_id_ratio = .{ .ratio = 0.0 } };
 
@@ -471,7 +571,7 @@ test "Tracer inherits valid parent trace flags" {
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
@@ -503,7 +603,7 @@ test "Tracer follows the parent sampling decision" {
     var default_prng = std.Random.DefaultPrng.init(0);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
     provider.sampler = Sampler.default();
 
@@ -540,7 +640,7 @@ test "Tracer does not record or export dropped spans" {
     var default_prng = std.Random.DefaultPrng.init(0);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
     provider.sampler = .always_off;
 
@@ -570,7 +670,7 @@ test "Tracer records parent span ID" {
     var default_prng = std.Random.DefaultPrng.init(0);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
@@ -599,7 +699,7 @@ test "Tracer inherits parent from current Context when parent_context is null" {
     var default_prng = std.Random.DefaultPrng.init(0);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
@@ -628,7 +728,7 @@ test "Tracer.startSpan honors root: true even when a parent Context is active" {
     var default_prng = std.Random.DefaultPrng.init(0);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });
@@ -655,7 +755,7 @@ test "Tracer passes resolved current Context to SpanProcessor.onStart" {
     var default_prng = std.Random.DefaultPrng.init(0);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     const ContextRecordingProcessor = struct {
@@ -755,7 +855,7 @@ test "TracerProvider with processors" {
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     // Add a mock processor
@@ -782,7 +882,7 @@ test "Span.end notifies the span processors" {
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     var mock_processor = MockProcessor.init(allocator);
@@ -814,7 +914,7 @@ test "Span.end after TracerProvider shutdown does not notify the span processors
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     var mock_processor = MockProcessor.init(allocator);
@@ -849,7 +949,7 @@ test "TracerProvider with config from environment" {
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     // Verify config was loaded with defaults
@@ -877,7 +977,7 @@ test "TracerProvider honors OTEL_TRACES_SAMPLER" {
     var default_prng = std.Random.DefaultPrng.init(0);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     var mock_processor = MockProcessor.init(allocator);
@@ -902,7 +1002,7 @@ test "TracerProvider end span with links and events" {
     var default_prng = std.Random.DefaultPrng.init(seed);
     const random_generator = RandomIDGenerator.init(default_prng.random());
 
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = random_generator }, null);
     defer provider.deinit();
 
     // Get a tracer via the interface
@@ -948,7 +1048,7 @@ test "Tracer.startSpan preserves multiple links and link attributes" {
     const io = std.testing.io;
 
     var prng = std.Random.DefaultPrng.init(42);
-    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = RandomIDGenerator.init(prng.random()) });
+    var provider = try TracerProvider.init(allocator, io, IDGenerator{ .Random = RandomIDGenerator.init(prng.random()) }, null);
     defer provider.deinit();
 
     const tracer = try provider.getTracer(.{ .name = "test-tracer", .version = "1.0.0" });

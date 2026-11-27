@@ -97,15 +97,18 @@ pub fn ObservableInstrument(K: Kind) type {
                 callbacks: std.ArrayList(ObserveMeasures) = .empty,
                 context: ObservedContext,
                 exemplar_filter: ExemplarFilter = .trace_based,
+                created_ns: u64 = 0,
                 collection_start_ns: u64 = 0,
 
                 pub fn init(allocator: std.mem.Allocator, io: std.Io, ctx: ?ObservedContext) Self {
+                    const now_ns: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
                     return Self{
                         .allocator = allocator,
                         .io = io,
                         .callbacks = .empty,
                         .context = ctx orelse .{},
-                        .collection_start_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
+                        .created_ns = now_ns,
+                        .collection_start_ns = now_ns,
                     };
                 }
 

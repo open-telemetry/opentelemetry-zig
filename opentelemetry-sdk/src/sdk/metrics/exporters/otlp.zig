@@ -358,6 +358,11 @@ test "exemplar/otlp recording pipeline" {
     Configuration.set(cfg);
     const provider = try meter_api.MeterProvider.init(allocator, std.testing.io, null);
     defer provider.deinit();
+    const me = try @import("../exporter.zig").MetricExporter.InMemory(allocator, std.testing.io, null, null);
+    defer me.in_memory.deinit();
+    const reader = try @import("../reader.zig").MetricReader.init(allocator, std.testing.io, me.exporter);
+    defer reader.deinit();
+    try provider.addReader(reader);
     try provider.addView(.{
         .instrument_selector = .{ .name = "requests" },
         .aggregation = .Sum,
@@ -376,7 +381,8 @@ test "exemplar/otlp recording pipeline" {
     };
     try counter.addWithSlice(7, &slice_attrs);
     const after: u64 = @intCast(std.Io.Clock.real.now(io).nanoseconds);
-    const collected = try meter_api.AggregatedMetrics.fetch(allocator, meter, provider.views.items, null);
+    try reader.collect();
+    const collected = try me.in_memory.fetch(allocator);
     defer {
         for (collected) |*m| m.deinit(allocator);
         allocator.free(collected);

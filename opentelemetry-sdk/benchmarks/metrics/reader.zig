@@ -21,7 +21,9 @@ const ReaderBench = struct {
             .name = "reader_counter",
             .description = "Counter for reader benchmark",
         });
-        counter.storage.cardinality_limit = @intCast(how_many);
+        for (counter.storages.items) |sink| {
+            sink.storage.setCardinalityLimit(@intCast(how_many));
+        }
 
         // Record some values
         for (0..how_many) |i| {

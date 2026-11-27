@@ -54,117 +54,124 @@ pub fn copyNormalizedPoints(comptime From: type, comptime To: type, allocator: s
 }
 
 /// Sum aggregation storage. Keeps running totals keyed by distinct attribute sets.
-pub const SumStorage = struct {
-    allocator: std.mem.Allocator,
-    io: std.Io,
-    cardinality_limit: usize,
-    aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(i64), Attributes.ArrayHashContext, true),
+pub fn SumStorage(comptime AggType: type) type {
+    return struct {
+        const Self = @This();
 
-    pub fn init(allocator: std.mem.Allocator, io: std.Io, cardinality_limit: usize) SumStorage {
-        return .{
-            .allocator = allocator,
-            .io = io,
-            .cardinality_limit = cardinality_limit,
-            .aggregated_points = .empty,
-        };
-    }
+        allocator: std.mem.Allocator,
+        io: std.Io,
+        cardinality_limit: usize,
+        aggregated_points: std.ArrayHashMapUnmanaged(Attributes, DataPoint(AggType), Attributes.ArrayHashContext, true),
 
-    pub fn deinit(self: *SumStorage) void {
-        for (self.aggregated_points.values()) |*m| {
-            m.deinit(self.allocator);
+        pub fn init(allocator: std.mem.Allocator, io: std.Io, cardinality_limit: usize) Self {
+            return .{
+                .allocator = allocator,
+                .io = io,
+                .cardinality_limit = cardinality_limit,
+                .aggregated_points = .empty,
+            };
         }
-        self.aggregated_points.deinit(self.allocator);
-    }
 
-    /// Fold `dp` into the pre-aggregated sum series.
-    ///
-    /// Whatever gets moved into the map is cleared from `dp`, so the caller
-    /// must always call `dp.deinit` afterwards: it frees what was not moved.
-    pub fn recordPoint(self: *SumStorage, comptime T: type, dp: *DataPoint(T), capture_exemplar: bool, exemplar_filter: exemplar.ExemplarFilter) !void {
-        const val: i64 = @intCast(dp.value);
-        const key = Attributes.with(dp.attributes);
-        if (self.aggregated_points.getPtr(key)) |existing| {
-            if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, exemplar_filter);
-            existing.value += val;
-            if (dp.exemplar_candidate) |sample| {
-                if (existing.exemplar_candidate) |*prev| prev.deinit(self.allocator);
-                existing.exemplar_candidate = sample;
-                dp.exemplar_candidate = null;
+        pub fn deinit(self: *Self) void {
+            for (self.aggregated_points.values()) |*m| {
+                m.deinit(self.allocator);
             }
-            return;
+            self.aggregated_points.deinit(self.allocator);
         }
 
-        // The spec requires creating the overflow series prior to reaching the cardinality limit,
-        // and does not say whether it counts towards the limit. Like the Go and Java SDKs, it does:
-        // at most `cardinality_limit - 1` regular series are kept, leaving the last slot to the overflow series.
-        // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#overflow-attribute
-        if (self.cardinality_limit > 0 and self.aggregated_points.count() >= self.cardinality_limit - 1) {
-            if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
-                if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, exemplar_filter);
-                overflow_ptr.value += val;
-                if (dp.exemplar_candidate) |sample| {
-                    if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
-                    overflow_ptr.exemplar_candidate = sample;
-                    dp.exemplar_candidate = null;
+        /// Record a measurement delta into the sum series.
+        /// Takes ownership of `candidate.*` if stored.
+        pub fn record(self: *Self, val: AggType, attributes: ?[]const Attribute, candidate: *?exemplar.Exemplar) !void {
+            const key = toKey(attributes);
+            if (self.aggregated_points.getPtr(key)) |existing| {
+                existing.value += val;
+                if (candidate.*) |sample| {
+                    if (existing.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                    existing.exemplar_candidate = sample;
+                    candidate.* = null;
                 }
                 return;
             }
 
-            log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
-            const overflow_slice = try self.allocator.dupe(Attribute, &overflow_attrs);
-            var overflow_dp = DataPoint(i64){
-                .value = val,
-                .attributes = overflow_slice,
-                .attributes_owned = false,
-            };
-            var overflow_stored = false;
-            defer if (!overflow_stored) overflow_dp.deinit(self.allocator);
+            // The spec requires creating the overflow series prior to reaching the cardinality limit,
+            // and does not say whether it counts towards the limit. Like the Go and Java SDKs, it does:
+            // at most `cardinality_limit - 1` regular series are kept, leaving the last slot to the overflow series.
+            // https://github.com/open-telemetry/opentelemetry-specification/blob/v1.48.0/specification/metrics/sdk.md#overflow-attribute
+            if (self.cardinality_limit > 0 and self.aggregated_points.count() >= self.cardinality_limit - 1) {
+                if (self.aggregated_points.getPtr(overflow_key)) |overflow_ptr| {
+                    overflow_ptr.value += val;
+                    if (candidate.*) |sample| {
+                        if (overflow_ptr.exemplar_candidate) |*prev| prev.deinit(self.allocator);
+                        overflow_ptr.exemplar_candidate = sample;
+                        candidate.* = null;
+                    }
+                    return;
+                }
 
-            if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, exemplar_filter);
-            if (dp.exemplar_candidate) |sample| {
-                overflow_dp.exemplar_candidate = sample;
-                dp.exemplar_candidate = null;
+                log.warn("cardinality limit {d} reached; aggregating excess measurements into overflow series", .{self.cardinality_limit});
+                const overflow_slice = try self.allocator.dupe(Attribute, &overflow_attrs);
+                var overflow_dp = DataPoint(AggType){
+                    .value = val,
+                    .attributes = overflow_slice,
+                    .attributes_owned = false,
+                };
+                var overflow_stored = false;
+                defer if (!overflow_stored) overflow_dp.deinit(self.allocator);
+
+                if (candidate.*) |sample| {
+                    overflow_dp.exemplar_candidate = sample;
+                    candidate.* = null;
+                }
+
+                try self.aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
+                overflow_stored = true;
+                return;
             }
 
-            try self.aggregated_points.put(self.allocator, Attributes.with(overflow_slice), overflow_dp);
-            overflow_stored = true;
-            return;
+            var owned_attrs = if (attributes) |attrs|
+                try exemplar.Exemplar.copyAttributes(self.allocator, attrs)
+            else
+                null;
+            defer if (owned_attrs) |attrs| {
+                for (attrs) |attr| {
+                    self.allocator.free(attr.key);
+                    if (attr.value == .string) self.allocator.free(attr.value.string);
+                }
+                self.allocator.free(attrs);
+            };
+
+            var new_dp = DataPoint(AggType){
+                .value = val,
+                .attributes = owned_attrs,
+                .attributes_owned = (owned_attrs != null),
+                .exemplar_candidate = candidate.*,
+            };
+            owned_attrs = null;
+            candidate.* = null;
+
+            var dp_stored = false;
+            defer if (!dp_stored) new_dp.deinit(self.allocator);
+
+            try self.aggregated_points.put(self.allocator, Attributes.with(new_dp.attributes), new_dp);
+            dp_stored = true;
         }
 
-        if (capture_exemplar) try dp.captureExemplar(self.allocator, self.io, exemplar_filter);
+        /// Snapshot the current aggregated points for collection.
+        pub fn snapshot(self: *Self, allocator: std.mem.Allocator, end_time_ns: *u64) ![]DataPoint(AggType) {
+            return copyNormalizedPoints(AggType, AggType, allocator, self.io, self.aggregated_points.values(), end_time_ns);
+        }
 
-        const dp_i64 = DataPoint(i64){
-            .value = val,
-            .attributes = dp.attributes,
-            .attributes_owned = dp.attributes_owned,
-            .exemplar_candidate = dp.exemplar_candidate,
-            .exemplars = dp.exemplars,
-            .timestamps = dp.timestamps,
-        };
-        try self.aggregated_points.put(self.allocator, Attributes.with(dp.attributes), dp_i64);
+        /// Clear aggregated points while retaining map capacity.
+        pub fn clearRetainingCapacity(self: *Self) void {
+            for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
+            self.aggregated_points.clearRetainingCapacity();
+        }
 
-        // The map owns these now.
-        dp.attributes = null;
-        dp.attributes_owned = false;
-        dp.exemplar_candidate = null;
-        dp.exemplars = &.{};
-    }
-
-    /// Snapshot the current aggregated points for collection.
-    pub fn snapshot(self: *SumStorage, allocator: std.mem.Allocator, end_time_ns: *u64) ![]DataPoint(i64) {
-        return copyNormalizedPoints(i64, i64, allocator, self.io, self.aggregated_points.values(), end_time_ns);
-    }
-
-    /// Clear aggregated points while retaining map capacity.
-    pub fn clearRetainingCapacity(self: *SumStorage) void {
-        for (self.aggregated_points.values()) |*m| m.deinit(self.allocator);
-        self.aggregated_points.clearRetainingCapacity();
-    }
-
-    pub fn count(self: *const SumStorage) usize {
-        return self.aggregated_points.count();
-    }
-};
+        pub fn count(self: *const Self) usize {
+            return self.aggregated_points.count();
+        }
+    };
+}
 
 /// LastValue aggregation storage. Keeps the latest recorded measurement per attribute set.
 pub fn LastValueStorage(comptime AggType: type) type {
@@ -737,20 +744,12 @@ pub const ExponentialHistogramStorage = struct {
 
 test "SumStorage basic recording and snapshot" {
     const io = std.testing.io;
-    var sum_storage = SumStorage.init(std.testing.allocator, io, 100);
+    var sum_storage = SumStorage(i64).init(std.testing.allocator, io, 100);
     defer sum_storage.deinit();
 
-    var dp1 = DataPoint(u64){
-        .value = 10,
-        .attributes = null,
-    };
-    try sum_storage.recordPoint(u64, &dp1, false, .always_off);
-
-    var dp2 = DataPoint(u64){
-        .value = 25,
-        .attributes = null,
-    };
-    try sum_storage.recordPoint(u64, &dp2, false, .always_off);
+    var candidate: ?exemplar.Exemplar = null;
+    try sum_storage.record(10, null, &candidate);
+    try sum_storage.record(25, null, &candidate);
 
     try std.testing.expectEqual(@as(usize, 1), sum_storage.count());
 
@@ -767,21 +766,18 @@ test "SumStorage basic recording and snapshot" {
 
 test "SumStorage cardinality limit with overflow series" {
     const io = std.testing.io;
-    var sum_storage = SumStorage.init(std.testing.allocator, io, 3);
+    var sum_storage = SumStorage(i64).init(std.testing.allocator, io, 3);
     defer sum_storage.deinit();
 
-    var dp1 = try DataPoint(i64).new(std.testing.allocator, 1, .{ "id", @as(i64, 1) });
-    defer dp1.deinit(std.testing.allocator);
-    try sum_storage.recordPoint(i64, &dp1, false, .always_off);
+    var candidate: ?exemplar.Exemplar = null;
+    const attrs1 = [_]Attribute{.{ .key = "id", .value = .{ .int = 1 } }};
+    const attrs2 = [_]Attribute{.{ .key = "id", .value = .{ .int = 2 } }};
+    const attrs3 = [_]Attribute{.{ .key = "id", .value = .{ .int = 3 } }};
 
-    var dp2 = try DataPoint(i64).new(std.testing.allocator, 2, .{ "id", @as(i64, 2) });
-    defer dp2.deinit(std.testing.allocator);
-    try sum_storage.recordPoint(i64, &dp2, false, .always_off);
-
+    try sum_storage.record(1, &attrs1, &candidate);
+    try sum_storage.record(2, &attrs2, &candidate);
     // Limit is 3, so at most 2 regular series; 3rd goes into overflow series
-    var dp3 = try DataPoint(i64).new(std.testing.allocator, 3, .{ "id", @as(i64, 3) });
-    defer dp3.deinit(std.testing.allocator);
-    try sum_storage.recordPoint(i64, &dp3, false, .always_off);
+    try sum_storage.record(3, &attrs3, &candidate);
 
     try std.testing.expectEqual(@as(usize, 3), sum_storage.count());
 

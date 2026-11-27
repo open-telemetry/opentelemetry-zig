@@ -14,7 +14,7 @@ const instrument = @import("../../api/metrics/instrument.zig");
 const Instrument = instrument.Instrument;
 const Kind = instrument.Kind;
 const MeterProvider = @import("../../api/metrics/meter.zig").MeterProvider;
-const AggregatedMetrics = @import("../../api/metrics/meter.zig").AggregatedMetrics;
+const Pipeline = @import("pipeline.zig").Pipeline;
 
 const Attribute = @import("../../attributes.zig").Attribute;
 const Attributes = @import("../../attributes.zig").Attributes;
@@ -60,6 +60,7 @@ pub const MetricReader = struct {
     // We can read the instruments' data points from the meters
     // stored in meterProvider.
     meterProvider: ?*MeterProvider = null,
+    pipeline: ?*Pipeline = null,
 
     // Data transform configuration
     temporality: TemporalitySelector = view.DefaultTemporality,
@@ -120,33 +121,28 @@ pub const MetricReader = struct {
         }
 
         if (self.meterProvider) |mp| {
-            // Collect the data from each meter provider.
-            // Measurements can be ported to protobuf structs during OTLP export.
-            var meters = mp.meters.valueIterator();
-            while (meters.next()) |meter| {
-                const measurements = AggregatedMetrics.fetch(self.allocator, meter, mp.views.items, self.aggregation) catch |err| {
-                    log.err("error aggregating data points from meter {s}: {}", .{ meter.scope.name, err });
-                    continue;
-                };
-                defer self.allocator.free(measurements);
+            mp.mx.lockUncancelable(mp.io);
+            const pipeline = self.pipeline orelse {
+                mp.mx.unlock(mp.io);
+                return MetricReadError.CollectFailedOnMissingMeterProvider;
+            };
+            pipeline.retain();
+            defer pipeline.release();
 
-                errdefer {
-                    for (measurements) |*m| {
-                        m.deinit(self.allocator);
-                    }
-                }
+            const resource = mp.resource;
+            pipeline.beginCollection();
+            defer pipeline.endCollection();
 
-                for (measurements) |*m| {
-                    try self.temporal_aggregation.process(m, self.temporality);
-                    m.resource = mp.resource;
-                }
+            const async_tasks = blk: {
+                errdefer mp.mx.unlock(mp.io);
+                try pipeline.collectSync(self.allocator, resource, &toBeExported);
+                break :blk try pipeline.snapshotAsyncTasks(self.allocator, mp);
+            };
+            mp.mx.unlock(mp.io);
+            defer self.allocator.free(async_tasks);
 
-                // The exporter takes ownership of the data points, which are deinitialized
-                // by calling deinit() on the Measurements once done.
-                // MetricExporter must be built with the same allocator as MetricReader
-                // to ensure that the memory is managed correctly.
-                try toBeExported.appendSlice(self.allocator, measurements);
-            }
+            // User callbacks run after releasing mp.mx so they can call MeterProvider APIs safely.
+            try pipeline.collectAsyncTasks(self.allocator, resource, async_tasks, &toBeExported);
 
             try self.appendMissingCumulativeHistograms(HistogramDataPoint, mp, &toBeExported);
             try self.appendMissingCumulativeHistograms(ExponentialHistogramDataPoint, mp, &toBeExported);

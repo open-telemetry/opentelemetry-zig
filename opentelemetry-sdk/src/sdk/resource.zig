@@ -7,6 +7,7 @@ const fromPairs = @import("../attributes.zig").fromPairs;
 const Configuration = @import("config.zig").Configuration;
 const ResourceDetector = @import("config.zig").ResourceDetector;
 const ResourceDetectors = @import("config.zig").ResourceDetectors;
+const CommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").CommaSeparatedAssignmentIterator;
 const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").PercentDecodedCommaSeparatedAssignmentIterator;
 
 // The well-known values MUST be used when one applies, the sets are open otherwise:
@@ -107,12 +108,15 @@ pub fn buildFromConfig(allocator: std.mem.Allocator, config: *const Configuratio
 /// Format: "key1=value1,key2=value2"
 /// Keys and values are percent-decoded according to RFC 3986.
 /// If skip_service_name is true, service.name entries will be skipped (OTEL_SERVICE_NAME takes precedence)
+/// A malformed value adds nothing, see `validResourceAttributes`.
 fn parseResourceAttributes(
     allocator: std.mem.Allocator,
     attrs_str: []const u8,
     attributes: *std.ArrayList(Attribute),
     skip_service_name: bool,
 ) !void {
+    if (!validResourceAttributes(attrs_str)) return;
+
     // At most one attribute per entry, and a comma-separated list holds at most
     // one more entry than it has commas. Reserving up front makes the appends
     // below infallible, so a duped attribute is never orphaned mid-append.
@@ -125,15 +129,8 @@ fn parseResourceAttributes(
 
     var iter: PercentDecodedCommaSeparatedAssignmentIterator = .init(attrs_str, scratch);
     while (iter.next() catch unreachable) |entry| {
-        const value = entry.value orelse {
-            std.log.warn("Invalid resource attribute (missing '='): {s}", .{entry.name});
-            continue;
-        };
-
-        if (entry.name.len == 0) {
-            std.log.warn("Invalid resource attribute (empty key): ={s}", .{value});
-            continue;
-        }
+        // Validated above.
+        const value = entry.value.?;
 
         // Skip service.name if OTEL_SERVICE_NAME is set (it takes precedence)
         if (skip_service_name and std.mem.eql(u8, entry.name, semconv.attribute.service_name.name)) continue;
@@ -143,6 +140,27 @@ fn parseResourceAttributes(
             .value = .{ .string = value },
         }));
     }
+}
+
+/// Whether every entry of an OTEL_RESOURCE_ATTRIBUTES value is a `key=value` pair with a
+/// non-empty key. The specification requires discarding the whole value and logging an
+/// error otherwise, so the first invalid entry is logged.
+/// See https://github.com/open-telemetry/opentelemetry-specification/blob/v1.62.0/specification/configuration/sdk-environment-variables.md#general-sdk-configuration
+pub fn validResourceAttributes(attrs_str: []const u8) bool {
+    // Percent-decoding never makes a key empty nor adds or removes an '=' separator,
+    // so checking the raw entries is enough.
+    var iter: CommaSeparatedAssignmentIterator = .init(attrs_str);
+    while (iter.next()) |entry| {
+        const value = entry.value orelse {
+            std.log.err("Discarding OTEL_RESOURCE_ATTRIBUTES, invalid entry (missing '='): {s}", .{entry.name});
+            return false;
+        };
+        if (entry.name.len == 0) {
+            std.log.err("Discarding OTEL_RESOURCE_ATTRIBUTES, invalid entry (empty key): ={s}", .{value});
+            return false;
+        }
+    }
+    return true;
 }
 
 /// Free resource attributes
@@ -506,6 +524,36 @@ test "OTEL_RESOURCE_ATTRIBUTES overrides detected attributes" {
     try std.testing.expectEqualStrings("custom", resource[0].value.string);
     try std.testing.expectEqualStrings(semconv.attribute.host_arch.name, resource[1].key);
     try std.testing.expectEqualStrings(host_arch, resource[1].value.string);
+}
+
+test "malformed OTEL_RESOURCE_ATTRIBUTES is discarded as a whole" {
+    const allocator = std.testing.allocator;
+
+    // A missing '=' and an empty key, each next to valid entries that must not survive either.
+    for ([_][]const u8{ "os.type=custom,invalid_token,key1=value1", "os.type=custom,=orphan,key1=value1" }) |resource_attributes| {
+        var config = Configuration{
+            .allocator = allocator,
+            .sdk_disabled = false,
+            .resource_detectors = .init(.{ .os = true }),
+            .service_name = "my-service",
+            .resource_attributes = resource_attributes,
+            .log_level = .info,
+            .trace_propagators = &.{},
+            .trace_config = undefined,
+            .metrics_config = undefined,
+            .logs_config = undefined,
+        };
+
+        const resource = try buildFromConfig(allocator, &config);
+        defer freeResource(allocator, resource);
+
+        // OTEL_SERVICE_NAME and the detected attributes are not affected.
+        try std.testing.expectEqual(@as(usize, 2), resource.len);
+        try std.testing.expectEqualStrings(semconv.attribute.service_name.name, resource[0].key);
+        try std.testing.expectEqualStrings("my-service", resource[0].value.string);
+        try std.testing.expectEqualStrings(semconv.attribute.os_type.name, resource[1].key);
+        try std.testing.expectEqualStrings(os_type, resource[1].value.string);
+    }
 }
 
 fn buildAndFreeResource(allocator: std.mem.Allocator, config: *const Configuration) !void {

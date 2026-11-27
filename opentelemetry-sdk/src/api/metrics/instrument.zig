@@ -300,10 +300,57 @@ pub const Instrument = struct {
         }
     }
 
+    pub fn asyncCreatedNs(self: *const Self) ?u64 {
+        return switch (self.data) {
+            inline .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => |i| i.created_ns,
+            else => null,
+        };
+    }
+
+    pub fn ensureStorageCapacity(self: *Self, additional: usize) !void {
+        if (additional == 0) return;
+        switch (self.data) {
+            .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => {},
+            inline else => |i| {
+                i.lock.lockUncancelable(i.io);
+                defer i.lock.unlock(i.io);
+                try i.storages.ensureUnusedCapacity(i.allocator, additional);
+            },
+        }
+    }
+
+    pub fn addStorageSinkAssumeCapacity(self: *Self, sink: *StorageSink) void {
+        switch (self.data) {
+            .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => {},
+            inline else => |i| {
+                i.lock.lockUncancelable(i.io);
+                defer i.lock.unlock(i.io);
+                i.storages.appendAssumeCapacity(sink);
+            },
+        }
+    }
+
+    pub fn replaceStorageSink(self: *Self, old_sink: *StorageSink, new_sink: *StorageSink) void {
+        switch (self.data) {
+            .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => {},
+            inline else => |i| {
+                i.lock.lockUncancelable(i.io);
+                defer i.lock.unlock(i.io);
+                for (i.storages.items) |*s| {
+                    if (s.* == old_sink) {
+                        s.* = new_sink;
+                        return;
+                    }
+                }
+                i.storages.appendAssumeCapacity(new_sink);
+            },
+        }
+    }
+
     pub fn getInstrumentsData(self: Self, allocator: std.mem.Allocator) !MeasurementsData {
         return switch (self.data) {
             inline .ObservableCounter, .ObservableUpDownCounter, .ObservableGauge => |i| i.measurementsData(allocator),
-            else => unreachable,
+            else => error.SynchronousCollectionRequiresMetricReader,
         };
     }
 };

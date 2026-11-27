@@ -98,9 +98,14 @@ pub const MeterProvider = struct {
     }
 
     /// Detach a MetricReader from this provider without shutting it down.
+    /// Rejects readers that are not attached to this provider.
     pub fn detachReader(self: *Self, reader: *MetricReader) void {
         self.mx.lockUncancelable(self.io);
-        defer self.mx.unlock(self.io);
+
+        if (reader.meterProvider != self) {
+            self.mx.unlock(self.io);
+            return;
+        }
 
         for (self.readers.items, 0..) |r, i| {
             if (r == reader) {
@@ -110,7 +115,8 @@ pub const MeterProvider = struct {
             }
         }
 
-        if (reader.pipeline) |pipeline| {
+        const detached_pipeline: ?*Pipeline = blk: {
+            const pipeline = reader.pipeline orelse break :blk null;
             reader.pipeline = null;
             for (self.pipelines.items, 0..) |p, i| {
                 if (p == pipeline) {
@@ -129,9 +135,11 @@ pub const MeterProvider = struct {
                     instr.*.removeStorageSinksForPipeline(pipeline);
                 }
             }
+            break :blk pipeline;
+        };
+        self.mx.unlock(self.io);
 
-            pipeline.deinit();
-        }
+        if (detached_pipeline) |p| p.release();
     }
 
     /// Immediately export all metrics that have not yet been exported across all registered MetricReaders.
@@ -204,7 +212,7 @@ pub const MeterProvider = struct {
 
         self.readers.deinit(self.allocator);
         for (self.pipelines.items) |p| {
-            p.deinit();
+            p.release();
         }
         self.pipelines.deinit(self.allocator);
 
@@ -277,7 +285,7 @@ pub const MeterProvider = struct {
                     instr.*.removeStorageSinksForPipeline(pipeline);
                 }
             }
-            pipeline.deinit();
+            pipeline.release();
         }
 
         var meter_iter = self.meters.valueIterator();
@@ -299,7 +307,8 @@ pub const MeterProvider = struct {
         m.pipeline = pipeline;
     }
 
-    /// Register a view with this meter provider
+    /// Register a view with this meter provider.
+    /// Atomic on allocation or validation failure: either all instruments/pipelines are updated or none are.
     pub fn addView(self: *Self, new_view: view.View) !void {
         if (self.is_shutdown.load(.acquire)) {
             return error.MeterProviderShutdown;
@@ -311,18 +320,47 @@ pub const MeterProvider = struct {
         defer self.mx.unlock(self.io);
 
         try self.views.append(self.allocator, new_view);
+        errdefer _ = self.views.pop();
 
-        for (self.pipelines.items) |pipeline| {
-            var meter_iter = self.meters.valueIterator();
-            while (meter_iter.next()) |meter| {
-                meter.mx.lockUncancelable(meter.io);
-                defer meter.mx.unlock(meter.io);
+        var pending = std.ArrayList(Pipeline.PendingRebind).empty;
+        defer pending.deinit(self.allocator);
+        errdefer {
+            for (pending.items) |item| item.deinitOnError();
+        }
 
-                var instr_iter = meter.instruments.valueIterator();
-                while (instr_iter.next()) |instr| {
-                    try pipeline.rebindInstrument(instr.*, &meter.scope, self.views.items);
+        const extra_per_pipeline = try self.allocator.alloc(usize, self.pipelines.items.len);
+        defer self.allocator.free(extra_per_pipeline);
+        @memset(extra_per_pipeline, 0);
+
+        var meter_iter = self.meters.valueIterator();
+        while (meter_iter.next()) |meter| {
+            meter.mx.lockUncancelable(meter.io);
+            defer meter.mx.unlock(meter.io);
+
+            var instr_iter = meter.instruments.valueIterator();
+            while (instr_iter.next()) |instr_ptr| {
+                const instr = instr_ptr.*;
+                var extra_for_instr: usize = 0;
+                for (self.pipelines.items, 0..) |pipeline, p_idx| {
+                    const rebind = try pipeline.prepareRebind(instr, &meter.scope, self.views.items);
+                    errdefer rebind.deinitOnError();
+                    try pending.append(self.allocator, rebind);
+                    if (rebind == .replace and rebind.replace.old_sink == null) {
+                        extra_for_instr += 1;
+                        extra_per_pipeline[p_idx] += 1;
+                    }
                 }
+                try instr.ensureStorageCapacity(extra_for_instr);
             }
+        }
+
+        for (self.pipelines.items, 0..) |pipeline, p_idx| {
+            try pipeline.sinks.ensureUnusedCapacity(pipeline.allocator, extra_per_pipeline[p_idx]);
+        }
+
+        // All allocations succeeded; commit swaps and metadata updates infallibly.
+        for (pending.items) |item| {
+            item.commit();
         }
     }
 

@@ -254,7 +254,7 @@ fn hasZeroCountPoints(points: []const DataPoint(HistogramDataPoint)) bool {
 }
 
 /// Per-MetricReader collection pipeline.
-/// Created by MeterProvider.addReader and destroyed by MeterProvider.detachReader.
+/// Created by MeterProvider.addReader and destroyed once detached and no collection is in flight.
 pub const Pipeline = struct {
     allocator: std.mem.Allocator,
     io: std.Io,
@@ -263,6 +263,87 @@ pub const Pipeline = struct {
     exemplar_filter: exemplar.ExemplarFilter,
     exemplar_sampler: exemplar.Sampler,
     sinks: std.ArrayListUnmanaged(*StorageSink),
+    observable_windows: std.AutoHashMapUnmanaged(usize, u64),
+    created_at_ns: u64,
+    ref_count: std.atomic.Value(usize),
+
+    pub const AsyncTask = struct {
+        instr: *Instrument,
+        scope: InstrumentationScope,
+        opts: InstrumentOptions,
+        agg: view.Aggregation,
+        attribute_filter: ?view.AttributeFilter,
+        exemplar_reservoir: ?exemplar.ReservoirFactory,
+    };
+
+    pub const PendingRebind = union(enum) {
+        noop,
+        update_metadata: struct {
+            sink: *StorageSink,
+            options: InstrumentOptions,
+            exemplar_reservoir: ?exemplar.ReservoirFactory,
+        },
+        drop: struct {
+            pipeline: *Pipeline,
+            instr: *Instrument,
+            old_sink: *StorageSink,
+        },
+        replace: struct {
+            pipeline: *Pipeline,
+            instr: *Instrument,
+            old_sink: ?*StorageSink,
+            new_sink: *StorageSink,
+        },
+
+        pub fn deinitOnError(self: PendingRebind) void {
+            switch (self) {
+                .replace => |r| {
+                    r.new_sink.deinit();
+                    r.pipeline.allocator.destroy(r.new_sink);
+                },
+                else => {},
+            }
+        }
+
+        pub fn commit(self: PendingRebind) void {
+            switch (self) {
+                .noop => {},
+                .update_metadata => |u| {
+                    u.sink.instrument_lock.lockUncancelable(u.sink.pipeline.io);
+                    u.sink.instrument_options = u.options;
+                    u.sink.exemplar_reservoir = u.exemplar_reservoir;
+                    u.sink.instrument_lock.unlock(u.sink.pipeline.io);
+                },
+                .drop => |d| {
+                    for (d.pipeline.sinks.items, 0..) |s, idx| {
+                        if (s == d.old_sink) {
+                            _ = d.pipeline.sinks.swapRemove(idx);
+                            break;
+                        }
+                    }
+                    d.instr.removeStorageSink(d.old_sink);
+                    d.old_sink.deinit();
+                    d.pipeline.allocator.destroy(d.old_sink);
+                },
+                .replace => |r| {
+                    if (r.old_sink) |old| {
+                        for (r.pipeline.sinks.items) |*s| {
+                            if (s.* == old) {
+                                s.* = r.new_sink;
+                                break;
+                            }
+                        }
+                        r.instr.replaceStorageSink(old, r.new_sink);
+                        old.deinit();
+                        r.pipeline.allocator.destroy(old);
+                    } else {
+                        r.instr.addStorageSinkAssumeCapacity(r.new_sink);
+                        r.pipeline.sinks.appendAssumeCapacity(r.new_sink);
+                    }
+                },
+            }
+        }
+    };
 
     pub fn init(
         allocator: std.mem.Allocator,
@@ -280,8 +361,21 @@ pub const Pipeline = struct {
             .exemplar_filter = exemplar_filter,
             .exemplar_sampler = .{ .allocator = allocator },
             .sinks = .empty,
+            .observable_windows = .empty,
+            .created_at_ns = @intCast(std.Io.Clock.real.now(io).nanoseconds),
+            .ref_count = std.atomic.Value(usize).init(1),
         };
         return p;
+    }
+
+    pub fn retain(self: *Pipeline) void {
+        _ = self.ref_count.fetchAdd(1, .monotonic);
+    }
+
+    pub fn release(self: *Pipeline) void {
+        if (self.ref_count.fetchSub(1, .acq_rel) == 1) {
+            self.deinit();
+        }
     }
 
     pub fn deinit(self: *Pipeline) void {
@@ -290,6 +384,7 @@ pub const Pipeline = struct {
             self.allocator.destroy(sink);
         }
         self.sinks.deinit(self.allocator);
+        self.observable_windows.deinit(self.allocator);
         self.exemplar_sampler.deinit(self.allocator);
         self.allocator.destroy(self);
     }
@@ -416,15 +511,16 @@ pub const Pipeline = struct {
         }
     }
 
-    /// Re-evaluate views for `instr` (e.g. after MeterProvider.addView).
-    /// Replaces the existing sink if the resolved aggregation/filter/reservoir/metadata changed.
-    pub fn rebindInstrument(
+    /// Prepare a view re-evaluation for `instr` without mutating `self.sinks` or `instr`.
+    /// When aggregation and attribute filtering are unchanged, returns `.update_metadata`
+    /// so uncollected measurements and collection windows are preserved.
+    pub fn prepareRebind(
         self: *Pipeline,
         instr: *Instrument,
         scope: *const InstrumentationScope,
         views: []const view.View,
-    ) !void {
-        const lock_ptr = instr.syncLock() orelse return;
+    ) !PendingRebind {
+        const lock_ptr = instr.syncLock() orelse return .noop;
         const instr_id = @intFromPtr(instr);
 
         var config = view.CombinedViewConfig.init(instr.kind);
@@ -434,49 +530,62 @@ pub const Pipeline = struct {
         const agg = config.combinedAggregation(self.reader.aggregation);
         try agg.validate();
 
-        var existing_idx: ?usize = null;
-        for (self.sinks.items, 0..) |sink, idx| {
+        var existing_sink: ?*StorageSink = null;
+        for (self.sinks.items) |sink| {
             if (sink.instrument_id == instr_id) {
-                existing_idx = idx;
+                existing_sink = sink;
                 break;
             }
         }
 
         if (agg == .Drop) {
-            if (existing_idx) |idx| {
-                const old_sink = self.sinks.swapRemove(idx);
-                instr.removeStorageSink(old_sink);
-                old_sink.deinit();
-                self.allocator.destroy(old_sink);
+            if (existing_sink) |old_sink| {
+                return .{ .drop = .{ .pipeline = self, .instr = instr, .old_sink = old_sink } };
             }
-            return;
+            return .noop;
         }
 
-        if (existing_idx) |idx| {
-            const existing = self.sinks.items[idx];
-            if (sinkMatchesConfig(existing, instr.opts, agg, config)) {
-                return;
+        if (existing_sink) |existing| {
+            if (sinkMatchesStorageAndFilter(existing, agg, config)) {
+                const resolved = resolveOptions(instr.opts, config);
+                if (std.mem.eql(u8, existing.instrument_options.name, resolved.name) and
+                    optionalStringEqual(existing.instrument_options.description, resolved.description) and
+                    existing.exemplar_reservoir == config.exemplar_reservoir)
+                {
+                    return .noop;
+                }
+                return .{ .update_metadata = .{
+                    .sink = existing,
+                    .options = resolved,
+                    .exemplar_reservoir = config.exemplar_reservoir,
+                } };
             }
         }
 
         const new_sink = try self.createSink(instr, scope, lock_ptr, config, agg);
-        errdefer {
-            new_sink.deinit();
-            self.allocator.destroy(new_sink);
-        }
+        return .{ .replace = .{
+            .pipeline = self,
+            .instr = instr,
+            .old_sink = existing_sink,
+            .new_sink = new_sink,
+        } };
+    }
 
-        try instr.addStorageSink(new_sink);
-        errdefer instr.removeStorageSink(new_sink);
-
-        if (existing_idx) |idx| {
-            const old_sink = self.sinks.items[idx];
-            self.sinks.items[idx] = new_sink;
-            instr.removeStorageSink(old_sink);
-            old_sink.deinit();
-            self.allocator.destroy(old_sink);
-        } else {
-            try self.sinks.append(self.allocator, new_sink);
+    /// Re-evaluate views for `instr` (e.g. after MeterProvider.addView).
+    /// Replaces the existing sink only if aggregation or attribute filtering changed.
+    pub fn rebindInstrument(
+        self: *Pipeline,
+        instr: *Instrument,
+        scope: *const InstrumentationScope,
+        views: []const view.View,
+    ) !void {
+        const pending = try self.prepareRebind(instr, scope, views);
+        errdefer pending.deinitOnError();
+        if (pending == .replace and pending.replace.old_sink == null) {
+            try instr.ensureStorageCapacity(1);
+            try self.sinks.ensureUnusedCapacity(self.allocator, 1);
         }
+        pending.commit();
     }
 
     fn optionalStringEqual(a: ?[]const u8, b: ?[]const u8) bool {
@@ -485,16 +594,11 @@ pub const Pipeline = struct {
         return std.mem.eql(u8, a.?, b.?);
     }
 
-    fn sinkMatchesConfig(
+    fn sinkMatchesStorageAndFilter(
         sink: *const StorageSink,
-        base_opts: InstrumentOptions,
         agg: view.Aggregation,
         config: view.CombinedViewConfig,
     ) bool {
-        const resolved = resolveOptions(base_opts, config);
-        if (!std.mem.eql(u8, sink.instrument_options.name, resolved.name)) return false;
-        if (!optionalStringEqual(sink.instrument_options.description, resolved.description)) return false;
-        if (sink.exemplar_reservoir != config.exemplar_reservoir) return false;
         if (!attributeFilterEqual(sink.attribute_filter, config.attribute_filter)) return false;
         return switch (agg) {
             .Drop => false,
@@ -532,18 +636,22 @@ pub const Pipeline = struct {
         return true;
     }
 
-    /// Collect all metrics for this pipeline (synchronous sinks + asynchronous instruments).
-    pub fn collect(self: *Pipeline, collect_allocator: std.mem.Allocator, mp: *MeterProvider) ![]Measurements {
+    pub fn beginCollection(self: *Pipeline) void {
         if (self.exemplar_filter != .always_off) self.exemplar_sampler.beginCollection();
-        defer if (self.exemplar_filter != .always_off) self.exemplar_sampler.endCollection();
+    }
 
-        var results = std.ArrayList(Measurements).empty;
-        errdefer {
-            for (results.items) |*r| r.deinit(collect_allocator);
-            results.deinit(collect_allocator);
-        }
+    pub fn endCollection(self: *Pipeline) void {
+        if (self.exemplar_filter != .always_off) self.exemplar_sampler.endCollection();
+    }
 
-        // 1. Synchronous instruments: snapshot and reset only this pipeline's sinks.
+    /// Snapshot synchronous sinks belonging to this pipeline into `results`.
+    /// Must be called while provider state is stable (e.g. under `mp.mx`).
+    pub fn collectSync(
+        self: *Pipeline,
+        collect_allocator: std.mem.Allocator,
+        resource: ?[]const Attribute,
+        results: *std.ArrayList(Measurements),
+    ) !void {
         for (self.sinks.items) |sink| {
             const data = try sink.collectData(
                 collect_allocator,
@@ -558,15 +666,25 @@ pub const Pipeline = struct {
                 .instrumentOptions = sink.instrument_options,
                 .data = data,
                 .aggregation = sink.aggregationType(),
-                .resource = mp.resource,
+                .resource = resource,
             };
             errdefer measurement.deinit(collect_allocator);
 
             try self.reader.temporal_aggregation.process(&measurement, self.reader.temporality);
             try results.append(collect_allocator, measurement);
         }
+    }
 
-        // 2. Asynchronous instruments: observe callbacks and aggregate per pipeline.
+    /// Snapshot asynchronous observable instrument tasks from `mp` while `mp.mx` is held,
+    /// so user callbacks can later run with `mp.mx` released.
+    pub fn snapshotAsyncTasks(
+        self: *Pipeline,
+        allocator: std.mem.Allocator,
+        mp: *MeterProvider,
+    ) ![]AsyncTask {
+        var tasks = std.ArrayList(AsyncTask).empty;
+        errdefer tasks.deinit(allocator);
+
         var meters = mp.meters.valueIterator();
         while (meters.next()) |meter| {
             meter.mx.lockUncancelable(meter.io);
@@ -586,57 +704,125 @@ pub const Pipeline = struct {
                 }
                 const aggregation_type = config.combinedAggregation(self.reader.aggregation);
                 try aggregation_type.validate();
+                if (aggregation_type == .Drop) continue;
 
-                const data_points: MeasurementsData = try instr.getInstrumentsData(collect_allocator);
-                var consumed = false;
-                errdefer if (!consumed) {
-                    var failed = data_points;
-                    failed.deinit(collect_allocator);
-                };
-
-                if (config.attribute_filter) |filter| {
-                    try AggregatedMetrics.filterAttributes(collect_allocator, data_points, filter);
-                }
-
-                consumed = true;
-                const exemplar_ctx: ?AggregatedMetrics.ExemplarContext = if (self.exemplar_filter != .always_off) .{
-                    .sampler = &self.exemplar_sampler,
-                    .io = self.io,
-                    .instrument_id = @intFromPtr(instr),
-                    .factory = config.exemplar_reservoir,
-                } else null;
-
-                const aggregated_data = try AggregatedMetrics.aggregate(
-                    collect_allocator,
-                    data_points,
-                    aggregation_type,
-                    instr.kind.isMonotonic(),
-                    exemplar_ctx,
-                ) orelse continue;
-
-                var opts = instr.opts;
-                if (config.name) |name_override| opts.name = name_override;
-                if (config.description) |desc_override| opts.description = desc_override;
-
-                var measurement = Measurements{
+                try tasks.append(allocator, .{
+                    .instr = instr,
                     .scope = .{
                         .name = meter.scope.name,
                         .version = meter.scope.version,
                         .schema_url = meter.scope.schema_url,
                         .attributes = meter.scope.attributes,
                     },
-                    .instrumentKind = instr.kind,
-                    .instrumentOptions = opts,
-                    .data = aggregated_data,
-                    .aggregation = aggregation_type.getType(),
-                    .resource = mp.resource,
-                };
-                errdefer measurement.deinit(collect_allocator);
-
-                try self.reader.temporal_aggregation.process(&measurement, self.reader.temporality);
-                try results.append(collect_allocator, measurement);
+                    .opts = resolveOptions(instr.opts, config),
+                    .agg = aggregation_type,
+                    .attribute_filter = config.attribute_filter,
+                    .exemplar_reservoir = config.exemplar_reservoir,
+                });
             }
         }
+
+        return try tasks.toOwnedSlice(allocator);
+    }
+
+    /// Execute snapshotted asynchronous tasks with `mp.mx` released, tracking per-pipeline windows
+    /// and isolating callback failures so healthy metrics are still exported.
+    pub fn collectAsyncTasks(
+        self: *Pipeline,
+        collect_allocator: std.mem.Allocator,
+        resource: ?[]const Attribute,
+        tasks: []const AsyncTask,
+        results: *std.ArrayList(Measurements),
+    ) !void {
+        for (tasks) |task| {
+            const instr = task.instr;
+            const data_points: MeasurementsData = instr.getInstrumentsData(collect_allocator) catch |err| switch (err) {
+                error.CallbackExecutionFailed,
+                error.UnsupportedDataPointTypeReturnedByCallback,
+                error.NonUniformMeasurementsDataType,
+                => {
+                    log.err("error observing instrument {s}: {}", .{ instr.opts.name, err });
+                    continue;
+                },
+                else => return err,
+            };
+            var consumed = false;
+            errdefer if (!consumed) {
+                var failed = data_points;
+                failed.deinit(collect_allocator);
+            };
+
+            if (data_points.isEmpty()) {
+                consumed = true;
+                var empty_dp = data_points;
+                empty_dp.deinit(collect_allocator);
+                continue;
+            }
+
+            const instr_id = @intFromPtr(instr);
+            const window_start = self.observable_windows.get(instr_id) orelse
+                @max(self.created_at_ns, instr.asyncCreatedNs() orelse self.created_at_ns);
+            const obs_time_ns: u64 = switch (data_points) {
+                inline else => |pts| pts[0].timestamps.?.time_ns,
+            };
+            switch (data_points) {
+                inline else => |pts| for (pts) |*pt| {
+                    pt.timestamps = .{ .start_time_ns = window_start, .time_ns = obs_time_ns };
+                },
+            }
+
+            if (task.attribute_filter) |filter| {
+                try AggregatedMetrics.filterAttributes(collect_allocator, data_points, filter);
+            }
+
+            consumed = true;
+            const exemplar_ctx: ?AggregatedMetrics.ExemplarContext = if (self.exemplar_filter != .always_off) .{
+                .sampler = &self.exemplar_sampler,
+                .io = self.io,
+                .instrument_id = instr_id,
+                .factory = task.exemplar_reservoir,
+            } else null;
+
+            const aggregated_data = try AggregatedMetrics.aggregate(
+                collect_allocator,
+                data_points,
+                task.agg,
+                instr.kind.isMonotonic(),
+                exemplar_ctx,
+            ) orelse continue;
+
+            var measurement = Measurements{
+                .scope = task.scope,
+                .instrumentKind = instr.kind,
+                .instrumentOptions = task.opts,
+                .data = aggregated_data,
+                .aggregation = task.agg.getType(),
+                .resource = resource,
+            };
+            errdefer measurement.deinit(collect_allocator);
+
+            try self.observable_windows.ensureUnusedCapacity(self.allocator, 1);
+            try self.reader.temporal_aggregation.process(&measurement, self.reader.temporality);
+            try results.append(collect_allocator, measurement);
+            self.observable_windows.putAssumeCapacity(instr_id, obs_time_ns);
+        }
+    }
+
+    /// Convenience helper for single-threaded callers/tests collecting while holding `mp.mx`.
+    pub fn collect(self: *Pipeline, collect_allocator: std.mem.Allocator, mp: *MeterProvider) ![]Measurements {
+        self.beginCollection();
+        defer self.endCollection();
+
+        var results = std.ArrayList(Measurements).empty;
+        errdefer {
+            for (results.items) |*r| r.deinit(collect_allocator);
+            results.deinit(collect_allocator);
+        }
+
+        try self.collectSync(collect_allocator, mp.resource, &results);
+        const async_tasks = try self.snapshotAsyncTasks(collect_allocator, mp);
+        defer collect_allocator.free(async_tasks);
+        try self.collectAsyncTasks(collect_allocator, mp.resource, async_tasks, &results);
 
         return try results.toOwnedSlice(collect_allocator);
     }
@@ -922,5 +1108,257 @@ test "pipeline: lifecycle handles allocation failures without leaks or dangling 
             error.OutOfMemory => {},
             else => return err,
         };
+    }
+}
+
+test "pipeline: AggregatedMetrics.fetch fails explicitly on synchronous instruments" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+    const meter = try mp.getMeter(.{ .name = "obsolete-fetch" });
+    _ = try meter.createCounter(u64, .{ .name = "requests" });
+
+    try std.testing.expectError(
+        error.SynchronousCollectionRequiresMetricReader,
+        AggregatedMetrics.fetch(allocator, meter, mp.views.items, null),
+    );
+}
+
+test "pipeline: detachReader ignores reader owned by another provider" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const mp_a = try MeterProvider.init(allocator, io);
+    defer mp_a.deinit();
+    const mp_b = try MeterProvider.init(allocator, io);
+    defer mp_b.deinit();
+
+    const me = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
+    defer me.in_memory.deinit();
+    const reader = try MetricReader.init(allocator, io, me.exporter);
+    defer reader.deinit();
+    try mp_a.addReader(reader);
+
+    const meter = try mp_a.getMeter(.{ .name = "cross-provider" });
+    const counter = try meter.createCounter(u64, .{ .name = "hits" });
+    try counter.add(5, .{});
+
+    // Must be a no-op because `reader` belongs to `mp_a`, not `mp_b`.
+    mp_b.detachReader(reader);
+    try std.testing.expectEqual(mp_a, reader.meterProvider.?);
+    try std.testing.expect(reader.pipeline != null);
+
+    try reader.collect();
+    const data = try me.in_memory.fetch(allocator);
+    defer {
+        for (data) |*m| m.deinit(allocator);
+        allocator.free(data);
+    }
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqual(@as(i64, 5), data[0].data.int[0].value);
+}
+
+test "pipeline: addView metadata or reservoir update preserves uncollected measurements" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const CustomFactory = struct {
+        fn create(a: std.mem.Allocator, i: std.Io, options: exemplar.ReservoirOptions) !exemplar.ExemplarReservoir {
+            return exemplar.SimpleFixedSizeExemplarReservoir.init(a, i, options.fixed_size);
+        }
+    };
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+    const me = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
+    defer me.in_memory.deinit();
+    const reader = try MetricReader.init(allocator, io, me.exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "metadata-preserve" });
+    const counter = try meter.createCounter(u64, .{ .name = "requests" });
+    try counter.add(7, .{});
+
+    try mp.addView(.{
+        .instrument_selector = .{ .name = "requests" },
+        .name = "requests_renamed",
+        .description = "renamed description",
+        .exemplar_reservoir = CustomFactory.create,
+        .aggregation = .Sum,
+        .temporality = .Delta,
+    });
+    try counter.add(3, .{});
+
+    try reader.collect();
+    const data = try me.in_memory.fetch(allocator);
+    defer {
+        for (data) |*m| m.deinit(allocator);
+        allocator.free(data);
+    }
+    try std.testing.expectEqual(@as(usize, 1), data.len);
+    try std.testing.expectEqualStrings("requests_renamed", data[0].instrumentOptions.name);
+    try std.testing.expectEqualStrings("renamed description", data[0].instrumentOptions.description.?);
+    try std.testing.expectEqual(@as(i64, 10), data[0].data.int[0].value);
+}
+
+test "pipeline: addView rebinding is atomic on allocation failure" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    var failing = std.testing.FailingAllocator.init(allocator, .{});
+    const falloc = failing.allocator();
+
+    const mp = try MeterProvider.init(falloc, io);
+    defer mp.deinit();
+    const me = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
+    defer me.in_memory.deinit();
+    const reader = try MetricReader.init(allocator, io, me.exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "atomic-view" });
+    const counter = try meter.createCounter(u64, .{ .name = "c1" });
+    try counter.add(11, .{});
+
+    const new_view = view.View{
+        .instrument_selector = .{ .name = "c1" },
+        .aggregation = .{ .ExplicitBucketHistogram = .{ .buckets = &.{ 1.0, 10.0 } } },
+        .temporality = .Delta,
+    };
+
+    // Fail at every possible allocation point inside addView.
+    var fail_offset: usize = 0;
+    while (true) : (fail_offset += 1) {
+        failing.has_induced_failure = false;
+        failing.fail_index = failing.alloc_index + fail_offset;
+        const res = mp.addView(new_view);
+        failing.fail_index = std.math.maxInt(usize);
+        if (!failing.has_induced_failure) {
+            try res;
+            break;
+        }
+        try std.testing.expectError(error.OutOfMemory, res);
+        // Provider views and existing counter storage must remain untouched.
+        try std.testing.expectEqual(@as(usize, 0), mp.views.items.len);
+        try std.testing.expect(counter.storages.items[0].storage == .sum_int);
+    }
+}
+
+test "pipeline: observable callback failure preserves sync metrics and re-entrant callback does not deadlock" {
+    const Async = @import("../../api/metrics/async_instrument.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const Callbacks = struct {
+        fn failingObserve(_: Async.ObservedContext, _: std.mem.Allocator) Async.MetricObserveError!MeasurementsData {
+            return Async.MetricObserveError.CallbackExecutionFailed;
+        }
+        fn reentrantObserve(ctx: Async.ObservedContext, alloc: std.mem.Allocator) Async.MetricObserveError!MeasurementsData {
+            const provider = ctx.into(MeterProvider).?;
+            _ = provider.getMeter(.{ .name = "callback-meter" }) catch return Async.MetricObserveError.CallbackExecutionFailed;
+            const pts = try alloc.alloc(DataPoint(i64), 1);
+            pts[0] = .{ .value = 42 };
+            return .{ .int = pts };
+        }
+    };
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+    const me = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
+    defer me.in_memory.deinit();
+    const reader = try MetricReader.init(allocator, io, me.exporter);
+    defer reader.deinit();
+    try mp.addReader(reader);
+
+    const meter = try mp.getMeter(.{ .name = "async-resilience" });
+    const counter = try meter.createCounter(u64, .{ .name = "sync_counter" });
+    try counter.add(9, .{});
+
+    var failing_cbs = [_]Async.ObserveMeasures{Callbacks.failingObserve};
+    _ = try meter.createObservableCounter(.{ .name = "failing_async" }, .{}, &failing_cbs);
+
+    var reentrant_cbs = [_]Async.ObserveMeasures{Callbacks.reentrantObserve};
+    _ = try meter.createObservableGauge(.{ .name = "reentrant_async" }, Async.ObservedContext.from(mp), &reentrant_cbs);
+
+    try reader.collect();
+    const data = try me.in_memory.fetch(allocator);
+    defer {
+        for (data) |*m| m.deinit(allocator);
+        allocator.free(data);
+    }
+    try std.testing.expectEqual(@as(usize, 2), data.len);
+}
+
+test "pipeline: two readers track independent observable collection windows" {
+    const Async = @import("../../api/metrics/async_instrument.zig");
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+
+    const Observer = struct {
+        fn observe(ctx: Async.ObservedContext, alloc: std.mem.Allocator) Async.MetricObserveError!MeasurementsData {
+            const val = ctx.into(i64).?.*;
+            const pts = try alloc.alloc(DataPoint(i64), 1);
+            pts[0] = .{ .value = val };
+            return .{ .int = pts };
+        }
+    };
+
+    const mp = try MeterProvider.init(allocator, io);
+    defer mp.deinit();
+
+    const me_a = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
+    defer me_a.in_memory.deinit();
+    const reader_a = try MetricReader.init(allocator, io, me_a.exporter);
+    defer reader_a.deinit();
+    try mp.addReader(reader_a);
+
+    const me_b = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
+    defer me_b.in_memory.deinit();
+    const reader_b = try MetricReader.init(allocator, io, me_b.exporter);
+    defer reader_b.deinit();
+    try mp.addReader(reader_b);
+
+    const meter = try mp.getMeter(.{ .name = "obs-windows" });
+    var total: i64 = 10;
+    var cbs = [_]Async.ObserveMeasures{Observer.observe};
+    _ = try meter.createObservableCounter(.{ .name = "cpu" }, Async.ObservedContext.from(&total), &cbs);
+
+    // Reader A collects twice; Reader B has not collected yet.
+    try reader_a.collect();
+    {
+        const d = try me_a.in_memory.fetch(allocator);
+        defer {
+            for (d) |*m| m.deinit(allocator);
+            allocator.free(d);
+        }
+        try std.testing.expectEqual(@as(i64, 10), d[0].data.int[0].value);
+    }
+    total = 25;
+    try reader_a.collect();
+    const a_second_time = blk: {
+        const d = try me_a.in_memory.fetch(allocator);
+        defer {
+            for (d) |*m| m.deinit(allocator);
+            allocator.free(d);
+        }
+        try std.testing.expectEqual(@as(i64, 15), d[0].data.int[0].value);
+        break :blk d[0].data.int[0].timestamps.?.time_ns;
+    };
+
+    // Reader B's first collection must see the full 25 AND its own window start (< a_second_time),
+    // not Reader A's last collection timestamp.
+    try reader_b.collect();
+    {
+        const d = try me_b.in_memory.fetch(allocator);
+        defer {
+            for (d) |*m| m.deinit(allocator);
+            allocator.free(d);
+        }
+        try std.testing.expectEqual(@as(i64, 25), d[0].data.int[0].value);
+        const start_b = d[0].data.int[0].timestamps.?.start_time_ns.?;
+        try std.testing.expect(start_b < a_second_time);
     }
 }

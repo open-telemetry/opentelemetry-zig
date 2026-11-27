@@ -126,14 +126,23 @@ pub const MetricReader = struct {
                 mp.mx.unlock(mp.io);
                 return MetricReadError.CollectFailedOnMissingMeterProvider;
             };
-            const collected = pipeline.collect(self.allocator, mp) catch |err| {
-                mp.mx.unlock(mp.io);
-                return err;
+            pipeline.retain();
+            defer pipeline.release();
+
+            const resource = mp.resource;
+            pipeline.beginCollection();
+            defer pipeline.endCollection();
+
+            const async_tasks = blk: {
+                errdefer mp.mx.unlock(mp.io);
+                try pipeline.collectSync(self.allocator, resource, &toBeExported);
+                break :blk try pipeline.snapshotAsyncTasks(self.allocator, mp);
             };
             mp.mx.unlock(mp.io);
+            defer self.allocator.free(async_tasks);
 
-            defer self.allocator.free(collected);
-            try toBeExported.appendSlice(self.allocator, collected);
+            // User callbacks run after releasing mp.mx so they can call MeterProvider APIs safely.
+            try pipeline.collectAsyncTasks(self.allocator, resource, async_tasks, &toBeExported);
 
             try self.appendMissingCumulativeHistograms(HistogramDataPoint, mp, &toBeExported);
             try self.appendMissingCumulativeHistograms(ExponentialHistogramDataPoint, mp, &toBeExported);

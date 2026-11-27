@@ -66,7 +66,7 @@ fn setupTelemetry(
     io: std.Io,
     opts: *otlp.ConfigOptions,
 ) !OTel {
-    const mp = try metrics_sdk.MeterProvider.init(allocator, io);
+    const mp = try metrics_sdk.MeterProvider.init(allocator, io, null);
     errdefer mp.deinit();
 
     const me = try metrics_sdk.MetricExporter.OTLP(allocator, io, null, null, opts);

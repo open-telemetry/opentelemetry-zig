@@ -10,6 +10,7 @@ const std = @import("std");
 
 const semconv = @import("opentelemetry-semconv");
 const PercentDecodedCommaSeparatedAssignmentIterator = @import("key_value_sequence_iterator.zig").PercentDecodedCommaSeparatedAssignmentIterator;
+const validResourceAttributes = @import("resource.zig").validResourceAttributes;
 
 const EnvMap = std.process.Environ.Map;
 
@@ -398,7 +399,10 @@ fn resolveServiceName(allocator: std.mem.Allocator, io: std.Io, env_map: *const 
 }
 
 /// Extract the service.name value from OTEL_RESOURCE_ATTRIBUTES, if present.
+/// A malformed value is discarded as a whole, service.name included.
 fn serviceNameFromResourceAttributes(allocator: std.mem.Allocator, attrs: []const u8) !?[]const u8 {
+    if (!validResourceAttributes(attrs)) return null;
+
     // Decoding never grows a string, so `attrs.len` bytes is always enough room
     // for the decoded name and value of any one entry.
     const scratch = try allocator.alloc(u8, attrs.len);
@@ -406,10 +410,9 @@ fn serviceNameFromResourceAttributes(allocator: std.mem.Allocator, attrs: []cons
 
     var iter: PercentDecodedCommaSeparatedAssignmentIterator = .init(attrs, scratch);
     while (iter.next() catch unreachable) |entry| {
-        // A bare `service.name` with no value does not count; keep looking.
-        const value = entry.value orelse continue;
         if (!std.mem.eql(u8, entry.name, semconv.attribute.service_name.name)) continue;
-        return try allocator.dupe(u8, value);
+        // Validated above.
+        return try allocator.dupe(u8, entry.value.?);
     }
     return null;
 }
@@ -894,6 +897,18 @@ test "Configuration service.name falls back to OTEL_RESOURCE_ATTRIBUTES before u
     try std.testing.expectEqualStrings("checkout", config.service_name.?);
 }
 
+test "Configuration service.name ignores a malformed OTEL_RESOURCE_ATTRIBUTES" {
+    const allocator = std.testing.allocator;
+    var env_map = EnvMap.init(allocator);
+    defer env_map.deinit();
+    try env_map.put("OTEL_RESOURCE_ATTRIBUTES", "service.name=checkout,invalid_token");
+
+    const config = try Configuration.init(allocator, std.testing.io, &env_map);
+    defer config.deinit();
+
+    try std.testing.expect(std.mem.startsWith(u8, config.service_name.?, "unknown_service"));
+}
+
 test "Configuration OTEL_SERVICE_NAME wins over OTEL_RESOURCE_ATTRIBUTES" {
     const allocator = std.testing.allocator;
     var env_map = EnvMap.init(allocator);
@@ -933,7 +948,7 @@ test "Configuration TracerProvider with SDK disabled" {
     const id_gen = IDGenerator{ .Random = random_generator };
 
     const io = std.testing.io;
-    var provider = try TracerProvider.init(allocator, io, id_gen);
+    var provider = try TracerProvider.init(allocator, io, id_gen, null);
     defer provider.deinit();
 
     // Verify SDK is disabled
@@ -965,7 +980,7 @@ test "ConfigurationMeterProvider with SDK disabled" {
     Configuration.set(config_from_env);
 
     // Create MeterProvider
-    var provider = try MeterProvider.init(allocator, std.testing.io);
+    var provider = try MeterProvider.init(allocator, std.testing.io, null);
     defer provider.deinit();
 
     // Verify SDK is disabled
@@ -1035,10 +1050,10 @@ test "Configuration SDK disabled with OTEL_SDK_DISABLED=false" {
     const id_gen = IDGenerator{ .Random = random_generator };
 
     const io = std.testing.io;
-    var tracer_provider = try TracerProvider.init(allocator, io, id_gen);
+    var tracer_provider = try TracerProvider.init(allocator, io, id_gen, null);
     defer tracer_provider.deinit();
 
-    var meter_provider = try MeterProvider.init(allocator, io);
+    var meter_provider = try MeterProvider.init(allocator, io, null);
     defer meter_provider.deinit();
 
     var logger_provider = try LoggerProvider.init(allocator, io, null);

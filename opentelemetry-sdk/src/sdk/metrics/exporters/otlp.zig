@@ -356,7 +356,7 @@ test "exemplar/otlp recording pipeline" {
     const cfg = try Configuration.init(allocator, std.testing.io, &env);
     defer cfg.deinit();
     Configuration.set(cfg);
-    const provider = try meter_api.MeterProvider.init(allocator, std.testing.io);
+    const provider = try meter_api.MeterProvider.init(allocator, std.testing.io, null);
     defer provider.deinit();
     const me = try @import("../exporter.zig").MetricExporter.InMemory(allocator, std.testing.io, null, null);
     defer me.in_memory.deinit();

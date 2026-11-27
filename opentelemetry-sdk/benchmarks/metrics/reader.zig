@@ -48,7 +48,7 @@ test "MetricReader_collect" {
     var threaded: std.Io.Threaded = .init(std.testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
-    var mp = try MeterProvider.init(std.testing.allocator, io);
+    var mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     var me = try MetricExporter.InMemory(std.testing.allocator, io, null, null);

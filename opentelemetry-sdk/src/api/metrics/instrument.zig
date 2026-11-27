@@ -579,7 +579,7 @@ pub fn Gauge(comptime T: type) type {
 
 test "counter with unsupported type does not leak" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "my-meter" });
     const err = meter.createCounter(u1, .{ .name = "a-counter" });
@@ -599,7 +599,7 @@ const TestHarness = struct {
     in_mem: *@import("../../sdk/metrics/exporters/in_memory.zig").InMemoryExporter,
 
     fn init(allocator: std.mem.Allocator, io: std.Io) !TestHarness {
-        const mp = try MeterProvider.init(allocator, io);
+        const mp = try MeterProvider.init(allocator, io, null);
         errdefer mp.deinit();
         const me = try MetricExporter.InMemory(allocator, io, null, null);
         errdefer me.in_memory.deinit();
@@ -1112,7 +1112,7 @@ const MetricObserveError = AsyncInstrument.MetricObserveError;
 
 test "async instrument registered in meter" {
     const io = std.testing.io;
-    const mp = try MeterProvider.init(std.testing.allocator, io);
+    const mp = try MeterProvider.init(std.testing.allocator, io, null);
     defer mp.deinit();
 
     const background = struct {

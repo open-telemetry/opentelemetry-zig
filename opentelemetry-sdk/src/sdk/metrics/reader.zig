@@ -349,7 +349,7 @@ test "metric reader shutdown returns the final export's error and still shuts do
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var failing = exporter.ExporterImpl{ .exportFn = exporter.failingExporter };
@@ -373,7 +373,7 @@ test "metric reader collects data from meter provider" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
@@ -417,7 +417,7 @@ test "metric reader cumulative aggregation survives freeing exported measurement
     const allocator = std.heap.page_allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
@@ -457,7 +457,7 @@ test "metric reader applies view aggregation over the exporter default" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     try mp.addView(.{
@@ -500,7 +500,7 @@ test "metric reader histogram export with stack-allocated attributes survives fr
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const me = try MetricExporter.InMemory(allocator, io, null, null);
@@ -570,7 +570,7 @@ test "metric reader exports last value views as gauges" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     try mp.addView(.{
@@ -633,7 +633,7 @@ test "metric reader exports observable counter totals" {
     };
 
     inline for (cases) |case| {
-        const mp = try MeterProvider.init(allocator, io);
+        const mp = try MeterProvider.init(allocator, io, null);
         defer mp.deinit();
 
         const me = try MetricExporter.InMemory(allocator, io, case[0], null);
@@ -690,7 +690,7 @@ test "metric reader custom temporality and aggregation" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
@@ -730,7 +730,7 @@ test "metric reader correctness exporting cumulative temporality" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
@@ -791,7 +791,7 @@ test "metric reader cumulative histogram across collection" {
     const bounds = @import("../../api/metrics/spec.zig").default_histogram_explicit_bucket_boundaries;
 
     inline for (.{ f64, i64 }) |T| {
-        const mp = try MeterProvider.init(allocator, io);
+        const mp = try MeterProvider.init(allocator, io, null);
         defer mp.deinit();
         var inMem = try InMemoryExporter.init(allocator, io);
         defer inMem.deinit();
@@ -882,7 +882,7 @@ test "metric reader frees pending histograms on collection failure" {
             const allocator = failing.allocator();
             const io = std.testing.io;
 
-            const mp = try MeterProvider.init(allocator, io);
+            const mp = try MeterProvider.init(allocator, io, null);
             defer mp.deinit();
 
             var sink = Sink{ .allocator = allocator };
@@ -943,7 +943,7 @@ test "metric reader cumulative histograms retain inactive series" {
     const io = std.testing.io;
 
     inline for (.{ .histogram, .exponential_histogram }) |data_kind| {
-        const mp = try MeterProvider.init(allocator, io);
+        const mp = try MeterProvider.init(allocator, io, null);
         defer mp.deinit();
 
         var inMem = try InMemoryExporter.init(allocator, io);
@@ -1012,7 +1012,7 @@ test "metric reader cumulative histograms retain inactive series" {
 test "metric reader cumulative histogram separates instrument options" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
     const inMem = try InMemoryExporter.init(allocator, io);
     defer inMem.deinit();
@@ -1064,7 +1064,7 @@ test "metric reader cumulative exponential histogram across collection" {
     const io = std.testing.io;
 
     inline for (.{ f64, i64 }) |T| {
-        const mp = try MeterProvider.init(allocator, io);
+        const mp = try MeterProvider.init(allocator, io, null);
         defer mp.deinit();
 
         var inMem = try InMemoryExporter.init(allocator, io);
@@ -1151,7 +1151,7 @@ test "metric reader cumulative exponential histogram merges buckets at the same 
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);
@@ -1265,7 +1265,7 @@ test "metric reader cumulative exponential histogram merges buckets at the same 
 test "exemplar cumulative collection retains values after exported attributes are freed" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const provider = try MeterProvider.init(allocator, io);
+    const provider = try MeterProvider.init(allocator, io, null);
     defer provider.deinit();
     const memory = try MetricExporter.InMemory(allocator, io, null, null);
     defer memory.in_memory.deinit();
@@ -1294,7 +1294,7 @@ test "exemplar cumulative collection retains values after exported attributes ar
 test "exemplar cumulative histograms do not replay samples on idle collection" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
-    const provider = try MeterProvider.init(allocator, io);
+    const provider = try MeterProvider.init(allocator, io, null);
     defer provider.deinit();
     const memory = try MetricExporter.InMemory(allocator, io, null, null);
     defer memory.in_memory.deinit();

@@ -324,7 +324,7 @@ test "metric exporter is called by metric reader" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var mock = ExporterImpl{ .exportFn = mockExporter };
@@ -448,7 +448,7 @@ test "metric exporter builder in memory" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const metric_exporter = try MetricExporter.InMemory(
@@ -489,7 +489,7 @@ test "metric exporter builder stdout" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    var mp = try MeterProvider.init(allocator, io);
+    var mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const metric_exporter = try MetricExporter.Stdout(
@@ -661,7 +661,7 @@ test "e2e periodic exporting metric reader" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const waiting_ms: u64 = 100;
@@ -743,7 +743,7 @@ test "periodic exporting metric reader shutdown returns the final export's error
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var failing = ExporterImpl{ .exportFn = failingExporter };
@@ -757,7 +757,7 @@ test "periodic exporting metric reader exports pending metrics on shutdown" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     var inMem = try InMemoryExporter.init(allocator, io);

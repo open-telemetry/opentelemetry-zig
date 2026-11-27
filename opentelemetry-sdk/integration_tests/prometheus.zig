@@ -19,7 +19,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn testPrometheusExporter(allocator: std.mem.Allocator, io: std.Io, port: u16) !void {
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const result = try MetricExporter.Prometheus(allocator, io, .{

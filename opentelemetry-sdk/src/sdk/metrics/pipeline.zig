@@ -838,7 +838,7 @@ test "pipeline: two readers with different aggregations collect independently" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const me_sum = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
@@ -886,7 +886,7 @@ test "pipeline: two delta readers collecting at different intervals stay indepen
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const me_fast = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
@@ -960,7 +960,7 @@ test "pipeline: detachReader while another thread records" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const me1 = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
@@ -1015,7 +1015,7 @@ test "pipeline: 1M measurements with two disagreeing readers keep memory flat" {
     var tracked = std.testing.FailingAllocator.init(allocator, .{ .fail_index = std.math.maxInt(usize) });
     const tracked_alloc = tracked.allocator();
 
-    const mp = try MeterProvider.init(tracked_alloc, io);
+    const mp = try MeterProvider.init(tracked_alloc, io, null);
     defer mp.deinit();
 
     const me_sum = try MetricExporter.InMemory(tracked_alloc, io, view.TemporalityDelta, null);
@@ -1075,7 +1075,7 @@ fn pipelineLifecycleAllocationFailure(allocator: std.mem.Allocator) !void {
     const reader = try MetricReader.init(std.testing.allocator, io, metric_exporter);
     defer reader.deinit();
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const meter = try mp.getMeter(.{ .name = "oom-test" });
@@ -1115,7 +1115,7 @@ test "pipeline: AggregatedMetrics.fetch fails explicitly on synchronous instrume
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
     const meter = try mp.getMeter(.{ .name = "obsolete-fetch" });
     _ = try meter.createCounter(u64, .{ .name = "requests" });
@@ -1130,9 +1130,9 @@ test "pipeline: detachReader ignores reader owned by another provider" {
     const allocator = std.testing.allocator;
     const io = std.testing.io;
 
-    const mp_a = try MeterProvider.init(allocator, io);
+    const mp_a = try MeterProvider.init(allocator, io, null);
     defer mp_a.deinit();
-    const mp_b = try MeterProvider.init(allocator, io);
+    const mp_b = try MeterProvider.init(allocator, io, null);
     defer mp_b.deinit();
 
     const me = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
@@ -1170,7 +1170,7 @@ test "pipeline: addView metadata or reservoir update preserves uncollected measu
         }
     };
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
     const me = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
     defer me.in_memory.deinit();
@@ -1211,7 +1211,7 @@ test "pipeline: addView rebinding is atomic on allocation failure" {
     var failing = std.testing.FailingAllocator.init(allocator, .{});
     const falloc = failing.allocator();
 
-    const mp = try MeterProvider.init(falloc, io);
+    const mp = try MeterProvider.init(falloc, io, null);
     defer mp.deinit();
     const me = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
     defer me.in_memory.deinit();
@@ -1265,7 +1265,7 @@ test "pipeline: observable callback failure preserves sync metrics and re-entran
         }
     };
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
     const me = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);
     defer me.in_memory.deinit();
@@ -1306,7 +1306,7 @@ test "pipeline: two readers track independent observable collection windows" {
         }
     };
 
-    const mp = try MeterProvider.init(allocator, io);
+    const mp = try MeterProvider.init(allocator, io, null);
     defer mp.deinit();
 
     const me_a = try MetricExporter.InMemory(allocator, io, view.TemporalityDelta, null);

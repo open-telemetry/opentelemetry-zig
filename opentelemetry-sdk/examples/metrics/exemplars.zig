@@ -15,11 +15,11 @@ pub fn main(init: std.process.Init) !void {
     var prng = std.Random.DefaultPrng.init(seed);
     var traces = try sdk.trace.TracerProvider.init(allocator, io, .{
         .Random = sdk.trace.RandomIDGenerator.init(prng.random()),
-    });
+    }, null);
     defer traces.deinit();
     const tracer = try traces.getTracer(.{ .name = "exemplar-demo" });
 
-    const provider = try sdk.metrics.MeterProvider.init(allocator, io);
+    const provider = try sdk.metrics.MeterProvider.init(allocator, io, null);
     defer provider.deinit();
     try provider.addView(.{
         .instrument_selector = .{ .name = "requests" },

@@ -7,6 +7,7 @@ pub const propagation = @import("api/propagation.zig");
 pub const trace = @import("api/trace.zig");
 pub const metrics = @import("api/metrics.zig");
 pub const logs = @import("api/logs.zig");
+pub const profiles = @import("api/profiles.zig");
 
 // Run API tests
 test {
@@ -16,4 +17,5 @@ test {
     _ = @import("api/trace.zig");
     _ = @import("api/metrics.zig");
     _ = @import("api/logs.zig");
+    _ = @import("api/profiles.zig");
 }
